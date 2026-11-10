@@ -1,5 +1,5 @@
 # Changelog
 
-## 1.0.27
+## 1.0.30
 
 First release.

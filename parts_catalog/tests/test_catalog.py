@@ -214,6 +214,53 @@ class CatalogTest(unittest.TestCase):
         self.assertEqual(r.get_json()["reports"][0]["counts"]["items_added"], 1)
         self.assertEqual(self.c.get(f"/api/epc/diagrams?vehicle={epc.row('SELECT id FROM vehicles WHERE code=?', ('E34-535i-USA',))['id']}&category={epc.row('SELECT id FROM categories WHERE code=?', ('12',))['id']}").get_json()[0]["code"], "12_0001")
 
+    def test_same_code_on_two_vehicles(self):
+        def bundle(source, vehicle, title, pn):
+            return {"source": {"name": source}, "vehicles": [{"code": vehicle, "series": vehicle[:3], "model": "x"}],
+                    "diagrams": [{"code": "83_0647", "category": "83", "title": title, "vehicles": [vehicle],
+                                  "items": [{"callout": "1", "part_number": pn, "description": title}]}]}
+        epc_import.import_bundle(bundle("Shared code A", "VEH-A", "Coolant A", "83 19 0 000 001"))
+        epc_import.import_bundle(bundle("Shared code B", "VEH-B", "Coolant B", "83 19 0 000 002"))
+        ds = epc.rows("SELECT id, title FROM diagrams WHERE code='83_0647' ORDER BY id")
+        self.assertEqual([d["title"] for d in ds], ["Coolant A", "Coolant B"])
+        for d, pn in zip(ds, ("83190000001", "83190000002")):
+            self.assertEqual([i["part_number"] for i in epc.rows("SELECT part_number FROM diagram_items WHERE diagram_id=?", (d["id"],))], [pn])
+        # re-importing for the same vehicle updates that vehicle's diagram, doesn't add a third
+        rep = epc_import.import_bundle(bundle("Shared code B", "VEH-B", "Coolant B2", "83 19 0 000 003"))
+        self.assertEqual(rep.counts.get("diagrams_updated"), 1)
+        self.assertEqual([d["title"] for d in epc.rows("SELECT title FROM diagrams WHERE code='83_0647' ORDER BY id")], ["Coolant A", "Coolant B2"])
+
+    def test_delete_vehicle_keeps_other_diagrams(self):
+        epc_import.import_bundle({"source": {"name": "Del A"}, "vehicles": [{"code": "DEL-A"}, {"code": "DEL-B"}],
+                                  "diagrams": [{"code": "DEL_1", "vehicles": ["DEL-A", "DEL-B"], "items": [{"callout": "1", "part_number": "1"}]},
+                                               {"code": "DEL_2", "vehicles": ["DEL-B"]}]})
+        vid = epc.row("SELECT id FROM vehicles WHERE code='DEL-B'")["id"]
+        self.assertEqual(self.c.delete(f"/api/epc/vehicles/{vid}").status_code, 200)
+        self.assertIsNone(epc.row("SELECT 1 FROM vehicles WHERE code='DEL-B'"))
+        self.assertIsNone(self.diag("DEL_2"))  # empty and unlinked: removed
+        kept = self.diag("DEL_1")
+        self.assertEqual([r["code"] for r in epc.rows("SELECT v.code FROM vehicles v JOIN diagram_vehicles dv ON dv.vehicle_id=v.id WHERE dv.diagram_id=?", (kept["id"],))], ["DEL-A"])
+
+    def test_migration_drops_unique_code(self):
+        import sqlite3
+        path = os.path.join(self.tmp, "v1.db")
+        old = sqlite3.connect(path)
+        old.executescript(epc.SCHEMA.replace("code TEXT NOT NULL,\n  category_id", "code TEXT NOT NULL UNIQUE,\n  category_id", 1))
+        old.execute("INSERT INTO sources (id, name) VALUES (1, 's')")
+        old.execute("INSERT INTO diagrams (id, code, title, source_id) VALUES (7, '11_0001', 'Head', 1)")
+        old.execute("INSERT INTO diagram_items (diagram_id, callout, source_id) VALUES (7, '1', 1)")
+        old.commit()
+        self.assertIn("UNIQUE", old.execute("SELECT sql FROM sqlite_master WHERE name='diagrams'").fetchone()[0])
+        old.row_factory = sqlite3.Row
+        old.execute("PRAGMA foreign_keys = ON")
+        epc.drop_unique_diagram_code(old)
+        self.assertNotIn("UNIQUE", old.execute("SELECT sql FROM sqlite_master WHERE name='diagrams'").fetchone()[0])
+        self.assertEqual(tuple(old.execute("SELECT id, code, title FROM diagrams").fetchone()), (7, "11_0001", "Head"))
+        old.execute("INSERT INTO diagrams (code, source_id) VALUES ('11_0001', 1)")  # same code allowed now
+        self.assertEqual(old.execute("SELECT COUNT(*) FROM diagram_items WHERE diagram_id=7").fetchone()[0], 1)
+        self.assertIn("diagram_items", [r[0] for r in old.execute("SELECT name FROM sqlite_master WHERE type='table'")])
+        old.close()
+
     def test_zz_remove_sample(self):
         sid = epc.row("SELECT id FROM sources WHERE is_sample=1 AND name='SAMPLE DATA (not real)'")["id"]
         epc.delete_source(sid)

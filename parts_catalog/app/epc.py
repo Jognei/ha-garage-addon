@@ -29,7 +29,20 @@ from . import db
 EPC_DIR = os.path.join(db.DATA_DIR, "epc")
 EPC_DB = os.path.join(EPC_DIR, "epc.db")
 FILES_DIR = os.path.join(EPC_DIR, "files")
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
+
+# Diagram codes (e.g. "11_0123") repeat between vehicles, so they aren't unique on their own (schema v2).
+DIAGRAMS_COLS = """
+  id INTEGER PRIMARY KEY,
+  code TEXT NOT NULL,
+  category_id INTEGER REFERENCES categories(id) ON DELETE SET NULL,
+  title TEXT DEFAULT '',
+  image_file_id INTEGER REFERENCES source_files(id) ON DELETE SET NULL,
+  image_w INTEGER, image_h INTEGER,
+  notes TEXT DEFAULT '',
+  sort INTEGER DEFAULT 0,
+  source_id INTEGER REFERENCES sources(id) ON DELETE CASCADE
+"""
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
@@ -75,17 +88,7 @@ CREATE TABLE IF NOT EXISTS categories (
   sort INTEGER DEFAULT 0,
   source_id INTEGER REFERENCES sources(id) ON DELETE SET NULL
 );
-CREATE TABLE IF NOT EXISTS diagrams (
-  id INTEGER PRIMARY KEY,
-  code TEXT NOT NULL UNIQUE,
-  category_id INTEGER REFERENCES categories(id) ON DELETE SET NULL,
-  title TEXT DEFAULT '',
-  image_file_id INTEGER REFERENCES source_files(id) ON DELETE SET NULL,
-  image_w INTEGER, image_h INTEGER,
-  notes TEXT DEFAULT '',
-  sort INTEGER DEFAULT 0,
-  source_id INTEGER REFERENCES sources(id) ON DELETE CASCADE
-);
+CREATE TABLE IF NOT EXISTS diagrams ({DIAGRAMS_COLS});
 CREATE TABLE IF NOT EXISTS diagram_vehicles (
   diagram_id INTEGER NOT NULL REFERENCES diagrams(id) ON DELETE CASCADE,
   vehicle_id INTEGER NOT NULL REFERENCES vehicles(id) ON DELETE CASCADE,
@@ -140,6 +143,7 @@ CREATE TABLE IF NOT EXISTS expected_diagrams (
   PRIMARY KEY (vehicle_id, code)
 );
 CREATE INDEX IF NOT EXISTS ix_diagrams_cat ON diagrams(category_id);
+CREATE INDEX IF NOT EXISTS ix_diagrams_code ON diagrams(code);
 CREATE INDEX IF NOT EXISTS ix_items_diagram ON diagram_items(diagram_id);
 CREATE INDEX IF NOT EXISTS ix_items_pn ON diagram_items(part_number);
 CREATE INDEX IF NOT EXISTS ix_items_source ON diagram_items(source_id);
@@ -148,6 +152,8 @@ CREATE INDEX IF NOT EXISTS ix_dv_vehicle ON diagram_vehicles(vehicle_id);
 CREATE INDEX IF NOT EXISTS ix_sup_new ON supersessions(new_pn);
 CREATE INDEX IF NOT EXISTS ix_categories_parent ON categories(parent_id);
 """
+
+SCHEMA = SCHEMA.replace("{DIAGRAMS_COLS}", DIAGRAMS_COLS)
 
 _local = threading.local()
 
@@ -174,8 +180,35 @@ def close():
 def init():
     conn = connect()
     conn.executescript(SCHEMA)
-    conn.execute("INSERT OR IGNORE INTO meta (key, value) VALUES ('schema_version', ?)", (str(SCHEMA_VERSION),))
+    drop_unique_diagram_code(conn)
+    conn.executescript(SCHEMA)  # recreates indexes dropped with the old table
+    conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', ?)", (str(SCHEMA_VERSION),))
     conn.commit()
+
+
+def drop_unique_diagram_code(conn):
+    """v1 -> v2: rebuild `diagrams` without UNIQUE(code). Ids are kept, so nothing that points at a diagram changes."""
+    sql = conn.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='diagrams'").fetchone()
+    if not sql or "UNIQUE" not in sql[0].upper():
+        return
+    conn.commit()
+    conn.execute("PRAGMA foreign_keys = OFF")
+    try:
+        conn.execute("BEGIN")
+        conn.execute(f"CREATE TABLE diagrams_v2 ({DIAGRAMS_COLS})")
+        conn.execute("""INSERT INTO diagrams_v2 (id, code, category_id, title, image_file_id, image_w, image_h, notes, sort, source_id)
+                        SELECT id, code, category_id, title, image_file_id, image_w, image_h, notes, sort, source_id FROM diagrams""")
+        conn.execute("DROP TABLE diagrams")
+        conn.execute("ALTER TABLE diagrams_v2 RENAME TO diagrams")
+        bad = conn.execute("PRAGMA foreign_key_check").fetchall()
+        if bad:
+            raise RuntimeError(f"catalog migration left broken references: {bad[:5]}")
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.execute("PRAGMA foreign_keys = ON")
 
 
 def rows(sql, args=()):
@@ -397,6 +430,18 @@ def delete_source(source_id):
             os.remove(file_path(p))
         except OSError:
             pass
+
+
+def delete_vehicle(vehicle_id):
+    """Remove a vehicle and its links (diagram/item links, expected diagrams). Diagrams stay; a diagram left
+    with no vehicle and no items from other sources goes too."""
+    conn = connect()
+    dids = [r[0] for r in conn.execute("SELECT diagram_id FROM diagram_vehicles WHERE vehicle_id=?", (vehicle_id,))]
+    conn.execute("DELETE FROM vehicles WHERE id=?", (vehicle_id,))
+    for did in dids:
+        conn.execute("""DELETE FROM diagrams WHERE id=? AND NOT EXISTS (SELECT 1 FROM diagram_vehicles WHERE diagram_id=?)
+                        AND NOT EXISTS (SELECT 1 FROM diagram_items WHERE diagram_id=?)""", (did, did, did))
+    conn.commit()
 
 
 # ---------- validation report ----------

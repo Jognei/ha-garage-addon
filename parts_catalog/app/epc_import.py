@@ -210,13 +210,32 @@ def upsert_part(pn, description, notes, source_id, rep, overwrite=True):
     rep.count("parts_added")
 
 
+def find_diagram(code, source_id, vehicle_ids):
+    """The existing diagram this import means, or None. Codes repeat between vehicles (BMW reuses "71_0342" and
+    friends), so with vehicles given only a diagram linked to one of them matches (or an unlinked one from the
+    same source). Without vehicle info: same source first, then any diagram with that code."""
+    conn = epc.connect()
+    cands = conn.execute("SELECT id, source_id FROM diagrams WHERE code=? ORDER BY id", (code,)).fetchall()
+    if not cands:
+        return None
+    if vehicle_ids:
+        for did, sid in cands:
+            linked = {r[0] for r in conn.execute("SELECT vehicle_id FROM diagram_vehicles WHERE diagram_id=?", (did,))}
+            if linked & set(vehicle_ids) or (not linked and sid == source_id):
+                return did
+        return None
+    same = [c for c in cands if c[1] == source_id]
+    return (same or cands)[0][0]
+
+
 def upsert_diagram(code, source_id, rep, title=None, category=None, vehicles=(), notes=None, image_file_id=None, sort=None):
     conn = epc.connect()
     code = clean(code)
     cat_id = get_category(category, source_id=source_id) if category else None
-    r = conn.execute("SELECT id FROM diagrams WHERE code=?", (code,)).fetchone()
+    vids = [v for v in (vehicle_id(v, rep) for v in vehicles or ()) if v]
+    r = find_diagram(code, source_id, vids)
     if r:
-        did = r[0]
+        did = r
         sets = {}
         if title:
             sets["title"] = clean(title)
@@ -233,10 +252,8 @@ def upsert_diagram(code, source_id, rep, title=None, category=None, vehicles=(),
         did = conn.execute("INSERT INTO diagrams (code, title, category_id, notes, sort, source_id) VALUES (?,?,?,?,?,?)",
                            (code, clean(title), cat_id, clean(notes), sort or 0, source_id)).lastrowid
         rep.count("diagrams_added")
-    for v in vehicles or ():
-        vid = vehicle_id(v, rep)
-        if vid:
-            conn.execute("INSERT OR IGNORE INTO diagram_vehicles (diagram_id, vehicle_id) VALUES (?,?)", (did, vid))
+    for vid in vids:
+        conn.execute("INSERT OR IGNORE INTO diagram_vehicles (diagram_id, vehicle_id) VALUES (?,?)", (did, vid))
     if image_file_id:
         attach_image(did, image_file_id)
     return did
@@ -512,11 +529,12 @@ def import_csv(path, source_name=None, kind=None, vehicle=None, category=None, i
         for r in data:
             by_diag.setdefault(clean(val(r, "diagram")), []).append({k: val(r, k) for k in ("callout", "x", "y", "w", "h")})
         for code, spots in by_diag.items():
-            d = conn.execute("SELECT id FROM diagrams WHERE code=?", (code,)).fetchone()
-            if not d:
+            vid = vehicle_id(vehicle) if vehicle else None
+            did = find_diagram(clean(code), sid, [vid] if vid else [])
+            if not did:
                 rep.problem(f"Hotspots for unknown diagram {code} skipped")
                 continue
-            replace_hotspots(d[0], spots, sid, rep)
+            replace_hotspots(did, spots, sid, rep)
     elif kind == "supersessions":
         for r in data:
             add_supersession(val(r, "old"), val(r, "new"), sid, rep, val(r, "date"), val(r, "fitment_note") or "")

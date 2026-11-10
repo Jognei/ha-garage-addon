@@ -99,6 +99,12 @@ def delete_source(sid):
     return jsonify(ok=True)
 
 
+@bp.route("/api/epc/vehicles/<int:vid>", methods=["DELETE"])
+def delete_vehicle(vid):
+    epc.delete_vehicle(vid)
+    return jsonify(ok=True)
+
+
 @bp.route("/api/epc/sample", methods=["POST"])
 def load_sample():
     return jsonify(epc_import.load_sample().as_dict())
