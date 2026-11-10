@@ -265,7 +265,7 @@ def replace_items(diagram_id, items, source_id, rep, source_file_id=None):
                    description=clean(it.get("description")), supplement=clean(it.get("supplement")), qty=q, qty_num=qty_num(q),
                    from_date=yyyymm(it.get("from")), to_date=yyyymm(it.get("to")), fitment_note=clean(it.get("fitment_note")),
                    sort=it.get("sort", n), source_id=source_id, source_file_id=source_file_id)
-        key = (rec["callout"], pn, rec["supplement"], rec["from_date"], rec["to_date"], rec["qty"])
+        key = (rec["callout"], pn, rec["description"], rec["supplement"], rec["from_date"], rec["to_date"], rec["qty"], rec["fitment_note"])
         if key in seen:
             rep.problem(f"Duplicate row skipped: diagram {diagram_id} callout {rec['callout']} {epc.fmt_pn(pn)}")
             rep.count("duplicates_skipped")
