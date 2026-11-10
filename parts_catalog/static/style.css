@@ -175,3 +175,17 @@ pre.code { background: var(--accent-soft); padding: 10px 12px; border-radius: 8p
 .callout-box.warn { border-left-color: var(--need); margin-top: 10px; }
 tr.nofit td { opacity: .5; }
 .callout { display: block; }
+
+/* ---- garage quality of life ---- */
+.car-card { position: relative; }
+.car-photo { display: block; width: calc(100% + 32px); margin: -16px -16px 12px; height: 160px; object-fit: cover;
+  border-radius: var(--radius) var(--radius) 0 0; }
+.car-photo-preview { width: 220px; max-width: 100%; border-radius: 8px; border: 1px solid var(--line); }
+.drag-handle { cursor: grab; color: var(--muted); font-size: 18px; line-height: 1.2; user-select: none; padding: 0 2px; }
+.drag-handle:active { cursor: grabbing; }
+.car-card.dragging { opacity: .45; }
+.car-card.drop-target { outline: 2px dashed var(--accent); outline-offset: 2px; }
+.order-btns button { font-size: 16px; padding: 0 4px; }
+.order-btns button:disabled { visibility: hidden; }
+.hidden-cars { margin-top: 18px; }
+.hidden-cars summary { cursor: pointer; color: var(--muted); }

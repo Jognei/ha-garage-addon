@@ -10,6 +10,17 @@ works, and Home Assistant handles sign-in.
 2. Set up service schedules with the presets (oil, filters, plugs, fluids…) and enter when each was last done.
 3. Log services as you do them. The odometer and the next due dates update, and parts you used get marked installed.
 
+## Handy features
+- **Order:** drag a vehicle card by its ⠿ handle, or use ↑ ↓. Home Assistant's sensors and the dashboard YAML
+  follow the same order.
+- **Hide a vehicle** you sold or put away (vehicle › Details › Hide vehicle). Its history is kept, and it drops off
+  the garage page and out of the Home Assistant sensors. Bring it back from **Hidden vehicles** at the bottom of the garage.
+- **Photo** per vehicle (vehicle › Details › Photo). It shows on the garage card, and big phone photos are shrunk.
+- **Estimated due dates:** when a service is due by mileage, the app estimates when you'll get there from your
+  last year of odometer readings ("≈ Mar 2027").
+- **✓ on a garage card** logs that service as done, with the schedule already ticked.
+- **Export CSV:** service history (vehicle › Services) and parts (Parts › ⬇ CSV), for a spreadsheet or a buyer.
+
 ## Home Assistant sensors
 The add-on keeps these up to date (turn off with **publish_sensors**):
 - `sensor.garage_overdue`, `sensor.garage_due_soon`, `sensor.garage_parts_to_get`: totals

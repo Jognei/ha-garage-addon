@@ -148,11 +148,29 @@ def api_refdata():
 CAR_FIELDS = ["name", "kind", "year", "make", "model", "engine", "transmission", "vin", "plate", "notes"]
 
 
+CAR_ORDER = "COALESCE(c.sort_order, c.id), c.id"
+
+
 def car_values(b):
     vals = {k: (str(b[k]).strip() or None) if b.get(k) is not None else None for k in CAR_FIELDS if k in b}
     if "year" in vals:
         vals["year"] = to_int(vals["year"])
+    if "archived" in b:  # hidden from the garage and HA sensors (sold, stored...) but kept with its history
+        vals["archived"] = 1 if b["archived"] in (True, 1, "1", "true", "on") else 0
     return vals
+
+
+def miles_per_day(car_id):
+    """Average daily driving from the last year of odometer readings, or None without enough data."""
+    since = (dt.date.today() - dt.timedelta(days=365)).isoformat()
+    r = db.row("""SELECT MIN(date) AS d0, MAX(date) AS d1, MIN(mileage) AS m0, MAX(mileage) AS m1
+                  FROM mileage_log WHERE car_id=? AND date >= ?""", (car_id, since))
+    if not r or not r["d0"] or r["d0"] == r["d1"]:
+        return None
+    days = (dt.date.fromisoformat(r["d1"][:10]) - dt.date.fromisoformat(r["d0"][:10])).days
+    if days < 14 or r["m1"] <= r["m0"]:
+        return None
+    return (r["m1"] - r["m0"]) / days
 
 
 def record_mileage(car_id, mileage, date=None, source="manual"):
@@ -182,15 +200,122 @@ def api_cars():
     cars = db.rows("""SELECT c.*,
         (SELECT COUNT(*) FROM parts p WHERE p.car_id=c.id AND p.status IN ('Needed','Check','Ordered')) AS parts_open,
         (SELECT COUNT(*) FROM parts p WHERE p.car_id=c.id AND p.status='On hand') AS parts_on_hand,
-        (SELECT COUNT(*) FROM documents d WHERE d.car_id=c.id) AS documents,
-        (SELECT MAX(date) FROM services s WHERE s.car_id=c.id) AS last_service
-        FROM cars c ORDER BY c.id""")
+        (SELECT COUNT(*) FROM documents d WHERE d.car_id=c.id AND d.kind<>'Photo') AS documents,
+        (SELECT MAX(date) FROM services s WHERE s.car_id=c.id) AS last_service,
+        ph.filename AS photo_file, ph.original_name AS photo_name
+        FROM cars c LEFT JOIN documents ph ON ph.id=c.photo_id
+        ORDER BY c.archived, """ + CAR_ORDER)
     for c in cars:
         up = upcoming(c)
         c["upcoming"] = up[:3]
         c["overdue"] = sum(1 for u in up if u["state"] == "overdue")
         c["due_soon"] = sum(1 for u in up if u["state"] == "soon")
     return jsonify(cars)
+
+
+@app.route("/api/cars/order", methods=["POST"])
+def api_cars_order():
+    """{"ids": [3, 1, 2]}: the garage order (also used for HA sensors and the dashboard YAML)."""
+    ids = [to_int(i) for i in body().get("ids") or []]
+    for n, cid in enumerate(i for i in ids if i):
+        db.execute("UPDATE cars SET sort_order=? WHERE id=?", (n + 1, cid))
+    return jsonify(ok=True)
+
+
+@app.route("/api/cars/<int:car_id>/photo", methods=["POST", "DELETE"])
+def api_car_photo(car_id):
+    car = db.row("SELECT * FROM cars WHERE id=?", (car_id,))
+    if not car:
+        return err("No such car", 404)
+    old = car.get("photo_id")
+    if request.method == "POST":
+        f = request.files.get("photo")
+        if not f:
+            return err("Choose a photo")
+        did = store_document(f, car_id, "Photo", f"{car['name']} photo")
+        shrink_photo(did)
+        db.execute("UPDATE cars SET photo_id=? WHERE id=?", (did, car_id))
+    else:
+        db.execute("UPDATE cars SET photo_id=NULL WHERE id=?", (car_id,))
+    if old:
+        delete_document(old)
+    return jsonify(ok=True)
+
+
+def shrink_photo(did, max_side=1600):
+    """Phone photos are large; keep vehicle photos to a sensible size (and the right way up)."""
+    d = db.row("SELECT * FROM documents WHERE id=?", (did,))
+    path = os.path.join(db.DOC_DIR, d["filename"])
+    try:
+        from PIL import Image, ImageOps
+        with Image.open(path) as im:
+            im = ImageOps.exif_transpose(im)
+            im.thumbnail((max_side, max_side))
+            if im.mode not in ("RGB", "L"):
+                im = im.convert("RGB")
+            new = os.path.splitext(d["filename"])[0] + ".jpg"
+            im.save(os.path.join(db.DOC_DIR, new), "JPEG", quality=85)
+        if new != d["filename"]:
+            os.remove(path)
+        db.execute("UPDATE documents SET filename=?, original_name=?, size=? WHERE id=?",
+                   (new, os.path.splitext(d["original_name"] or "photo")[0] + ".jpg",
+                    os.path.getsize(os.path.join(db.DOC_DIR, new)), did))
+    except Exception:  # noqa: BLE001 - not an image Pillow can read: keep the original file
+        pass
+
+
+def delete_document(did):
+    d = db.row("SELECT * FROM documents WHERE id=?", (did,))
+    if d:
+        db.execute("DELETE FROM documents WHERE id=?", (did,))
+        try:
+            os.remove(os.path.join(db.DOC_DIR, d["filename"]))
+        except OSError:
+            pass
+
+
+def csv_response(rows, cols, filename):
+    import csv
+    buf = io.StringIO()
+    w = csv.writer(buf)
+    w.writerow([label for _, label in cols])
+    for r in rows:
+        w.writerow(["" if r.get(k) is None else r[k] for k, _ in cols])
+    return app.response_class("\ufeff" + buf.getvalue(), mimetype="text/csv",
+                              headers={"Content-Disposition": f'attachment; filename="{filename}"'})
+
+
+def safe_name(s):
+    return re.sub(r"[^A-Za-z0-9._-]+", "-", s or "export").strip("-") or "export"
+
+
+@app.route("/api/cars/<int:car_id>/export/services.csv")
+def api_export_services(car_id):
+    car = db.row("SELECT * FROM cars WHERE id=?", (car_id,))
+    if not car:
+        return err("No such car", 404)
+    rows = db.rows("""SELECT s.*, (SELECT GROUP_CONCAT(p.name || CASE WHEN p.part_number<>'' THEN ' (' || p.part_number || ')' ELSE '' END, '; ')
+                                  FROM parts p WHERE p.service_id=s.id) AS parts_used
+                      FROM services s WHERE s.car_id=? ORDER BY s.date, s.id""", (car_id,))
+    cols = [("date", "Date"), ("mileage", "Mileage"), ("title", "Work"), ("parts_used", "Parts used"),
+            ("cost", "Cost"), ("done_by", "Done by"), ("notes", "Notes")]
+    return csv_response(rows, cols, f"{safe_name(car['name'])}-service-history.csv")
+
+
+@app.route("/api/export/parts.csv")
+def api_export_parts():
+    where, args, name = "", [], "all"
+    if request.args.get("car_id"):
+        where, args = "WHERE p.car_id=?", [int(request.args["car_id"])]
+        car = db.row("SELECT name FROM cars WHERE id=?", args)
+        name = safe_name(car["name"]) if car else "parts"
+    rows = db.rows(f"""SELECT p.*, c.name AS car FROM parts p LEFT JOIN cars c ON c.id=p.car_id {where}
+                       ORDER BY c.name, p.status, p.name COLLATE NOCASE""", args)
+    cols = [("car", "Vehicle"), ("name", "Part"), ("part_number", "Part number"), ("brand", "Brand"), ("category", "Category"),
+            ("qty", "Qty"), ("status", "Status"), ("supplier", "Supplier"), ("price", "Price"), ("order_ref", "Order"),
+            ("purchased_date", "Purchased"), ("installed_mileage", "Installed at (mi)"), ("installed_date", "Installed on"),
+            ("location", "Location"), ("notes", "Notes")]
+    return csv_response(rows, cols, f"{name}-parts.csv")
 
 
 @app.route("/api/cars/<int:car_id>", methods=["GET", "PUT", "DELETE"])
@@ -207,6 +332,8 @@ def api_car(car_id):
         return jsonify(ok=True)
     if request.method == "DELETE":
         db.execute("DELETE FROM cars WHERE id=?", (car_id,))
+        if car.get("photo_id"):
+            delete_document(car["photo_id"])
         return jsonify(ok=True)
     car["upcoming"] = upcoming(car)
     car["mileage_log"] = db.rows("SELECT * FROM mileage_log WHERE car_id=? ORDER BY date DESC, id DESC LIMIT 20",
@@ -239,6 +366,7 @@ def upcoming(car):
     """Every active schedule for a car with its due point and state, most urgent first."""
     out = []
     today_d = dt.date.today()
+    rate = miles_per_day(car["id"])
     for s in db.rows("""SELECT s.*, d.title AS doc_title FROM schedules s LEFT JOIN documents d ON d.id=s.doc_id
                         WHERE s.car_id=? AND s.active=1""", (car["id"],)):
         due_m = (s["last_mileage"] + s["interval_miles"]) if (s["interval_miles"] and s["last_mileage"] is not None) else None
@@ -260,8 +388,14 @@ def upcoming(car):
             fracs.append(miles_left / s["interval_miles"])
         if days_left is not None and s["interval_months"]:
             fracs.append(days_left / (s["interval_months"] * 30.4))
+        # when the mileage limit comes first (or is the only one), estimate when from average driving
+        est = None
+        if rate and miles_left is not None and miles_left > 0:
+            est_d = today_d + dt.timedelta(days=round(miles_left / rate))
+            if not due_d or est_d.isoformat() < due_d:
+                est = est_d.isoformat()
         out.append({**s, "due_mileage": due_m, "due_date": due_d, "miles_left": miles_left,
-                    "days_left": days_left, "state": state, "rank": min(fracs) if fracs else 9e9})
+                    "days_left": days_left, "est_date": est, "state": state, "rank": min(fracs) if fracs else 9e9})
     order = {"overdue": 0, "soon": 1, "ok": 2, "unknown": 3}
     out.sort(key=lambda u: (order[u["state"]], u["rank"], u["title"]))
     return out
@@ -531,9 +665,9 @@ def api_documents():
             ids.append(store_document(f, request.form.get("car_id"), request.form.get("kind") or "Manual",
                                       title, request.form.get("notes") or ""))
         return jsonify(ids=ids)
-    where, args = "", []
+    where, args = "WHERE d.kind<>'Photo'", []
     if request.args.get("car_id"):
-        where, args = "WHERE d.car_id=?", [int(request.args["car_id"])]
+        where, args = "WHERE d.kind<>'Photo' AND d.car_id=?", [int(request.args["car_id"])]
     return jsonify(db.rows(f"""SELECT d.*, c.name AS car,
                                (SELECT COUNT(*) FROM parts p WHERE p.document_id=d.id) AS parts
                                FROM documents d LEFT JOIN cars c ON c.id=d.car_id {where}
@@ -575,7 +709,7 @@ def file_view(did, name):
 def ha_summary():
     """Compact per-car summary for Home Assistant (REST sensors, and the add-on's own sensors)."""
     out = []
-    for c in db.rows("SELECT * FROM cars ORDER BY id"):
+    for c in db.rows("SELECT * FROM cars c WHERE IFNULL(c.archived, 0)=0 ORDER BY " + CAR_ORDER):
         up = upcoming(c)
         nxt = next((u for u in up if u["state"] != "unknown"), None)
         out.append({

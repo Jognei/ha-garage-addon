@@ -112,6 +112,7 @@ function dueText(u) {
   const bits = [];
   if (u.miles_left != null) bits.push(u.miles_left < 0 ? `${num(-u.miles_left)} mi over` : `${num(u.miles_left)} mi left`);
   if (u.days_left != null) bits.push(u.days_left < 0 ? `${-u.days_left} days over` : `${u.days_left} days left`);
+  if (u.est_date) bits.push('≈ ' + new Date(u.est_date + 'T12:00').toLocaleDateString(undefined, { month: 'short', year: 'numeric' }));
   return bits.join(' · ');
 }
 
@@ -131,20 +132,28 @@ async function updateMileage(car, value) {
 // ---------- home ----------
 
 async function home() {
-  const cars = await api('/cars');
+  const all = await api('/cars');
+  const cars = all.filter((c) => !c.archived);
+  const hidden = all.filter((c) => c.archived);
   view.innerHTML = `
     <div class="spread"><h1>Garage</h1><a class="btn" href="#/add-car">＋ Add a vehicle</a></div>
-    <div class="grid" style="margin-top:12px">
-      ${cars.map((c) => `
+    ${cars.length > 1 ? '<p class="muted small" style="margin:4px 0 0">Drag a card by its ⠿ handle (or use ↑ ↓) to change the order.</p>' : ''}
+    <div class="grid" id="carGrid" style="margin-top:12px">
+      ${cars.map((c, n) => `
         <div class="panel car-card" data-car="${c.id}">
-          <div class="spread"><div><h3><a href="#/car/${c.id}">${esc(c.name)}</a></h3>
-            <div class="muted small">${esc([c.year, c.make, c.model, c.kind !== 'Car' ? c.kind : ''].filter(Boolean).join(' · '))}</div></div>
-            <div>${c.overdue ? `<span class="chip overdue">${c.overdue} overdue</span> ` : ''}${c.due_soon ? `<span class="chip soon">${c.due_soon} due soon</span>` : ''}</div></div>
+          ${c.photo_id ? `<a href="#/car/${c.id}"><img class="car-photo" src="${fileUrl({ id: c.photo_id, original_name: c.photo_name })}" alt="" loading="lazy"></a>` : ''}
+          <div class="spread"><div class="row" style="gap:8px;align-items:flex-start">
+              ${cars.length > 1 ? `<span class="drag-handle" draggable="true" title="Drag to reorder">⠿</span>` : ''}
+              <div><h3><a href="#/car/${c.id}">${esc(c.name)}</a></h3>
+              <div class="muted small">${esc([c.year, c.make, c.model, c.kind !== 'Car' ? c.kind : ''].filter(Boolean).join(' · '))}</div></div></div>
+            <div class="row" style="gap:6px">${c.overdue ? `<span class="chip overdue">${c.overdue} overdue</span>` : ''}${c.due_soon ? `<span class="chip soon">${c.due_soon} due soon</span>` : ''}
+              ${cars.length > 1 ? `<span class="order-btns"><button class="link up" title="Move up" ${n === 0 ? 'disabled' : ''}>↑</button><button class="link down" title="Move down" ${n === cars.length - 1 ? 'disabled' : ''}>↓</button></span>` : ''}</div></div>
           <div class="row" style="margin:12px 0">
             <div><div class="mileage-big">${c.mileage != null ? num(c.mileage) : '—'}</div><div class="muted small">miles${c.mileage_date ? ' · ' + esc(c.mileage_date) : ''}</div></div>
             <form class="row mileage-form" style="margin-left:auto"><input name="m" inputmode="numeric" placeholder="New reading" style="width:120px"><button>Update</button></form>
           </div>
-          ${c.upcoming.length ? `<table class="small"><tbody>${c.upcoming.map((u) => `<tr><td>${esc(u.title)}</td><td class="num">${stateChip(u)}</td><td class="num muted">${esc(dueText(u))}</td></tr>`).join('')}</tbody></table>`
+          ${c.upcoming.length ? `<table class="small"><tbody>${c.upcoming.map((u) => `<tr data-sid="${u.id}"><td>${esc(u.title)}</td><td class="num">${stateChip(u)}</td><td class="num muted">${esc(dueText(u))}</td>
+            <td class="num"><button class="link log" title="Log this service as done">✓</button></td></tr>`).join('')}</tbody></table>`
             : `<p class="muted small">No service schedule yet. <a href="#/car/${c.id}">Set one up</a>.</p>`}
           <div class="row" style="margin-top:12px">
             <a class="btn" href="#/car/${c.id}">Services</a>
@@ -152,11 +161,47 @@ async function home() {
             ${c.documents ? `<a class="btn" href="#/car/${c.id}/documents">Manuals (${c.documents})</a>` : ''}
           </div>
         </div>`).join('')}
-    </div>`;
+    </div>
+    ${hidden.length ? `<details class="hidden-cars"><summary>Hidden vehicles (${hidden.length})</summary>
+      <div class="panel" style="margin-top:8px">${hidden.map((c) => `<div class="spread" style="padding:4px 0"><a href="#/car/${c.id}">${esc(c.name)}</a>
+        <button class="link unhide" data-id="${c.id}">Show in garage</button></div>`).join('')}</div></details>` : ''}`;
+
+  const saveOrder = async () => {
+    const ids = $$('#carGrid [data-car]').map((el) => +el.dataset.car);
+    await api('/cars/order', { json: { ids } });
+    home();
+  };
   $$('[data-car]').forEach((card) => {
     const car = cars.find((c) => c.id === +card.dataset.car);
     $('.mileage-form', card).onsubmit = (e) => { e.preventDefault(); updateMileage(car, e.target.m.value); };
+    $$('button.log', card).forEach((b) => (b.onclick = async () => {
+      const full = await api('/cars/' + car.id);
+      serviceDialog(full, full.upcoming, null, [+b.closest('tr').dataset.sid]);
+    }));
+    const up = $('.up', card), down = $('.down', card);
+    if (up) up.onclick = () => { card.previousElementSibling && card.parentNode.insertBefore(card, card.previousElementSibling); saveOrder(); };
+    if (down) down.onclick = () => { card.nextElementSibling && card.parentNode.insertBefore(card.nextElementSibling, card); saveOrder(); };
+    const handle = $('.drag-handle', card);
+    if (handle) {
+      handle.ondragstart = (e) => { e.dataTransfer.setData('text/plain', card.dataset.car); e.dataTransfer.setDragImage(card, 20, 20); card.classList.add('dragging'); };
+      handle.ondragend = () => card.classList.remove('dragging');
+    }
+    card.ondragover = (e) => { e.preventDefault(); card.classList.add('drop-target'); };
+    card.ondragleave = () => card.classList.remove('drop-target');
+    card.ondrop = (e) => {
+      e.preventDefault();
+      card.classList.remove('drop-target');
+      const moving = $(`#carGrid [data-car="${e.dataTransfer.getData('text/plain')}"]`);
+      if (!moving || moving === card) return;
+      const cards = $$('#carGrid [data-car]');
+      card.parentNode.insertBefore(moving, cards.indexOf(moving) < cards.indexOf(card) ? card.nextSibling : card);
+      saveOrder();
+    };
   });
+  $$('button.unhide').forEach((b) => (b.onclick = async () => {
+    await api('/cars/' + b.dataset.id, { method: 'PUT', json: { archived: false } });
+    toast('Back in the garage'); home();
+  }));
 }
 
 // ---------- car ----------
@@ -191,6 +236,7 @@ async function servicesTab(el, car) {
   el.innerHTML = `
     <div class="spread"><h2 style="margin-top:0">Upcoming services</h2>
       <div class="row"><button id="addPresets">＋ Common services</button><button id="addSched">＋ Custom schedule</button><button class="primary" id="logSvc">Log a service</button></div></div>
+    ${car.archived ? '<div class="callout-box" style="margin-bottom:12px">This vehicle is hidden from the garage and Home Assistant. <a href="#/car/' + car.id + '/details">Show it again</a> under Details.</div>' : ''}
     <div class="panel table-wrap" style="padding:0">${up.length ? `<table><thead><tr><th>Service</th><th>Interval</th><th>Last done</th><th>Due</th><th></th><th>Manual</th><th></th></tr></thead><tbody>
       ${up.map((u) => `<tr class="upcoming-row" data-sid="${u.id}">
         <td><b>${esc(u.title)}</b>${u.notes ? `<div class="small muted">${esc(u.notes)}</div>` : ''}</td>
@@ -202,7 +248,7 @@ async function servicesTab(el, car) {
         <td class="num" style="white-space:nowrap"><button class="done">✓ Done</button> <button class="link edit">Edit</button></td></tr>`).join('')}
     </tbody></table>` : `<div class="empty">No schedules yet. Click <b>＋ Common services</b> to pick oil changes, filters, fluids and so on.</div>`}</div>
 
-    <h2>Service history</h2>
+    <div class="spread" style="align-items:center"><h2>Service history</h2>${services.length ? `<a class="btn" href="api/cars/${car.id}/export/services.csv">⬇ Export CSV</a>` : ''}</div>
     <div class="panel table-wrap" style="padding:0">${services.length ? `<table><thead><tr><th>Date</th><th class="num">Mileage</th><th>Work</th><th>Parts used</th><th class="num">Cost</th><th>By</th><th></th></tr></thead><tbody>
       ${services.map((s) => `<tr data-svc="${s.id}"><td style="white-space:nowrap">${esc(s.date)}</td><td class="num">${num(s.mileage)}</td>
         <td><b>${esc(s.title)}</b>${s.notes ? `<div class="small muted" style="white-space:pre-wrap">${esc(s.notes)}</div>` : ''}</td>
@@ -329,7 +375,7 @@ async function partsSection(el, { car = null, params = new URLSearchParams() } =
         ${!car ? `<select id="carF">${options([['', 'All vehicles'], ['none', 'Not assigned'], ...cars.map((c) => [c.id, c.name])], carFilter)}</select>` : ''}
         ${q ? `<span class="muted">matching “${esc(q)}” <a href="#/parts">clear</a></span>` : ''}
       </div>
-      <div class="row"><button id="addPart">＋ Add part</button><button class="primary" id="addPurchase">＋ Add purchase / receipt</button></div>
+      <div class="row"><a class="btn" href="api/export/parts.csv${carFilter && carFilter !== 'none' ? '?car_id=' + carFilter : ''}" title="Download as a spreadsheet">⬇ CSV</a><button id="addPart">＋ Add part</button><button class="primary" id="addPurchase">＋ Add purchase / receipt</button></div>
     </div>
     ${total ? `<p class="muted small">To get: <b>${money(total)}</b> at listed prices.</p>` : ''}
     <div class="panel table-wrap" style="padding:0">${parts.length ? `<table id="partsTable"><thead><tr>
@@ -514,13 +560,36 @@ function carFormHtml(c) {
 
 function carDetails(el, car) {
   el.innerHTML = `<form class="panel form" id="carForm">${carFormHtml(car)}
-      <div class="row wide"><button class="primary">Save changes</button><span style="flex:1"></span><button type="button" class="danger" id="delCar">Delete vehicle</button></div></form>
+      <div class="row wide"><button class="primary">Save changes</button><span style="flex:1"></span>
+        <button type="button" id="hideCar">${car.archived ? 'Show in garage' : 'Hide vehicle (sold / stored)'}</button>
+        <button type="button" class="danger" id="delCar">Delete vehicle</button></div></form>
+    <h2>Photo</h2>
+    <div class="panel row" style="align-items:flex-start">
+      ${car.photo_id ? `<img class="car-photo-preview" src="${fileUrl({ id: car.photo_id, original_name: 'photo.jpg' })}" alt="">` : '<p class="muted" style="margin:0">No photo yet. It shows on the vehicle\'s card in the garage.</p>'}
+      <form id="photoForm" class="row"><input type="file" name="photo" accept="image/*" required><button>${car.photo_id ? 'Replace' : 'Add photo'}</button>
+        ${car.photo_id ? '<button type="button" class="link danger" id="delPhoto">Remove</button>' : ''}</form>
+    </div>
     <h2>Mileage history</h2>
     <div class="panel">${car.mileage_log.length ? `<table class="small"><tbody>${car.mileage_log.map((m) => `<tr><td>${esc(m.date)}</td><td class="num">${num(m.mileage)}</td><td class="muted">${esc(m.source)}</td></tr>`).join('')}</tbody></table>` : '<p class="muted">No readings yet.</p>'}</div>`;
   $('#carForm').onsubmit = async (e) => {
     e.preventDefault();
     await api('/cars/' + car.id, { method: 'PUT', json: Object.fromEntries(new FormData(e.target)) });
     toast('Saved'); rerender();
+  };
+  $('#hideCar').onclick = async () => {
+    await api('/cars/' + car.id, { method: 'PUT', json: { archived: !car.archived } });
+    toast(car.archived ? 'Back in the garage' : 'Hidden. Find it under "Hidden vehicles" on the garage page.');
+    location.hash = '#/';
+  };
+  $('#photoForm').onsubmit = async (e) => {
+    e.preventDefault();
+    const btn = $('button', e.target); btn.disabled = true; btn.textContent = 'Uploading…';
+    const r = await fetch(`api/cars/${car.id}/photo`, { method: 'POST', body: new FormData(e.target) });
+    if (!r.ok) { toast((await r.json().catch(() => ({}))).error || 'Upload failed', true); btn.disabled = false; return; }
+    toast('Photo saved'); rerender();
+  };
+  if ($('#delPhoto')) $('#delPhoto').onclick = async () => {
+    await api(`/cars/${car.id}/photo`, { method: 'DELETE' }); toast('Photo removed'); rerender();
   };
   $('#delCar').onclick = async () => {
     if (!confirm(`Delete ${car.name} with its services and schedules? Its parts and files are kept, unassigned.`)) return;

@@ -11,7 +11,7 @@ DOC_DIR = os.path.join(DATA_DIR, "documents")
 
 STATUSES = ["Needed", "Check", "Ordered", "On hand", "Installed"]
 KINDS = ["Car", "Truck", "Motorcycle", "Other"]
-DOC_KINDS = ["Manual", "Receipt", "Other"]
+DOC_KINDS = ["Manual", "Receipt", "Photo", "Other"]
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS cars (
@@ -21,6 +21,7 @@ CREATE TABLE IF NOT EXISTS cars (
   year INTEGER, make TEXT, model TEXT, engine TEXT, transmission TEXT,
   vin TEXT, plate TEXT,
   mileage INTEGER, mileage_date TEXT,
+  sort_order INTEGER, archived INTEGER DEFAULT 0, photo_id INTEGER,
   notes TEXT DEFAULT '',
   created_at TEXT DEFAULT CURRENT_TIMESTAMP
 );
@@ -149,6 +150,11 @@ def add_missing_columns(conn):
     have = {r[1] for r in conn.execute("PRAGMA table_info(parts)")}
     if "category" not in have:
         conn.execute("ALTER TABLE parts ADD COLUMN category TEXT DEFAULT ''")
+    have = {r[1] for r in conn.execute("PRAGMA table_info(cars)")}
+    for col, ddl in (("sort_order", "INTEGER"), ("archived", "INTEGER DEFAULT 0"),
+                     ("photo_id", "INTEGER REFERENCES documents(id) ON DELETE SET NULL")):
+        if col not in have:
+            conn.execute(f"ALTER TABLE cars ADD COLUMN {col} {ddl}")
 
 
 def insert(conn, table, values):

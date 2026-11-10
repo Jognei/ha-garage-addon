@@ -5,6 +5,8 @@ A Home Assistant add-on for keeping track of your vehicles:
 - **Service tracking:** schedules by miles and/or months, what's overdue or due soon, full service history
 - **Parts:** to get / ordered / on hand / installed, with the mileage each part went in at and its receipt
 - **Manuals & receipts:** PDFs and photos per vehicle, opened right in Home Assistant
+- **Handy extras:** drag to reorder vehicles, hide sold ones, vehicle photos, estimated due dates from your
+  driving, one-tap "done" from the garage page, CSV export of service history and parts
 - **Offline parts catalog** (optional, off by default): main groups, diagrams with clickable callouts, OEM part numbers, quantities,
   fitment and supersessions, imported from your own files (JSON, CSV, saved HTML pages, images)
 - **Home Assistant sensors** for odometer, next service and overdue counts, plus a ready-made dashboard tab

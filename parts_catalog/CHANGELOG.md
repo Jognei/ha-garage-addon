@@ -1,5 +1,5 @@
 # Changelog
 
-## 1.0.19
+## 1.0.22
 
 First release.
