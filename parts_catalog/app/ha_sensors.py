@@ -16,6 +16,7 @@ import os
 import re
 import threading
 import time
+import urllib.error
 import urllib.request
 
 log = logging.getLogger("ha_sensors")
@@ -146,9 +147,22 @@ class Publisher:
         with urllib.request.urlopen(req, timeout=10) as r:
             r.read()
 
+    def ha_lost_states(self):
+        """True when HA no longer has our states (it restarted), so everything must be re-sent now."""
+        if not self.sent:
+            return False
+        req = urllib.request.Request(f"{self.api}/states/sensor.garage_overdue",
+                                     headers={"Authorization": f"Bearer {self.token}"})
+        try:
+            with urllib.request.urlopen(req, timeout=10) as r:
+                r.read()
+            return False
+        except urllib.error.HTTPError as e:
+            return e.code == 404
+
     def push(self, force=False):
         states = build_states(self.get_summary())
-        full = force or time.time() - self.last_full > REFRESH_EVERY
+        full = force or time.time() - self.last_full > REFRESH_EVERY or self.ha_lost_states()
         for eid, st in states.items():
             if full or self.sent.get(eid) != st:
                 self._req("POST", eid, st)

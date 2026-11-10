@@ -30,6 +30,13 @@ class FakeHA(BaseHTTPRequestHandler):
         self.wfile.write(b"{}")
 
     do_POST = do_DELETE = _handle
+    known = True  # whether HA "has" our states (False = it restarted)
+
+    def do_GET(self):
+        FakeHA.calls.append(("GET", self.path, self.headers.get("Authorization"), None))
+        self.send_response(200 if FakeHA.known else 404)
+        self.end_headers()
+        self.wfile.write(b"{}")
 
     def log_message(self, *a):
         pass
@@ -66,7 +73,12 @@ class SensorTest(unittest.TestCase):
             self.assertIn("/core/api/states/sensor.garage_blue_wagon_odometer", [c[1] for c in FakeHA.calls])
             FakeHA.calls.clear()
             p.push()
-            self.assertEqual(FakeHA.calls, [])  # nothing changed
+            self.assertEqual([c[0] for c in FakeHA.calls], ["GET"])  # nothing changed: only the restart check
+            FakeHA.known = False  # HA restarted and forgot our states
+            FakeHA.calls.clear()
+            p.push()
+            self.assertEqual(len([c for c in FakeHA.calls if c[0] == "POST"]), n)
+            FakeHA.known = True
             data["cars"] = [dict(CAR, mileage=120000)]
             p.push()
             posted = [c[1] for c in FakeHA.calls if c[0] == "POST"]
@@ -75,7 +87,7 @@ class SensorTest(unittest.TestCase):
             self.assertEqual(len(deleted), 5)  # the truck's sensors
             FakeHA.calls.clear()
             p.push(force=True)
-            self.assertEqual(len(FakeHA.calls), 3 + 5)
+            self.assertEqual(len([c for c in FakeHA.calls if c[0] == "POST"]), 3 + 5)
         finally:
             srv.shutdown()
 
