@@ -1,0 +1,63 @@
+{
+  "format": "garage-epc",
+  "version": 1,
+  "source": {
+    "name": "SAMPLE DATA (not real)",
+    "kind": "sample",
+    "is_sample": true,
+    "note": "Made-up records for testing the catalog. Part numbers start with 99 99 and do not exist. Remove this source once real data is imported."
+  },
+  "vehicles": [
+    {"code": "SAMPLE-E34", "make": "BMW", "series": "E34", "model": "SAMPLE 535i", "market": "SAMPLE",
+     "engine": "SAMPLE", "prod_from": "1988-01", "prod_to": "1993-12", "notes": "SAMPLE vehicle for testing. Not a real catalog variant."}
+  ],
+  "parts": [
+    {"part_number": "99 99 9 999 001", "description": "SAMPLE cover", "notes": "SAMPLE"},
+    {"part_number": "99 99 9 999 002", "description": "SAMPLE gasket", "notes": "SAMPLE"},
+    {"part_number": "99 99 9 999 012", "description": "SAMPLE gasket (revised)", "notes": "SAMPLE: replaces 99 99 9 999 002"},
+    {"part_number": "99 99 9 999 003", "description": "SAMPLE bolt", "notes": "SAMPLE"},
+    {"part_number": "99 99 9 999 004", "description": "SAMPLE hose", "notes": "SAMPLE"}
+  ],
+  "diagrams": [
+    {
+      "code": "SAMPLE-11-01",
+      "category": "11",
+      "title": "SAMPLE: illustrative cover assembly",
+      "image": "sample-diagram.svg",
+      "vehicles": ["SAMPLE-E34"],
+      "notes": "SAMPLE diagram with clickable callouts.",
+      "items": [
+        {"callout": "1", "part_number": "99 99 9 999 001", "description": "SAMPLE cover", "qty": "1"},
+        {"callout": "2", "part_number": "99 99 9 999 002", "description": "SAMPLE gasket", "qty": "1", "to": "1990-08", "fitment_note": "SAMPLE: up to 08/1990"},
+        {"callout": "2", "part_number": "99 99 9 999 012", "description": "SAMPLE gasket", "qty": "1", "from": "1990-09", "fitment_note": "SAMPLE: from 09/1990"},
+        {"callout": "3", "part_number": "99 99 9 999 003", "description": "SAMPLE bolt", "supplement": "M6x20", "qty": "6"},
+        {"callout": "4", "part_number": "99 99 9 999 004", "description": "SAMPLE hose", "qty": null}
+      ],
+      "hotspot_units": "px",
+      "hotspots": [
+        {"callout": "1", "x": 382, "y": 82, "w": 36, "h": 36},
+        {"callout": "2", "x": 700, "y": 172, "w": 36, "h": 36},
+        {"callout": "3", "x": 204, "y": 512, "w": 36, "h": 36},
+        {"callout": "4", "x": 66, "y": 322, "w": 36, "h": 36}
+      ]
+    },
+    {
+      "code": "SAMPLE-17-01",
+      "category": "17",
+      "title": "SAMPLE: diagram with no image yet",
+      "vehicles": ["SAMPLE-E34"],
+      "notes": "SAMPLE: shows how a missing image and a missing part record are reported.",
+      "items": [
+        {"callout": "1", "part_number": "99 99 9 999 004", "description": "SAMPLE hose", "qty": "1"},
+        {"callout": "2", "part_number": "99 99 9 999 099", "description": "SAMPLE clamp", "qty": "2", "create_part": false}
+      ]
+    }
+  ],
+  "supersessions": [
+    {"old": "99 99 9 999 002", "new": "99 99 9 999 012", "date": "1990-09", "note": "SAMPLE"}
+  ],
+  "expected_diagrams": [
+    {"vehicle": "SAMPLE-E34", "code": "SAMPLE-11-01", "title": "SAMPLE: illustrative cover assembly"},
+    {"vehicle": "SAMPLE-E34", "code": "SAMPLE-11-02", "title": "SAMPLE: a diagram that was never imported"}
+  ]
+}

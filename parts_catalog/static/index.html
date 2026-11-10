@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Parts Catalog</title>
+<link rel="icon" href="static/icon.png">
+<link rel="stylesheet" href="static/style.css">
+</head>
+<body>
+<header class="top">
+  <a class="brand" href="#/"><img src="static/icon.png" alt=""> Parts Catalog</a>
+  <form class="search" id="searchForm" role="search">
+    <input id="searchBox" type="search" placeholder="Search parts by name, number, brand…" autocomplete="off">
+  </form>
+  <nav class="nav">
+    <a href="#/" data-nav="home">Garage</a>
+    <a href="#/parts" data-nav="parts">All parts</a>
+    <a href="#/catalog" data-nav="catalog">Catalog</a>
+    <a href="#/settings" data-nav="settings">Settings</a>
+  </nav>
+</header>
+<main id="view"></main>
+<dialog id="dlg"><form method="dialog" id="dlgForm"><div class="dlg-head"><h2 id="dlgTitle"></h2><button type="button" class="link" id="dlgX" aria-label="Close">✕</button></div><div id="dlgBody"></div>
+  <div class="row dlg-foot"><button class="primary" id="dlgOk" value="ok">Save</button><button type="button" id="dlgCancel">Cancel</button></div></form></dialog>
+<div id="toast" class="toast" hidden></div>
+<script src="static/app.js"></script>
+<script src="static/catalog.js"></script>
+</body>
+</html>

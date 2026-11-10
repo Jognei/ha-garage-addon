@@ -1,0 +1,26 @@
+name: Parts Catalog
+version: "1.0.14"
+slug: parts_catalog
+url: https://github.com/Jognei/ha-garage-addon
+description: Garage service tracker, parts list, manuals and offline parts catalog
+arch:
+  - aarch64
+  - amd64
+init: false
+startup: application
+boot: auto
+ingress: true
+homeassistant_api: true
+ingress_port: 8765
+panel_icon: mdi:car-wrench
+panel_title: Garage
+ports:
+  8765/tcp: null
+ports_description:
+  8765/tcp: Direct access from other devices (only used when "Direct network access" is on)
+options:
+  direct_access: false
+  publish_sensors: true
+schema:
+  direct_access: bool
+  publish_sensors: bool

@@ -1,0 +1,227 @@
+"""Offline catalog: importers, queries, validation, API. Run with the other tests:
+.venv\\Scripts\\python -m unittest discover tests"""
+import io
+import json
+import os
+import shutil
+import tempfile
+import unittest
+
+os.environ.setdefault("PARTS_CATALOG_DATA", tempfile.mkdtemp())
+
+from app import db, epc, epc_api, epc_import  # noqa: E402
+from app.server import app  # noqa: E402
+
+PAGE = """<html><head><title>Test page: water pump</title></head><body>
+<img src="page_files/logo.png"><img src="page_files/diagram.png" usemap="#m">
+<map name="m"><area shape="rect" coords="10,20,50,60" alt="1"><area shape="circle" coords="200,150,20" alt="2">
+<area shape="rect" coords="300,10,340,40" alt="9"></map>
+<table><tr><td>nav</td></tr></table>
+<table>
+<tr><th>No.</th><th>Description</th><th>Supplement</th><th>Qty</th><th>From</th><th>Up to</th><th>Part Number</th></tr>
+<tr><td>1</td><td>Water pump</td><td></td><td>1</td><td></td><td>08/1990</td><td>11 51 1 234 567</td></tr>
+<tr><td>2</td><td>Gasket &amp; seal</td><td>M30B35</td><td>1</td><td>09/1990</td><td></td><td>11-51-1-234-568</td></tr>
+<tr><td>3</td><td>Bolt</td><td>M8x25</td><td></td><td></td><td></td><td>07 11 9 900 001</td></tr>
+<tr><td>4</td><td>Not available</td><td></td><td></td><td></td><td></td><td>--</td></tr>
+</table></body></html>"""
+
+
+def make_png(path, size=(400, 300)):
+    from PIL import Image
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    Image.new("RGB", size, "white").save(path)
+
+
+class CatalogTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.mkdtemp()
+        # test_app may have run first and removed its data dir: use our own for both databases
+        db._local.conn = None
+        db.DB_PATH = os.path.join(cls.tmp, "garage.db")
+        db.DOC_DIR = os.path.join(cls.tmp, "documents")
+        epc.close()
+        epc.EPC_DIR = os.path.join(cls.tmp, "epc")
+        epc.EPC_DB = os.path.join(epc.EPC_DIR, "epc.db")
+        epc.FILES_DIR = os.path.join(epc.EPC_DIR, "files")
+        db.init()
+        epc_api.init()
+        epc_import.load_sample()
+        epc_import.import_bundle({"source": {"name": "Test vehicles"}, "vehicles": [
+            {"code": "E34-535i-USA", "series": "E34", "model": "535i", "engine": "M30B35"}]})
+        cls.c = app.test_client()
+
+    @classmethod
+    def tearDownClass(cls):
+        epc.close()
+        shutil.rmtree(cls.tmp, ignore_errors=True)
+
+    def diag(self, code):
+        return epc.row("SELECT * FROM diagrams WHERE code=?", (code,))
+
+    def checks(self):
+        return {r["check"] for r in epc.validate()}
+
+    def test_reference_data(self):
+        self.assertEqual(epc.row("SELECT name FROM categories WHERE code='11'")["name"], "Engine")
+        self.assertIsNone(epc.row("SELECT 1 FROM vehicles v JOIN sources s ON s.id=v.source_id WHERE s.kind='reference'"))
+
+    def test_part_numbers(self):
+        self.assertEqual(epc.norm_pn("11 53 1-740.996"), "11531740996")
+        self.assertEqual(epc.fmt_pn("11531740996"), "11 53 1 740 996")
+        self.assertEqual(epc_import.yyyymm("08/1990"), "199008")
+        self.assertEqual(epc_import.yyyymm("1990-09"), "199009")
+        self.assertIsNone(epc_import.yyyymm("soon"))
+
+    def test_sample_diagram_detail(self):
+        d = epc.diagram_detail(self.diag("SAMPLE-11-01")["id"])
+        self.assertTrue(d["is_sample"])
+        self.assertTrue(d["image_exists"])
+        self.assertEqual((d["image_w"], d["image_h"]), (800, 600))
+        h1 = next(h for h in d["hotspots"] if h["callout"] == "1")
+        self.assertAlmostEqual(h1["x"], 382 / 800)
+        old = next(i for i in d["items"] if i["part_number"] == "99999999002")
+        self.assertEqual(old["superseded_by"], "99999999012")
+        hose = next(i for i in d["items"] if i["callout"] == "4")
+        self.assertIsNone(hose["qty"])  # missing stays missing
+
+    def test_fitment_by_production_date(self):
+        old = {"from_date": None, "to_date": "199008", "_vehicles": None}
+        new = {"from_date": "199009", "to_date": None, "_vehicles": None}
+        car = {"id": 1, "prod_from": "199101", "prod_to": "199312"}
+        self.assertFalse(epc.item_fits(old, car))
+        self.assertTrue(epc.item_fits(new, car))
+        self.assertTrue(epc.item_fits(old, {"id": 1, "prod_from": None, "prod_to": None}))  # unknown dates never exclude
+        self.assertFalse(epc.item_fits({**new, "_vehicles": {2}}, car))
+
+    def test_search(self):
+        self.assertTrue(any(r["part_number"] == "99999999003" for r in epc.search("99 99 9 999 003")))
+        self.assertTrue(any(r["part_number"] == "99999999003" for r in epc.search("9999999")))
+        self.assertTrue(any(r["part_number"] == "99999999002" for r in epc.search("99999999012")))  # superseded
+        self.assertTrue(any(r["description"] == "SAMPLE bolt" for r in epc.search("sample BOLT")))
+        self.assertEqual(epc.search(""), [])
+
+    def test_validation_sample(self):
+        c = self.checks()
+        for k in ("missing_diagram", "missing_image", "missing_part_record", "missing_quantity"):
+            self.assertIn(k, c)
+
+    def test_html_import(self):
+        d = tempfile.mkdtemp(dir=self.tmp)
+        make_png(os.path.join(d, "page_files", "diagram.png"))
+        make_png(os.path.join(d, "page_files", "logo.png"), (20, 20))
+        with open(os.path.join(d, "page.html"), "w", encoding="utf-8") as f:
+            f.write(PAGE)
+        rep = epc_import.import_html(os.path.join(d, "page.html"), "Test HTML", "11_0099", "11", "E34-535i-USA")
+        self.assertEqual(rep.counts["items_added"], 4)
+        self.assertEqual(rep.counts["hotspots_added"], 3)
+        self.assertTrue(any("9" in p for p in rep.problems))  # hotspot label not in table
+        dg = epc.diagram_detail(self.diag("11_0099")["id"])
+        self.assertEqual(dg["title"], "Test page: water pump")
+        self.assertEqual(dg["image_name"], "diagram.png")
+        items = {i["callout"]: i for i in dg["items"]}
+        self.assertEqual(items["1"]["part_number"], "11511234567")
+        self.assertEqual(items["1"]["to_date"], "199008")
+        self.assertEqual(items["2"]["description"], "Gasket & seal")
+        self.assertEqual(items["2"]["supplement"], "M30B35")
+        self.assertEqual(items["2"]["from_date"], "199009")
+        self.assertIsNone(items["3"]["qty"])
+        self.assertEqual((items["4"]["part_number"], items["4"]["part_number_raw"]), ("", "--"))
+        h2 = next(h for h in dg["hotspots"] if h["callout"] == "2")
+        self.assertAlmostEqual(h2["x"], 180 / 400)
+        self.assertAlmostEqual(h2["h"], 40 / 300)
+        stored = epc.rows("SELECT * FROM source_files WHERE source_id=(SELECT id FROM sources WHERE name='Test HTML')")
+        self.assertEqual(sorted(s["kind"] for s in stored), ["html", "image"])
+        for s in stored:
+            self.assertTrue(os.path.exists(epc.file_path(s["stored_path"])))
+        # re-import replaces instead of duplicating
+        epc_import.import_html(os.path.join(d, "page.html"), "Test HTML", "11_0099", "11", "E34-535i-USA")
+        self.assertEqual(len(epc.diagram_detail(dg["id"])["items"]), 4)
+        self.assertEqual(epc.row("SELECT COUNT(*) AS n FROM source_files WHERE source_id=(SELECT id FROM sources WHERE name='Test HTML')")["n"], 2)
+
+    def test_csv_import_and_duplicates(self):
+        d = tempfile.mkdtemp(dir=self.tmp)
+        p = os.path.join(d, "items.csv")
+        with open(p, "w", encoding="utf-8") as f:
+            f.write("diagram,callout,part number,description,qty,from,to\n"
+                    "17_0001,1,17111234567,Radiator,1,,\n17_0001,2,17111234568,Hose,2,1990-09,\n"
+                    "17_0001,2,17111234568,Hose,2,1990-09,\n")
+        rep = epc_import.import_csv(p, "Test CSV", vehicle="E34-535i-USA", category="17")
+        self.assertEqual((rep.counts["items_added"], rep.counts["duplicates_skipped"]), (2, 1))
+        hp = os.path.join(d, "hot.csv")
+        with open(hp, "w", encoding="utf-8") as f:
+            f.write("diagram;callout;x;y;w;h\n17_0001;1;0.1;0.1;0.05;0.05\n17_0001;7;0.5;0.5;0.05;0.05\n")
+        epc_import.import_csv(hp, "Test CSV")
+        sp = os.path.join(d, "sup.csv")
+        with open(sp, "w", encoding="utf-8") as f:
+            f.write("old,new,date\n17111234568,17111234569,1992-01\n17111234569,17111234568,\n")
+        epc_import.import_csv(sp, "Test CSV")
+        c = self.checks()
+        self.assertIn("hotspot_without_item", c)
+        self.assertIn("item_without_hotspot", c)
+        self.assertIn("supersession_cycle", c)
+        # duplicate across sources shows in validation
+        epc_import.import_csv(p, "Another CSV")
+        self.assertIn("duplicate_item", self.checks())
+        epc.delete_source(epc.row("SELECT id FROM sources WHERE name='Another CSV'")["id"])
+        self.assertNotIn("duplicate_item", self.checks())
+
+    def test_images_import(self):
+        d = tempfile.mkdtemp(dir=self.tmp)
+        make_png(os.path.join(d, "SAMPLE_17_01.png"))
+        make_png(os.path.join(d, "unknown_99.png"))
+        rep = epc_import.import_images([d], "Test images", is_sample=True)
+        self.assertEqual((rep.counts["images_attached"], rep.counts["images_unmatched"]), (1, 1))
+        self.assertIsNotNone(self.diag("SAMPLE-17-01")["image_file_id"])
+        rep = epc_import.import_images([os.path.join(d, "unknown_99.png")], "Test images", create=True, category="99")
+        self.assertIsNotNone(self.diag("unknown_99"))
+
+    def test_export_roundtrip(self):
+        out = tempfile.mkdtemp(dir=self.tmp)
+        path = epc_import.export_bundle(out, include_samples=True)
+        with open(path, encoding="utf-8") as f:
+            b = json.load(f)
+        s = next(x for x in b["diagrams"] if x["code"] == "SAMPLE-11-01")
+        self.assertTrue(os.path.exists(os.path.join(out, s["image"])))
+        self.assertEqual(len(s["hotspots"]), 4)
+        with open(epc_import.export_bundle(tempfile.mkdtemp(dir=self.tmp)), encoding="utf-8") as f:
+            real_only = json.load(f)
+        self.assertNotIn("SAMPLE-11-01", [x["code"] for x in real_only["diagrams"]])
+
+    def test_api(self):
+        ov = self.c.get("/api/epc/overview").get_json()
+        self.assertGreaterEqual(ov["stats"]["diagrams"], 2)
+        did = self.diag("SAMPLE-11-01")["id"]
+        d = self.c.get(f"/api/epc/diagrams/{did}").get_json()
+        self.assertEqual(len(d["hotspots"]), 4)
+        img = self.c.get("/epc-files/" + d["image_path"])
+        self.assertEqual(img.status_code, 200)
+        img.close()
+        self.assertEqual(self.c.get("/epc-files/../epc.db").status_code, 404)
+        self.assertEqual(self.c.get("/epc-files/files/../epc.db").status_code, 404)
+        self.assertTrue(self.c.get("/api/epc/search?q=999999990").get_json())
+        self.assertIn("issues", self.c.get("/api/epc/validation").get_json())
+        tree = self.c.get("/api/epc/categories").get_json()
+        self.assertTrue(any(c["code"] == "11" and c["total"] >= 1 for c in tree))
+        # garage link: a part in the list shows up on the diagram
+        self.c.post("/api/parts", json={"name": "Sample cover", "part_number": "99 99 9 999 001", "status": "On hand"})
+        d = self.c.get(f"/api/epc/diagrams/{did}").get_json()
+        self.assertEqual(next(i for i in d["items"] if i["callout"] == "1")["garage"][0]["status"], "On hand")
+        # upload
+        csv_bytes = b"diagram,callout,part number,description,qty\n12_0001,1,12311234567,Alternator,1\n"
+        r = self.c.post("/api/epc/import", data={"file": (io.BytesIO(csv_bytes), "alt.csv"), "vehicle": "E34-535i-USA", "category": "12"},
+                        content_type="multipart/form-data")
+        self.assertEqual(r.get_json()["reports"][0]["counts"]["items_added"], 1)
+        self.assertEqual(self.c.get(f"/api/epc/diagrams?vehicle={epc.row('SELECT id FROM vehicles WHERE code=?', ('E34-535i-USA',))['id']}&category={epc.row('SELECT id FROM categories WHERE code=?', ('12',))['id']}").get_json()[0]["code"], "12_0001")
+
+    def test_zz_remove_sample(self):
+        sid = epc.row("SELECT id FROM sources WHERE is_sample=1 AND name='SAMPLE DATA (not real)'")["id"]
+        epc.delete_source(sid)
+        self.assertIsNone(self.diag("SAMPLE-11-01"))
+        self.assertIsNone(epc.row("SELECT 1 FROM vehicles WHERE code='SAMPLE-E34'"))
+        self.assertIsNone(epc.row("SELECT 1 FROM parts WHERE part_number='99999999001'"))
+        self.assertIsNotNone(epc.row("SELECT 1 FROM vehicles WHERE code='E34-535i-USA'"))
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -1,0 +1,4 @@
+__pycache__/
+*.pyc
+parts_catalog/data/
+.venv/

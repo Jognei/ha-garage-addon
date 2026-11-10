@@ -1,0 +1,42 @@
+{
+  "format": "garage-epc",
+  "version": 1,
+  "source": {
+    "name": "Reference: BMW main group numbering",
+    "kind": "reference",
+    "note": "BMW's standard two-digit main group numbers and their usual English names, the way BMW parts catalogs are organized. Shared by all BMW models. Names may differ slightly from a given catalog; an import with the same code updates the name."
+  },
+  "categories": [
+    {"code": "11", "name": "Engine"},
+    {"code": "12", "name": "Engine electrical system"},
+    {"code": "13", "name": "Fuel preparation system"},
+    {"code": "16", "name": "Fuel supply"},
+    {"code": "17", "name": "Radiator"},
+    {"code": "18", "name": "Exhaust system"},
+    {"code": "21", "name": "Clutch"},
+    {"code": "22", "name": "Engine and transmission suspension"},
+    {"code": "23", "name": "Manual transmission"},
+    {"code": "24", "name": "Automatic transmission"},
+    {"code": "25", "name": "Gearshift"},
+    {"code": "26", "name": "Drive shaft"},
+    {"code": "31", "name": "Front axle"},
+    {"code": "32", "name": "Steering"},
+    {"code": "33", "name": "Rear axle"},
+    {"code": "34", "name": "Brakes"},
+    {"code": "35", "name": "Pedals"},
+    {"code": "36", "name": "Wheels"},
+    {"code": "41", "name": "Bodywork"},
+    {"code": "51", "name": "Vehicle trim"},
+    {"code": "52", "name": "Seats"},
+    {"code": "54", "name": "Sliding roof / folding top"},
+    {"code": "61", "name": "General vehicle electrical system"},
+    {"code": "62", "name": "Instruments, measuring devices"},
+    {"code": "63", "name": "Lighting"},
+    {"code": "64", "name": "Heater and air conditioning"},
+    {"code": "65", "name": "Audio, navigation, electronic systems"},
+    {"code": "66", "name": "Distance systems, cruise control"},
+    {"code": "72", "name": "Restraint system and accessories"},
+    {"code": "82", "name": "Universal accessories"},
+    {"code": "83", "name": "Auxiliary materials, fluids"}
+  ]
+}
