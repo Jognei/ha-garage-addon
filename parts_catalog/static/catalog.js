@@ -67,65 +67,113 @@ async function catalogHome() {
   if (ls) ls.onclick = async () => { await api('/epc/sample', { method: 'POST' }); toast('Sample data loaded'); rerender(); };
 }
 
+// Group selector shown on group and diagram pages (main groups that have diagrams for the chosen vehicle).
+async function groupSelect(currentId) {
+  const tree = await api('/epc/categories?' + vq());
+  const opts = tree.filter((c) => c.total).map((c) => [c.id, `${c.code} - ${c.name}`]);
+  return { tree, html: `<select id="groupSel" aria-label="Main group">${options(opts, currentId, 'Main groups…')}</select>` };
+}
+
+function wireGroupSelect() {
+  const g = $('#groupSel');
+  if (g) g.onchange = () => { location.hash = g.value ? '#/catalog/group/' + g.value : '#/catalog'; };
+}
+
+const thumbUrl = (d) => (d.image_path ? 'epc-files/' + d.image_path : '');
+
 async function catalogGroup(id) {
-  const [tree, list] = await Promise.all([api('/epc/categories'), api(`/epc/diagrams?category=${id}&${vq()}`)]);
+  const [{ tree, html: sel }, list] = await Promise.all([groupSelect(id), api(`/epc/diagrams?category=${id}&${vq()}`)]);
   const flat = tree.flatMap((c) => [c, ...c.children]);
   const cat = flat.find((c) => String(c.id) === id) || { code: '?', name: 'Unknown group' };
-  view.innerHTML = `${await catalogHeader(null, `${esc(cat.code)} ${esc(cat.name)}`, '<a href="#/catalog">Catalog</a>')}
-    <div class="panel table-wrap" style="padding:0;margin-top:12px">${list.length ? `<table><thead><tr><th>Diagram</th><th>Title</th><th class="num">Parts</th><th>Image</th><th>Callouts</th></tr></thead><tbody>
-      ${list.map((d) => `<tr class="click" data-href="#/catalog/diagram/${d.id}"><td class="mono">${esc(d.code)}</td><td><a href="#/catalog/diagram/${d.id}">${esc(d.title) || missing('no title')}</a>${sampleTag(d.is_sample)}</td>
-        <td class="num">${d.items || missing('none')}</td><td>${d.has_image ? '✓' : missing('no image')}</td><td>${d.hotspots ? '✓ clickable' : '<span class="muted small">list only</span>'}</td></tr>`).join('')}
-    </tbody></table>` : '<div class="empty">No diagrams in this group' + (EPC.vehicle ? ' for this vehicle' : '') + ' yet.</div>'}</div>`;
+  view.innerHTML = `${await catalogHeader(null, `${esc(cat.code)} - ${esc(cat.name)}`, '<a href="#/catalog">Main groups</a>')}
+    <div class="spread epc-bar"><span class="muted small">${list.length} diagram${list.length === 1 ? '' : 's'}</span>${sel}</div>
+    ${list.length ? `<div class="thumbs">${list.map((d) => `<a class="thumb" href="#/catalog/diagram/${d.id}">
+        <div class="thumb-img">${thumbUrl(d) ? `<img src="${esc(thumbUrl(d))}" alt="" loading="lazy">` : '<span class="muted small">no image</span>'}</div>
+        <div class="thumb-title">${esc(d.title) || missing('no title')}${sampleTag(d.is_sample)}</div>
+        <div class="thumb-code mono">${esc(d.code)}${d.items ? '' : ' · ' + missing('no parts list')}</div></a>`).join('')}</div>`
+      : '<div class="panel empty">No diagrams in this group' + (EPC.vehicle ? ' for this vehicle' : '') + ' yet.</div>'}`;
   wireHeader();
-  $$('tr[data-href]').forEach((tr) => (tr.onclick = (e) => { if (!e.target.closest('a')) location.hash = tr.dataset.href; }));
+  wireGroupSelect();
 }
 
 async function catalogDiagram(id, params) {
   const d = await api(`/epc/diagrams/${id}?${vq()}`);
+  const [{ html: sel }, siblings] = await Promise.all([
+    groupSelect(d.category_id),
+    d.category_id ? api(`/epc/diagrams?category=${d.category_id}&${vq()}`) : Promise.resolve([]),
+  ]);
+  const pos = siblings.findIndex((x) => String(x.id) === String(id));
+  const prev = pos > 0 ? siblings[pos - 1] : null;
+  const next = pos >= 0 && pos < siblings.length - 1 ? siblings[pos + 1] : null;
   const imgUrl = d.image_path ? 'epc-files/' + d.image_path : '';
-  const cat = d.category_id ? `<a href="#/catalog/group/${d.category_id}">${esc(d.category_code)} ${esc(d.category_name)}</a>` : missing('no category');
+  const cat = d.category_id ? `<a href="#/catalog/group/${d.category_id}">${esc(d.category_code)} - ${esc(d.category_name)}</a>` : missing('no category');
   const hasSpots = d.hotspots.length > 0;
   const showAll = params.get('all') === '1';
   const items = d.items.filter((i) => showAll || i.fits);
   const hidden = d.items.length - items.length;
-  view.innerHTML = `${await catalogHeader(null, `${esc(d.title) || esc(d.code)}${sampleTag(d.is_sample)}`, `<a href="#/catalog">Catalog</a> › ${cat} › <span class="mono">${esc(d.code)}</span>`)}
-    <div class="diagram" style="margin-top:12px">
-      <div class="pic">
-        ${imgUrl && d.image_exists ? `<div class="pic-inner" id="pic"><img src="${esc(imgUrl)}" alt="Diagram ${esc(d.code)}">
-          ${d.hotspots.map((h, n) => `<a class="callout" data-c="${esc(h.callout)}" title="${esc(h.callout)}" style="left:${h.x * 100}%;top:${h.y * 100}%;width:${h.w * 100}%;height:${h.h * 100}%"></a>`).join('')}</div>`
-          : `<div class="pic-inner noimg">${imgUrl ? 'Image file is missing on disk' : 'No diagram image imported yet'}</div>`}
-        <div class="small muted" style="margin-top:6px">${hasSpots ? 'Click a callout number to find its parts.' : (imgUrl ? 'No callout coordinates for this diagram: the parts list isn\'t linked to the picture.' : '')}
-          Source: ${esc(d.source_name || '?')}${d.image_name ? ` · image ${esc(d.image_name)}` : ''} · vehicles: ${d.vehicles.map((v) => esc(v.code)).join(', ') || missing('none')}</div>
-        ${d.notes ? `<div class="note small">${esc(d.notes)}</div>` : ''}
-      </div>
-      <div class="panel table-wrap" style="padding:0">
-        ${hidden ? `<div class="small muted" style="padding:8px 10px">${hidden} rows don't fit the selected vehicle's production dates. <a href="#/catalog/diagram/${id}?all=1">Show all</a></div>` : ''}
-        ${showAll && d.items.some((i) => !i.fits) ? `<div class="small muted" style="padding:8px 10px">Showing all rows, including ones that don't fit. <a href="#/catalog/diagram/${id}">Hide them</a></div>` : ''}
-        ${items.length ? `<table id="items"><thead><tr><th>No.</th><th>Description</th><th>Part number</th><th class="num">Qty</th><th>Fitment</th><th>Mine</th><th></th></tr></thead><tbody>
+  view.innerHTML = `${await catalogHeader(null, `${esc(d.title) || esc(d.code)}${sampleTag(d.is_sample)}`, `<a href="#/catalog">Main groups</a> › ${cat} › <span class="mono">${esc(d.code)}</span>`)}
+    <div class="spread epc-bar">
+      <div class="row">
+        <a class="btn ${prev ? '' : 'disabled'}" ${prev ? `href="#/catalog/diagram/${prev.id}"` : ''} title="Previous diagram (←)">←</a>
+        <span class="small muted">${pos >= 0 ? `${pos + 1} / ${siblings.length}` : ''}</span>
+        <a class="btn ${next ? '' : 'disabled'}" ${next ? `href="#/catalog/diagram/${next.id}"` : ''} title="Next diagram (→)">→</a>
+        ${d.category_id ? `<a class="btn" href="#/catalog/group/${d.category_id}">All diagrams</a>` : ''}
+      </div>${sel}</div>
+    <div class="epc-viewer" id="viewer">
+      <section class="epc-pane">
+        <div class="epc-pane-head"><span><b>Diagram</b> <span class="muted small">${hasSpots ? 'Click a number to find its parts' : (imgUrl ? 'No clickable numbers on this diagram' : '')}</span></span>
+          ${imgUrl && d.image_exists ? '<button type="button" id="enlarge">Enlarge</button>' : ''}</div>
+        <div class="epc-pane-body">
+          ${imgUrl && d.image_exists ? `<div class="pic-inner" id="pic"><img src="${esc(imgUrl)}" alt="Diagram ${esc(d.code)}">
+            ${d.hotspots.map((h) => `<a class="callout" data-c="${esc(h.callout)}" title="${esc(h.callout)}" style="left:${h.x * 100}%;top:${h.y * 100}%;width:${h.w * 100}%;height:${h.h * 100}%"></a>`).join('')}</div>`
+            : `<div class="pic-inner noimg">${imgUrl ? 'Image file is missing on disk' : 'No diagram image imported yet'}</div>`}
+          ${d.notes ? `<div class="note small">${esc(d.notes)}</div>` : ''}
+        </div>
+        <div class="epc-pane-foot small" id="posStatus">${hasSpots ? 'Click a number on the diagram, or a row in the list.' : ''}</div>
+      </section>
+      <section class="epc-pane">
+        <div class="epc-pane-head"><span><b>Parts list</b> <span class="muted small">${items.length} row${items.length === 1 ? '' : 's'} · Click a row to highlight its number</span></span></div>
+        ${hidden ? `<div class="small muted epc-note">${hidden} rows don't fit the selected vehicle's production dates. <a href="#/catalog/diagram/${id}?all=1">Show all</a></div>` : ''}
+        ${showAll && d.items.some((i) => !i.fits) ? `<div class="small muted epc-note">Showing all rows, including ones that don't fit. <a href="#/catalog/diagram/${id}">Hide them</a></div>` : ''}
+        <div class="epc-pane-body epc-table">
+        ${items.length ? `<table id="items"><thead><tr><th>No.</th><th>Description</th><th>Supp.</th><th class="num">Qty</th><th>From</th><th>Up to</th><th>Part number</th><th>Notes</th><th>Mine</th><th></th></tr></thead><tbody>
         ${items.map((i) => `<tr data-c="${esc(i.callout)}" class="${i.fits ? '' : 'nofit'}">
           <td class="mono"><b>${esc(i.callout) || '–'}</b></td>
-          <td>${esc(i.description) || missing('no description')}${i.supplement ? `<div class="small muted">${esc(i.supplement)}</div>` : ''}</td>
-          <td class="mono" style="white-space:nowrap">${i.part_number ? `<a href="#/catalog/part/${esc(i.part_number)}">${esc(i.part_number_fmt)}</a>` : missing(i.part_number_raw || 'none')}
-            ${i.part_number && !i.has_part_record ? '<div class="small">' + missing('no part record') + '</div>' : ''}
-            ${i.superseded_by ? `<div class="small">→ replaced by <a href="#/catalog/part/${esc(i.superseded_by)}">${esc(i.superseded_by_fmt)}</a></div>` : ''}</td>
+          <td>${esc(i.description) || missing('no description')}</td>
+          <td class="small">${esc(i.supplement)}</td>
           <td class="num">${i.qty == null ? missing('?') : esc(i.qty)}</td>
-          <td class="small">${esc(range(i))}${i.fitment_note ? `<div class="muted">${esc(i.fitment_note)}</div>` : ''}</td>
+          <td class="small nowrap">${esc(ym(i.from_date))}</td>
+          <td class="small nowrap">${esc(ym(i.to_date))}</td>
+          <td class="mono nowrap">${i.part_number ? `<a href="#/catalog/part/${esc(i.part_number)}">${esc(i.part_number_fmt)}</a>` : missing(i.part_number_raw || 'none')}
+            ${i.superseded_by ? `<div class="small">→ <a href="#/catalog/part/${esc(i.superseded_by)}">${esc(i.superseded_by_fmt)}</a></div>` : ''}</td>
+          <td class="small">${esc(i.fitment_note)}</td>
           <td>${garageChip(i.garage)}</td>
           <td>${i.part_number ? `<button class="link add" data-id="${i.id}" title="Add to my parts list">＋</button>` : ''}</td></tr>`).join('')}
-        </tbody></table>` : '<div class="empty">No parts list imported for this diagram yet.</div>'}
-      </div>
+        </tbody></table>` : '<div class="empty">No parts list for this diagram.</div>'}
+        </div>
+      </section>
     </div>`;
   wireHeader();
-  // callout <-> row highlighting
+  wireGroupSelect();
+  const status = $('#posStatus');
   const hl = (c, scroll) => {
     $$('.callout').forEach((a) => a.classList.toggle('hl', a.dataset.c === c));
     const rowsHit = $$('#items tbody tr').filter((tr) => tr.dataset.c === c);
     $$('#items tbody tr').forEach((tr) => tr.classList.toggle('hl', tr.dataset.c === c));
-    if (scroll && rowsHit[0]) rowsHit[0].scrollIntoView({ block: 'center', behavior: 'smooth' });
+    if (status) status.textContent = `Position ${c || '–'} · ${rowsHit.length} matching row${rowsHit.length === 1 ? '' : 's'}`;
+    if (scroll && rowsHit[0]) rowsHit[0].scrollIntoView({ block: 'nearest', behavior: 'smooth' });
   };
   $$('.callout').forEach((a) => (a.onclick = (e) => { e.preventDefault(); hl(a.dataset.c, true); }));
   $$('#items tbody tr').forEach((tr) => (tr.onclick = (e) => { if (!e.target.closest('a,button')) hl(tr.dataset.c, false); }));
   $$('button.add').forEach((b) => (b.onclick = () => addToGarage(d, d.items.find((i) => String(i.id) === b.dataset.id))));
+  const enlarge = $('#enlarge');
+  if (enlarge) enlarge.onclick = () => { const v = $('#viewer'); v.classList.toggle('big'); enlarge.textContent = v.classList.contains('big') ? 'Smaller' : 'Enlarge'; };
+  // arrow keys step through the group's diagrams (not while typing)
+  document.onkeydown = (e) => {
+    if (!location.hash.startsWith('#/catalog/diagram/') || e.target.closest('input,select,textarea') || e.altKey || e.ctrlKey || e.metaKey) return;
+    if (e.key === 'ArrowLeft' && prev) location.hash = '#/catalog/diagram/' + prev.id;
+    if (e.key === 'ArrowRight' && next) location.hash = '#/catalog/diagram/' + next.id;
+  };
   if (params.get('c')) hl(params.get('c'), true);
 }
 

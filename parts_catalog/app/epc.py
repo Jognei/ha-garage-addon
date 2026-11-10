@@ -249,6 +249,7 @@ def category_tree(vehicle_id=None):
 
 def diagrams_in(category_id=None, vehicle_id=None):
     sql = """SELECT d.id, d.code, d.title, d.category_id, d.image_file_id IS NOT NULL AS has_image, s.is_sample,
+             (SELECT stored_path FROM source_files f WHERE f.id=d.image_file_id) AS image_path,
              (SELECT COUNT(*) FROM diagram_items i WHERE i.diagram_id=d.id) AS items,
              (SELECT COUNT(*) FROM hotspots h WHERE h.diagram_id=d.id) AS hotspots
              FROM diagrams d LEFT JOIN sources s ON s.id=d.source_id WHERE 1=1"""
