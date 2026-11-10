@@ -13,13 +13,21 @@ const ym = (v) => (v ? `${v.slice(4, 6)}/${v.slice(0, 4)}` : '');
 const range = (i) => (i.from_date || i.to_date ? `${i.from_date ? 'from ' + ym(i.from_date) : ''}${i.from_date && i.to_date ? ' ' : ''}${i.to_date ? 'to ' + ym(i.to_date) : ''}` : '');
 const garageChip = (g) => (g && g.length ? g.map((p) => `<span class="badge ${sCls(p.status)}" title="${esc(p.car || 'Unassigned')}: ${esc(p.name)}">${esc(p.status)}</span>`).join(' ') : '');
 
+// When the catalog is switched off (Settings > Features), its pages say so instead of showing an empty catalog.
+const catalogGuard = (fn) => async (...args) => {
+  if (!(REF && REF.features && REF.features.catalog)) {
+    view.innerHTML = '<div class="panel empty">The parts catalog is turned off. <a href="#/settings">Turn it on in Settings</a>.</div>';
+    return undefined;
+  }
+  return fn(...args);
+};
 routes.push(
-  [/^\/catalog$/, catalogHome],
-  [/^\/catalog\/group\/(\d+)$/, catalogGroup],
-  [/^\/catalog\/diagram\/(\d+)$/, catalogDiagram],
-  [/^\/catalog\/part\/([\w-]+)$/, catalogPart],
-  [/^\/catalog\/search$/, catalogSearch],
-  [/^\/catalog\/data$/, catalogData],
+  [/^\/catalog$/, catalogGuard(catalogHome)],
+  [/^\/catalog\/group\/(\d+)$/, catalogGuard(catalogGroup)],
+  [/^\/catalog\/diagram\/(\d+)$/, catalogGuard(catalogDiagram)],
+  [/^\/catalog\/part\/([\w-]+)$/, catalogGuard(catalogPart)],
+  [/^\/catalog\/search$/, catalogGuard(catalogSearch)],
+  [/^\/catalog\/data$/, catalogGuard(catalogData)],
 );
 
 async function catalogHeader(vehicles, title, crumbs = '') {

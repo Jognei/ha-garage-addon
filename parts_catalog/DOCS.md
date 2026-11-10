@@ -22,8 +22,19 @@ Use them in automations, e.g. a notification when `sensor.garage_overdue` goes a
 In the add-on, go to **Settings › Home Assistant dashboard** and copy the YAML it shows for your vehicles. Then in
 your dashboard choose **Edit dashboard › ⋮ › Raw configuration editor**, and paste it under `views:`.
 
+## AI agents (MCP)
+Let an AI assistant such as Claude, or any app that supports MCP, work with your garage. It can list vehicles,
+check what's due, read service history, record odometer readings, log services, and add or update parts.
+1. In the add-on, go to **Settings › AI agents** and click **Turn on: create an agent key**.
+2. Turn on **direct_access** and set a host port under **Network**, so the agent can reach the add-on.
+3. In the agent app, add an MCP server of type **HTTP**: `http://<home-assistant-ip>:<port>/mcp`, with the header
+   `Authorization: Bearer <agent key>`.
+
+Anyone with the key can change your garage data. **New key** locks out the old one, and **Turn off agent access**
+disables it.
+
 ## Parts catalog
-The **Catalog** tab is an offline parts catalog. Import your own data (JSON, CSV, saved HTML pages, diagram
+Turn it on under **Settings › Features** (it's off by default, because it starts empty). The **Catalog** tab is an offline parts catalog. Import your own data (JSON, CSV, saved HTML pages, diagram
 images) under **Catalog › Data & import**. The catalog ships with BMW main group numbers and optional sample data
 (marked SAMPLE). It doesn't download anything from the internet.
 

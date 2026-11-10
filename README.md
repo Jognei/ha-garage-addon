@@ -5,9 +5,10 @@ A Home Assistant add-on for keeping track of your vehicles:
 - **Service tracking:** schedules by miles and/or months, what's overdue or due soon, full service history
 - **Parts:** to get / ordered / on hand / installed, with the mileage each part went in at and its receipt
 - **Manuals & receipts:** PDFs and photos per vehicle, opened right in Home Assistant
-- **Offline parts catalog:** main groups, diagrams with clickable callouts, OEM part numbers, quantities,
+- **Offline parts catalog** (optional, off by default): main groups, diagrams with clickable callouts, OEM part numbers, quantities,
   fitment and supersessions, imported from your own files (JSON, CSV, saved HTML pages, images)
 - **Home Assistant sensors** for odometer, next service and overdue counts, plus a ready-made dashboard tab
+- **AI agent access (MCP):** let Claude or another MCP-capable assistant check what's due, log services and add parts
 
 It runs as a sidebar panel through Home Assistant Ingress, so it works in the Home Assistant app at home or
 away, and it needs no separate login.

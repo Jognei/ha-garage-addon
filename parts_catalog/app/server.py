@@ -18,10 +18,11 @@ from flask import Flask, jsonify, request, send_from_directory, send_file
 
 from . import db
 from .epc_api import bp as epc_bp
+from .mcp_server import bp as mcp_bp, INTERNAL
 
 STATIC = os.path.join(db.ROOT, "static")
 SETTINGS_PATH = os.path.join(db.DATA_DIR, "settings.json")
-DEFAULT_SETTINGS = {"lan": False, "port": 8765}
+DEFAULT_SETTINGS = {"lan": False, "port": 8765, "catalog": False, "agent_key": None}
 RESTART_CODE = 3
 # Set by the Home Assistant add-on (ha-addon/run.sh): no phone-access toggle, and optionally only
 # accept requests from HA's ingress proxy.
@@ -31,6 +32,7 @@ ALLOWED_CLIENTS = {a.strip() for a in os.environ.get("PARTS_CATALOG_ALLOW", "").
 app = Flask(__name__, static_folder=None)
 app.config["MAX_CONTENT_LENGTH"] = 500 * 1024 * 1024  # service manuals are big
 app.register_blueprint(epc_bp)
+app.register_blueprint(mcp_bp)
 
 # Common service intervals offered as one-click presets (miles, months).
 PRESETS = [
@@ -105,7 +107,7 @@ def add_months(date_str, months):
 
 @app.before_request
 def only_allowed_clients():
-    if ALLOWED_CLIENTS and request.remote_addr not in ALLOWED_CLIENTS:
+    if ALLOWED_CLIENTS and request.remote_addr not in ALLOWED_CLIENTS and not request.environ.get(INTERNAL):
         return err("Open this through Home Assistant", 403)
 
 
@@ -137,6 +139,7 @@ def ping():
 @app.route("/api/refdata")
 def api_refdata():
     return jsonify(statuses=db.STATUSES, kinds=db.KINDS, doc_kinds=db.DOC_KINDS,
+                   features={"catalog": bool(load_settings().get("catalog"))},
                    presets=[{"title": t, "interval_miles": m, "interval_months": mo} for t, m, mo in PRESETS])
 
 
@@ -630,6 +633,11 @@ def api_settings():
         restart = False
         if ADDON and "lan" in b:
             return err("Network access for the add-on is set in Home Assistant (add-on Configuration).")
+        if "catalog" in b:
+            s["catalog"] = bool(b["catalog"])
+        if "agent_key" in b:  # "new" creates (or replaces) the key, null turns agent access off
+            import secrets
+            s["agent_key"] = secrets.token_urlsafe(32) if b["agent_key"] == "new" else None
         if "lan" in b and bool(b["lan"]) != s["lan"]:
             s["lan"] = bool(b["lan"])
             restart = True

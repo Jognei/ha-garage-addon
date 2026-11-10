@@ -79,6 +79,7 @@ async function router() {
   const key = path.split('/')[1] || 'home';
   $$('.nav a').forEach((a) => a.classList.toggle('active', a.dataset.nav === (['car', 'add-car'].includes(key) ? 'home' : key)));
   if (!REF) REF = await api('/refdata');
+  applyFeatures();
   for (const [re, fn] of routes) {
     const m = path.match(re);
     if (m) {
@@ -87,6 +88,11 @@ async function router() {
     }
   }
   view.innerHTML = '<div class="panel empty">Page not found. <a href="#/">Go home</a></div>';
+}
+// Optional parts of the UI (Settings switches).
+function applyFeatures() {
+  const on = !!(REF && REF.features && REF.features.catalog);
+  $$('[data-nav="catalog"]').forEach((a) => { a.hidden = !on; });
 }
 window.addEventListener('hashchange', () => { router(); window.scrollTo(0, 0); });
 $('#searchForm').addEventListener('submit', (e) => {
@@ -557,6 +563,26 @@ async function settingsPage() {
         <div class="small muted">If it doesn't load, Windows Firewall may have asked whether to allow Python. Allow it on <b>Private networks</b>.</div></div>` : ''}
       <div id="lanMsg" class="small"></div>
     </div>`}
+    <h2>Features</h2>
+    <div class="panel stack">
+      <label class="switch"><input type="checkbox" id="catalogOn" ${s.settings.catalog ? 'checked' : ''}> Parts catalog</label>
+      <p class="muted small">An offline parts catalog with diagrams, filled from files you import (JSON, CSV, saved HTML pages, images). Off by default: it starts empty.</p>
+    </div>
+    <h2>AI agents</h2>
+    <div class="panel stack small">
+      <p>Let an AI assistant (Claude, or any app that supports MCP) read and update your garage: vehicles, what's due, service history, odometer and parts.</p>
+      ${s.settings.agent_key ? `
+        <div class="kv"><dt>Address</dt><dd><code>http://${s.addon ? '&lt;home-assistant-ip&gt;:&lt;port&gt;' : esc(location.host)}/mcp</code></dd>
+          <dt>Agent key</dt><dd><code id="agentKey" data-key="${esc(s.settings.agent_key)}">••••••••••••</code>
+            <button type="button" class="link" id="showKey">Show</button> <button type="button" class="link" id="copyKey">Copy</button></dd></div>
+        ${s.addon ? '<p class="muted">From another device this needs <b>Direct network access</b> on in the add-on Configuration, with a port set under Network. Home Assistant itself can use <code>http://&lt;add-on hostname&gt;:8765/mcp</code>.</p>' : ''}
+        <p>In the agent app, add an MCP server of type <b>HTTP</b> with that address and the header <code>Authorization: Bearer &lt;agent key&gt;</code>. For Claude Code, in a project's <code>.mcp.json</code>:</p>
+        <pre class="code">{"mcpServers": {"garage": {"type": "http", "url": "http://HOST:PORT/mcp",
+  "headers": {"Authorization": "Bearer AGENT_KEY"}}}}</pre>
+        <div class="row"><button type="button" id="newKey">New key</button><button type="button" class="danger" id="offKey">Turn off agent access</button></div>
+        <p class="muted">Anyone with the key can change your garage data. Make a new key to lock out the old one.</p>`
+      : '<div><button type="button" class="primary" id="newKey">Turn on: create an agent key</button></div>'}
+    </div>
     <h2>Backup</h2>
     <div class="panel stack">
       <p>Download everything (database, catalog, manuals, receipts) as one zip file.</p>
@@ -598,6 +624,23 @@ async function settingsPage() {
       }
     };
   }
+  $('#catalogOn').onchange = async (e) => {
+    await api('/settings', { method: 'PUT', json: { catalog: e.target.checked } });
+    REF = await api('/refdata'); applyFeatures();
+    toast(e.target.checked ? 'Catalog turned on' : 'Catalog hidden');
+  };
+  $('#newKey').onclick = async () => {
+    if (s.settings.agent_key && !confirm('Make a new key? Agents using the old key will stop working until you give them the new one.')) return;
+    await api('/settings', { method: 'PUT', json: { agent_key: 'new' } }); settingsPage();
+  };
+  if ($('#offKey')) $('#offKey').onclick = async () => {
+    if (!confirm('Turn off agent access? The key stops working.')) return;
+    await api('/settings', { method: 'PUT', json: { agent_key: null } }); settingsPage();
+  };
+  if ($('#showKey')) $('#showKey').onclick = () => { const k = $('#agentKey'); k.textContent = k.dataset.key; };
+  if ($('#copyKey')) $('#copyKey').onclick = async () => {
+    try { await navigator.clipboard.writeText($('#agentKey').dataset.key); toast('Key copied'); } catch (e) { $('#agentKey').textContent = $('#agentKey').dataset.key; toast('Select the key and press Ctrl+C', true); }
+  };
   if ($('#lan')) $('#lan').onchange = async (e) => {
     const r = await api('/settings', { method: 'PUT', json: { lan: e.target.checked } });
     if (r.restarting) {
