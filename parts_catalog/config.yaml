@@ -1,7 +1,9 @@
 name: Parts Catalog
-version: "1.0.22"
+version: "1.0.24"
 slug: parts_catalog
 url: https://github.com/Jognei/ha-garage-addon
+# Ready-built images from .github/workflows/build.yaml; HA downloads instead of building.
+image: ghcr.io/jognei/{arch}-parts-catalog
 description: Garage service tracker, parts list, manuals and offline parts catalog
 arch:
   - aarch64
