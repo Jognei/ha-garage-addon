@@ -37,6 +37,22 @@ function toast(msg, bad) {
   toast.t = setTimeout(() => (t.hidden = true), bad ? 6000 : 2200);
 }
 
+// Big files (service manuals) go up in pieces: Home Assistant Ingress rejects large request bodies.
+const CHUNK = 4 * 1024 * 1024;
+async function uploadChunked(file, fields, onProgress) {
+  const start = await api('/documents/chunked', { json: { ...fields, filename: file.name, size: file.size } });
+  let sent = 0;
+  while (sent < file.size) {
+    const r = await fetch(`api/documents/chunked/${start.upload_id}?offset=${sent}`, { method: 'PUT', body: file.slice(sent, sent + CHUNK) });
+    const d = await r.json().catch(() => ({}));
+    if (r.status === 409 && d.received != null) { sent = d.received; continue; } // resume where the server is
+    if (!r.ok) throw new Error(d.error || `Upload failed (HTTP ${r.status})`);
+    sent = d.received;
+    onProgress(Math.floor((100 * sent) / file.size));
+  }
+  return api(`/documents/chunked/${start.upload_id}/finish`, { method: 'POST', json: {} });
+}
+
 // Generic modal form. onSubmit(formData, form) may throw to keep the dialog open.
 function openDialog(title, html, onSubmit, { ok = 'Save', wide = false } = {}) {
   const dlg = $('#dlg');
@@ -515,14 +531,29 @@ async function documentsTab(el, car) {
     </tbody></table>` : '<div class="empty">No manuals or files yet.</div>'}</div>`;
   $('#upForm').onsubmit = async (e) => {
     e.preventDefault();
-    const fd = new FormData(e.target);
-    fd.append('car_id', car.id);
-    const btn = $('button', e.target); btn.disabled = true; btn.textContent = 'Uploading…';
-    const r = await fetch('api/documents', { method: 'POST', body: fd });
-    btn.disabled = false;
-    if (!r.ok) return toast((await r.json().catch(() => ({}))).error || 'Upload failed', true);
-    toast('Uploaded');
-    documentsTab(el, car);
+    const form = e.target;
+    const files = Array.from(form.elements.file.files);
+    const btn = $('button', form); btn.disabled = true; btn.textContent = 'Uploading…';
+    try {
+      const small = files.filter((f) => f.size <= CHUNK);
+      if (small.length) {
+        const fd = new FormData();
+        small.forEach((f) => fd.append('file', f));
+        fd.append('car_id', car.id); fd.append('kind', form.elements.kind.value);
+        if (files.length === 1) fd.append('title', form.elements.title.value);
+        const r = await fetch('api/documents', { method: 'POST', body: fd });
+        if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || 'Upload failed');
+      }
+      for (const f of files.filter((x) => x.size > CHUNK)) {
+        await uploadChunked(f, { car_id: car.id, kind: form.elements.kind.value, title: files.length === 1 ? form.elements.title.value : '' },
+          (pct) => (btn.textContent = `Uploading ${f.name}… ${pct}%`));
+      }
+      toast('Uploaded');
+      documentsTab(el, car);
+    } catch (err) {
+      toast(err.message, true);
+      btn.disabled = false; btn.textContent = 'Upload';
+    }
   };
   $$('tr[data-did]', el).forEach((tr) => {
     const d = docs.find((x) => x.id === +tr.dataset.did);

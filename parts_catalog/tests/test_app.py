@@ -95,6 +95,29 @@ class GarageTest(unittest.TestCase):
         f.close()
         self.assertEqual(self.c.get("/api/backup").mimetype, "application/zip")
 
+    def test_chunked_document_upload(self):
+        car = self.c.post("/api/cars", json={"name": "Chunk car"}).get_json()["id"]
+        blob = bytes(range(256)) * 40  # 10,240 bytes
+        uid = self.c.post("/api/documents/chunked", json={"filename": "manual.pdf", "size": len(blob), "car_id": car,
+                                                          "kind": "Manual", "title": "Big manual"}).get_json()["upload_id"]
+        put = lambda off, data: self.c.put(f"/api/documents/chunked/{uid}?offset={off}", data=data,  # noqa: E731
+                                           content_type="application/octet-stream")
+        self.assertEqual(put(0, blob[:4000]).get_json()["received"], 4000)
+        r = put(8000, blob[8000:])  # a piece got lost: the server says where to resume
+        self.assertEqual((r.status_code, r.get_json()["received"]), (409, 4000))
+        self.assertEqual(self.c.post(f"/api/documents/chunked/{uid}/finish").status_code, 409)  # not complete yet
+        put(4000, blob[4000:8000])
+        put(8000, blob[8000:])
+        self.assertEqual(put(len(blob), b"x").status_code, 400)  # more than announced
+        did = self.c.post(f"/api/documents/chunked/{uid}/finish").get_json()["id"]
+        doc = next(d for d in self.c.get(f"/api/documents?car_id={car}").get_json() if d["id"] == did)
+        self.assertEqual((doc["title"], doc["original_name"], doc["size"], doc["kind"]), ("Big manual", "manual.pdf", len(blob), "Manual"))
+        f = self.c.get(f"/files/{did}/manual.pdf")
+        self.assertEqual(f.data, blob)
+        f.close()
+        self.assertEqual(self.c.post(f"/api/documents/chunked/{uid}/finish").status_code, 404)  # used up
+        self.assertEqual(self.c.put("/api/documents/chunked/../etc?offset=0", data=b"x").status_code, 404)
+
 
 if __name__ == "__main__":
     unittest.main()

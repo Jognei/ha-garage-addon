@@ -643,14 +643,98 @@ def api_purchase():
 
 def store_document(f, car_id, kind, title, notes=""):
     orig = os.path.basename(f.filename or "file")
-    ext = os.path.splitext(orig)[1].lower()[:10]
-    name = f"{uuid.uuid4().hex[:12]}{ext}"
-    path = os.path.join(db.DOC_DIR, name)
-    f.save(path)
+    name = new_doc_name(orig)
+    f.save(os.path.join(db.DOC_DIR, name))
+    return register_document(name, orig, car_id, kind, title, notes)
+
+
+def new_doc_name(orig):
+    return f"{uuid.uuid4().hex[:12]}{os.path.splitext(orig)[1].lower()[:10]}"
+
+
+def register_document(name, orig, car_id, kind, title, notes=""):
+    """Add a row for a file already saved in DOC_DIR under `name`."""
     return db.execute("""INSERT INTO documents (car_id, kind, title, filename, original_name, size, notes)
                          VALUES (?,?,?,?,?,?,?)""",
                       (to_int(car_id), kind if kind in db.DOC_KINDS else "Other",
-                       title or os.path.splitext(orig)[0], name, orig, os.path.getsize(path), notes)).lastrowid
+                       title or os.path.splitext(orig)[0], name, orig,
+                       os.path.getsize(os.path.join(db.DOC_DIR, name)), notes or "")).lastrowid
+
+
+# ---- chunked uploads: Home Assistant Ingress rejects big request bodies (HTTP 413), so large files
+# (service manuals) go up in pieces: start -> PUT each piece at its offset -> finish.
+
+UPLOAD_ID = re.compile(r"^[0-9a-f]{32}$")
+
+
+def upload_paths(uid):
+    if not UPLOAD_ID.match(uid or ""):
+        return None
+    d = os.path.join(db.DATA_DIR, "uploads")
+    return os.path.join(d, uid + ".json"), os.path.join(d, uid + ".part")
+
+
+@app.route("/api/documents/chunked", methods=["POST"])
+def api_chunked_start():
+    b = body()
+    orig = os.path.basename(str(b.get("filename") or "")).strip()
+    size = to_int(b.get("size"))
+    if not orig or size is None or size < 0:
+        return err("filename and size are required")
+    d = os.path.join(db.DATA_DIR, "uploads")
+    os.makedirs(d, exist_ok=True)
+    for fn in os.listdir(d):  # forget uploads abandoned more than two days ago
+        fp = os.path.join(d, fn)
+        if time.time() - os.path.getmtime(fp) > 2 * 86400:
+            try:
+                os.remove(fp)
+            except OSError:
+                pass
+    uid = uuid.uuid4().hex
+    meta_p, part_p = upload_paths(uid)
+    with open(meta_p, "w", encoding="utf-8") as f:
+        json.dump({"filename": orig, "size": size, "car_id": b.get("car_id"), "kind": b.get("kind") or "Manual",
+                   "title": b.get("title") or "", "notes": b.get("notes") or ""}, f)
+    open(part_p, "wb").close()
+    return jsonify(upload_id=uid, received=0)
+
+
+@app.route("/api/documents/chunked/<uid>", methods=["PUT"])
+def api_chunked_piece(uid):
+    paths = upload_paths(uid)
+    if not paths or not os.path.exists(paths[0]):
+        return err("No such upload", 404)
+    meta_p, part_p = paths
+    with open(meta_p, encoding="utf-8") as f:
+        meta = json.load(f)
+    have = os.path.getsize(part_p)
+    offset = to_int(request.args.get("offset"))
+    if offset != have:  # resend from where the server actually is
+        return jsonify(error="offset mismatch", received=have), 409
+    data = request.get_data(cache=False)
+    if have + len(data) > meta["size"]:
+        return err("More data than the announced size")
+    with open(part_p, "ab") as f:
+        f.write(data)
+    return jsonify(received=have + len(data))
+
+
+@app.route("/api/documents/chunked/<uid>/finish", methods=["POST"])
+def api_chunked_finish(uid):
+    paths = upload_paths(uid)
+    if not paths or not os.path.exists(paths[0]):
+        return err("No such upload", 404)
+    meta_p, part_p = paths
+    with open(meta_p, encoding="utf-8") as f:
+        meta = json.load(f)
+    have = os.path.getsize(part_p)
+    if have != meta["size"]:
+        return jsonify(error=f"Upload incomplete ({have} of {meta['size']} bytes)", received=have), 409
+    name = new_doc_name(meta["filename"])
+    os.replace(part_p, os.path.join(db.DOC_DIR, name))
+    os.remove(meta_p)
+    did = register_document(name, meta["filename"], meta["car_id"], meta["kind"], meta["title"], meta["notes"])
+    return jsonify(id=did)
 
 
 @app.route("/api/documents", methods=["GET", "POST"])
