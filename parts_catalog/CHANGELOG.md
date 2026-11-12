@@ -1,5 +1,31 @@
 # Changelog
 
+## 1.0.52
+
+- Restore: a backup that fails partway changes nothing, a damaged catalog database is refused, and a restore brings
+  the backup's card layout, quick services and catalog switch. Restores, photos, receipts and catalog imports of any
+  size work through the sidebar.
+- Home Assistant: sensor ids no longer change when a vehicle is renamed, reordered or hidden; sensors a vehicle no
+  longer has are removed; the estimated due date is an attribute; the dashboard YAML pastes under `views:`; the
+  add-on options have names and descriptions; Settings shows how Home Assistant can send an odometer reading.
+- Services: a service whose estimated due date is within 30 days reads due soon; a dragged order stays inside each
+  state; deleting a service returns its parts to On hand and removes its odometer reading; using part of a
+  quantity can be undone.
+- Odometer: a reading that doesn't fit the log isn't logged, a reading can be deleted, and the driving rate uses the
+  first and last reading.
+- Parts and files: filters stay in the address, the CSV exports what the list shows, parts set aside for a project
+  say so, and files without a vehicle are listed under All parts > Not assigned.
+- Phones: the Parts and Upcoming tables fit the screen, touch targets are finger-sized, number fields open a number pad.
+- Dialogs and errors: messages raised in a dialog are seen, a late answer no longer closes the wrong thing, and
+  failed requests say what went wrong.
+- Catalog: better search (words with digits, diagram codes, spaced part numbers), CSV columns map by name, more page
+  formats import, unreadable dates are reported, export from the app.
+- AI agents: tools to correct or delete a service, change a schedule and move a part; log_service refuses an
+  ambiguous schedule name.
+- Add-on: stops at once, Home Assistant backups stop it while they run, images are built only after the tests pass,
+  and a published version is never overwritten.
+- Stricter input: values that aren't cleanly numbers or real dates are refused with a message naming the field.
+
 ## 1.0.50
 
 - Garage cards keep the same layout on every vehicle: the reorder arrows stay in the top corner, long names wrap

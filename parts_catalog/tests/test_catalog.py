@@ -118,16 +118,16 @@ class CatalogTest(unittest.TestCase):
     def test_search_words_with_digits(self):
         epc_import.import_bundle({"source": {"name": "Search words"}, "diagrams": [
             {"code": "11_0050", "title": "Cooling system", "items": [
-                {"callout": "1", "part_number": "11 51 9 990 001", "description": "Water pump", "supplement": "M30B35, circuit 2"},
-                {"callout": "2", "part_number": "11 51 9 990 002", "description": "Thermostat", "supplement": "E34"},
+                {"callout": "1", "part_number": "11 51 9 990 001", "description": "Water pump", "supplement": "ENG4A30, circuit 2"},
+                {"callout": "2", "part_number": "11 51 9 990 002", "description": "Thermostat", "supplement": "X12"},
                 {"callout": "3", "part_number": "11 51 9 990 003", "description": "Hex bolt", "supplement": "M6x20"},
                 {"callout": "4", "part_number": "M6X20-STUD", "description": "Stud"}]},
             {"code": "11-0050", "title": "Other"}]})
         found = lambda q: [(r["diagram_code"], r["callout"]) for r in epc.search(q) if r["diagram_code"] in ("11_0050", "11-0050")]  # noqa: E731
         self.assertEqual(found("11 51 9 990 001"), [("11_0050", "1")])
         self.assertEqual(found("water pump 2"), [("11_0050", "1")])
-        self.assertEqual(found("M30B35"), [("11_0050", "1")])
-        self.assertEqual(found("e34 thermostat"), [("11_0050", "2")])
+        self.assertEqual(found("ENG4A30"), [("11_0050", "1")])
+        self.assertEqual(found("x12 thermostat"), [("11_0050", "2")])
         self.assertEqual(found("M6x20"), [("11_0050", "4"), ("11_0050", "3")])  # the part number first, then the words
         self.assertEqual(found("11_0050"), [("11_0050", None)])  # the diagram once, and "_" is not a wildcard
         self.assertEqual(found("cooling"), [("11_0050", None)])
@@ -356,7 +356,7 @@ class CatalogTest(unittest.TestCase):
         self.assert_not_locked()
 
     def test_bundle_shape_errors(self):
-        self.assertEqual(self.post_import(("strings.json", b'{"vehicles": ["E34-535i"]}'))[0]["error"], "vehicles[0] must be an object")
+        self.assertEqual(self.post_import(("strings.json", b'{"vehicles": ["DEMO-SEDAN"]}'))[0]["error"], "vehicles[0] must be an object")
         nested = {"diagrams": [{"code": "98_0002", "items": ["1 pump"]}]}
         self.assertEqual(self.post_import(("nested.json", json.dumps(nested).encode()))[0]["error"], "diagrams[0].items[0] must be an object")
 
