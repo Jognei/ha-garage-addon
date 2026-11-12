@@ -300,6 +300,19 @@ class AuditFixesTest(unittest.TestCase):
         self.assertEqual(self.c.post(f"/api/documents/chunked/{manual}/finish").status_code, 200)
         self.assertEqual(self.c.post(f"/api/documents/chunked/{manual}/finish").status_code, 404)
 
+    def test_an_upload_named_dot_or_dot_dot_is_refused(self):
+        for name, error in ((".", "A file can't be named ."), ("..", "A file can't be named .."), ("catalog/..", "A file can't be named ..")):
+            r = self.c.post("/api/documents/chunked", json={"filename": name, "size": 1, "purpose": "catalog"})
+            self.assertEqual((r.status_code, r.get_json().get("error")), (400, error), name)
+
+    def test_an_upload_is_not_saved_over_a_folder(self):
+        up = server.finished_upload(self.upload(b"a,b\n1,2\n", "catalog", "parts.csv"), "catalog")
+        with tempfile.TemporaryDirectory() as folder:
+            with self.assertRaises(server.BadInput):
+                up.save(folder)  # as an import saves one named ".." started before that was refused
+            self.assertEqual(os.listdir(folder), [])
+        self.assertTrue(os.path.exists(up.part_p))
+
     def test_abandoned_uploads_of_every_purpose_are_swept(self):
         old = [self.upload(b"x", purpose, "x.bin") for purpose in server.UPLOAD_PURPOSES]
         long_ago = time.time() - 2 * 86400 - 60

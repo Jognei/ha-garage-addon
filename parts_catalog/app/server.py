@@ -1087,6 +1087,8 @@ class Upload:
         self.filename = meta["filename"]
 
     def save(self, dst):
+        if os.path.isdir(dst):  # shutil.move would put the file inside it
+            raise BadInput("A file can't be saved over a folder")
         shutil.move(self.part_p, dst)
         os.remove(self.meta_p)
 
@@ -1117,6 +1119,8 @@ def api_chunked_start():
     purpose = b.get("purpose") or "document"
     if not orig or size is None or size < 0:
         return err("filename and size are required")
+    if orig in (".", ".."):
+        return err(f"A file can't be named {orig}")
     if purpose not in UPLOAD_PURPOSES:
         return err(f"An upload is for one of {', '.join(UPLOAD_PURPOSES)}, not {str(purpose)[:30]!r}")
     d = os.path.join(db.DATA_DIR, "uploads")
