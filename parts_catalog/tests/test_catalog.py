@@ -404,6 +404,24 @@ class CatalogTest(unittest.TestCase):
         self.assertEqual([i["part_number"] for i in epc.diagram_detail(self.diag("86_0060")["id"])["items"]], ["1610039466", "162710H010"])
         self.assertIn("86_0060.html: 2 tables look like a parts list; used the one headed Ref, Part No., Description, Qty (2 rows)", rep.problems)
 
+    def test_migration_reads_stored_supersession_dates(self):
+        path = os.path.join(tempfile.mkdtemp(dir=self.tmp), "epc.db")
+        old = sqlite3.connect(path)
+        old.executescript(epc.SCHEMA)
+        old.execute("INSERT INTO meta (key, value) VALUES ('schema_version', '2')")
+        old.executemany("INSERT INTO supersessions (old_pn, new_pn, date) VALUES ('86111230070', ?, ?)",
+                        [("86111230071", "1990-09"), ("86111230072", "02/1991"), ("86111230073", "soon"), ("86111230074", None)])
+        old.commit()
+        old.close()
+        epc.close()
+        try:
+            with mock.patch.object(epc, "EPC_DB", path):
+                epc.init()
+                dates = [r["date"] for r in epc.rows("SELECT date FROM supersessions ORDER BY new_pn")]
+        finally:
+            epc.close()
+        self.assertEqual(dates, ["199009", "199102", "soon", None])
+
     def test_same_code_on_two_vehicles(self):
         def bundle(source, vehicle, title, pn):
             return {"source": {"name": source}, "vehicles": [{"code": vehicle, "series": vehicle[:3], "model": "x"}],

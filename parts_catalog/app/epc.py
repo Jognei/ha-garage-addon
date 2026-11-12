@@ -29,7 +29,7 @@ from . import db
 EPC_DIR = os.path.join(db.DATA_DIR, "epc")
 EPC_DB = os.path.join(EPC_DIR, "epc.db")
 FILES_DIR = os.path.join(EPC_DIR, "files")
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 # Diagram codes (e.g. "11_0123") repeat between vehicles, so they aren't unique on their own (schema v2).
 DIAGRAMS_COLS = """
@@ -182,6 +182,9 @@ def init():
     conn.executescript(SCHEMA)
     drop_unique_diagram_code(conn)
     conn.executescript(SCHEMA)  # recreates indexes dropped with the old table
+    stored = conn.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()
+    if not stored or int(stored[0]) < 3:
+        read_supersession_dates(conn)
     conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', ?)", (str(SCHEMA_VERSION),))
     conn.commit()
 
@@ -209,6 +212,15 @@ def drop_unique_diagram_code(conn):
         raise
     finally:
         conn.execute("PRAGMA foreign_keys = ON")
+
+
+def read_supersession_dates(conn):
+    """v2 -> v3: supersession dates stored as typed become YYYYMM, as imports now store them; an unreadable one stays."""
+    from .epc_import import yyyymm
+    for old, new, date in conn.execute("SELECT old_pn, new_pn, date FROM supersessions WHERE date IS NOT NULL").fetchall():
+        read = yyyymm(date)
+        if read and read != date:
+            conn.execute("UPDATE supersessions SET date=? WHERE old_pn=? AND new_pn=?", (read, old, new))
 
 
 def rows(sql, args=()):
