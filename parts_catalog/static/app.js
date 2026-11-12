@@ -15,6 +15,11 @@ const sCls = (s) => 's-' + String(s || '').replace(/\s+/g, '-');
 const fmtSize = (b) => (b > 1e6 ? (b / 1e6).toFixed(1) + ' MB' : Math.max(1, Math.round(b / 1e3)) + ' KB');
 const fileUrl = (d, page) => `files/${d.id || d.doc_id}/${encodeURIComponent(d.original_name || d.filename || d.doc_title || 'file')}${page ? '#page=' + page : ''}`;
 
+const OFFLINE = "Couldn't reach the app. Check your connection and try again.";
+
+// What a failed response says. data is its parsed body: {} when the server or a proxy answered with a page, not JSON.
+const failMessage = (r, data) => data.error || (r.status === 413 ? 'That file is too big to send in one go' : `Something went wrong (HTTP ${r.status})`);
+
 async function api(path, opts = {}) {
   const init = { ...opts };
   if (opts.json !== undefined) {
@@ -22,9 +27,9 @@ async function api(path, opts = {}) {
     init.headers = { 'Content-Type': 'application/json' };
     init.body = JSON.stringify(opts.json);
   }
-  const r = await fetch('api' + path, init);
+  const r = await fetch('api' + path, init).catch(() => { throw new Error(OFFLINE); });
   const data = await r.json().catch(() => ({}));
-  if (!r.ok) throw new Error(data.error || (r.status === 413 ? 'That file is too big to send in one go' : `Something went wrong (HTTP ${r.status})`));
+  if (!r.ok) throw new Error(failMessage(r, data));
   return data;
 }
 
@@ -55,7 +60,7 @@ async function uploadChunked(file, fields, onProgress) {
     const r = await fetch(`api/documents/chunked/${start.upload_id}?offset=${sent}`, { method: 'PUT', body: file.slice(sent, sent + CHUNK) });
     const d = await r.json().catch(() => ({}));
     if (r.status === 409 && d.received != null) { sent = d.received; continue; } // resume where the server is
-    if (!r.ok) throw new Error(d.error || `Upload failed (HTTP ${r.status})`);
+    if (!r.ok) throw new Error(failMessage(r, d));
     sent = d.received;
     onProgress(Math.floor((100 * sent) / file.size));
   }
@@ -97,12 +102,13 @@ function openDialog(title, html, onSubmit, { ok = 'Save', wide = false } = {}) {
   return form;
 }
 
-// A form outside a dialog: its button is off while the request runs, so a double tap can't send it twice.
-async function submitting(form, work) {
-  const btn = $('button:not([type=button])', form);
+// A form outside a dialog: its button is off (and reads busyText) while the request runs, so a double tap can't send it twice.
+async function submitting(form, work, busyText) {
+  const btn = $('button:not([type=button])', form), idle = btn.textContent;
   if (btn.disabled) return;
   btn.disabled = true;
-  try { await work(); } finally { btn.disabled = false; }
+  if (busyText) btn.textContent = busyText;
+  try { await work(); } finally { btn.disabled = false; btn.textContent = idle; }
 }
 
 const options = (list, sel, blank) => (blank !== undefined ? `<option value="">${esc(blank)}</option>` : '') +
@@ -124,7 +130,13 @@ async function router() {
   const params = new URLSearchParams(qs || '');
   const key = path.split('/')[1] || 'home';
   $$('.nav a').forEach((a) => a.classList.toggle('active', a.dataset.nav === (['car', 'add-car'].includes(key) ? 'home' : key)));
-  if (!REF) REF = await api('/refdata');
+  if (!REF) {
+    try { REF = await api('/refdata'); } catch (e) {
+      view.innerHTML = `<div class="panel empty">${esc(e.message)} <button class="link" id="retry">Retry</button></div>`;
+      $('#retry').onclick = () => router();
+      return;
+    }
+  }
   applyFeatures();
   for (const [re, fn] of routes) {
     const m = path.match(re);
@@ -144,7 +156,8 @@ window.addEventListener('hashchange', () => { router(); window.scrollTo(0, 0); }
 // anything that fails without its own handler (a status change, a delete, a toggle) still says so
 window.addEventListener('unhandledrejection', (e) => {
   const m = (e.reason && e.reason.message) || String(e.reason || 'Something went wrong');
-  toast(m === 'Failed to fetch' ? "Couldn't reach the app. Check your connection and try again." : m, true);
+  // a fetch() of our own that never got an answer, in Chrome's, Safari's and Firefox's words
+  toast(/^(Failed to fetch|Load failed|NetworkError when attempting to fetch resource\.?)$/.test(m) ? OFFLINE : m, true);
 });
 $('#searchForm').addEventListener('submit', (e) => {
   e.preventDefault();
@@ -905,8 +918,7 @@ function purchaseDialog(cars, car) {
     const { receipt, ...rest } = data;
     fd.append('data', JSON.stringify({ ...rest, items }));
     if (f.elements.receipt.files[0]) fd.append('receipt', f.elements.receipt.files[0]);
-    const r = await fetch('api/purchases', { method: 'POST', body: fd });
-    if (!r.ok) throw new Error((await r.json()).error || 'Failed');
+    await api('/purchases', { method: 'POST', body: fd });
     toast(`Added ${items.length} parts`);
     rerender();
   }, { ok: 'Add parts', wide: true });
@@ -960,8 +972,7 @@ async function documentsTab(el, car) {
         small.forEach((x) => fd.append('file', x));
         fd.append('car_id', car.id); fd.append('kind', data.kind);
         if (files.length === 1) fd.append('title', data.title);
-        const r = await fetch('api/documents', { method: 'POST', body: fd });
-        if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || 'Upload failed');
+        await api('/documents', { method: 'POST', body: fd });
       }
       for (const x of files.filter((y) => y.size > CHUNK)) {
         await uploadChunked(x, { car_id: car.id, kind: data.kind, title: files.length === 1 ? data.title : '' },
@@ -1036,12 +1047,12 @@ function carDetails(el, car) {
     toast(car.archived ? 'Back in the garage' : 'Hidden. Find it under "Hidden vehicles" on the garage page.');
     location.hash = '#/';
   };
-  $('#photoForm').onsubmit = async (e) => {
+  $('#photoForm').onsubmit = (e) => {
     e.preventDefault();
-    const btn = $('button', e.target); btn.disabled = true; btn.textContent = 'Uploading…';
-    const r = await fetch(`api/cars/${car.id}/photo`, { method: 'POST', body: new FormData(e.target) });
-    if (!r.ok) { toast((await r.json().catch(() => ({}))).error || 'Upload failed', true); btn.disabled = false; return; }
-    toast('Photo saved'); rerender();
+    submitting(e.target, async () => {
+      await api(`/cars/${car.id}/photo`, { method: 'POST', body: new FormData(e.target) });
+      toast('Photo saved'); rerender();
+    }, 'Uploading…');
   };
   if ($('#delPhoto')) $('#delPhoto').onclick = async () => {
     if (!confirm(`Remove the photo of ${car.name}? The file is deleted.`)) return;
@@ -1322,9 +1333,7 @@ actions:
     const btn = $('button', e.target); btn.disabled = true;
     $('#restoreMsg').textContent = 'Uploading and checking the backup…';
     try {
-      const r = await fetch('api/restore', { method: 'POST', body: new FormData(e.target) });
-      const data = await r.json().catch(() => ({}));
-      if (!r.ok) throw new Error(data.error || 'Restore failed');
+      await api('/restore', { method: 'POST', body: new FormData(e.target) });
       $('#restoreMsg').textContent = 'Restoring and restarting…';
       await waitForRestart();
       toast('Backup restored');
