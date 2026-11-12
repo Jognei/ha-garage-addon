@@ -734,17 +734,19 @@ def save_project(car_id, pid, b):
                          list(vals.values())).lastrowid
     elif vals:
         db.execute(f"UPDATE projects SET {','.join(k + '=?' for k in vals)} WHERE id=?", list(vals.values()) + [pid])
-    if "tasks" in b:  # the whole list, in order; a step keeps its tick when it has its id or the same text
+    if "tasks" in b:  # the whole list, in order; {id, title} keeps the tick of that step (no id: a new step),
+        # plain text keeps the tick of a step with the same text
         old = db.rows("SELECT * FROM project_tasks WHERE project_id=?", (pid,))
         by_id, by_title = {t["id"]: t for t in old}, {t["title"].lower(): t for t in old}
         db.execute("DELETE FROM project_tasks WHERE project_id=?", (pid,))
         n = 0
         for t in b["tasks"] or []:
-            t = {"title": t} if isinstance(t, str) else t
+            text = isinstance(t, str)
+            t = {"title": t} if text else t
             title = (t.get("title") or "").strip()
             if not title:
                 continue
-            prev = by_id.get(to_int(t.get("id"))) or by_title.get(title.lower()) or {}
+            prev = (by_title.get(title.lower()) if text else by_id.get(to_int(t.get("id")))) or {}
             done = t["done"] if "done" in t else prev.get("done", 0)
             n += 1
             db.execute("INSERT INTO project_tasks (project_id, title, done, sort_order) VALUES (?,?,?,?)",

@@ -69,6 +69,23 @@ class ProjectsTest(unittest.TestCase):
         self.c.delete(f"/api/projects/{pid}")
         self.assertIsNone(self.c.get(f"/api/parts/{part}").get_json()["project_id"])
 
+    def test_steps_sent_with_their_ids_keep_their_ticks(self):
+        car = self.c.post("/api/cars", json={"name": "Steps car"}).get_json()["id"]
+        pid = self.c.post(f"/api/cars/{car}/projects", json={"title": "Brakes", "tasks": ["Replace pads", "Torque bolts"]}).get_json()["id"]
+        tasks = lambda: self.c.get(f"/api/cars/{car}/projects").get_json()[0]["tasks"]  # noqa: E731
+        for t in tasks():
+            self.c.put(f"/api/project-tasks/{t['id']}", json={"done": True})
+        pads, torque = tasks()
+        # a step fixed for a typo keeps its tick; a step with no id is new, whatever its text
+        self.c.put(f"/api/projects/{pid}", json={"tasks": [{"id": pads["id"], "title": "Replace front pads"},
+                                                          {"id": torque["id"], "title": "Torque bolts"}, {"title": "Torque bolts"}]})
+        self.assertEqual([(t["title"], t["done"]) for t in tasks()],
+                         [("Replace front pads", 1), ("Torque bolts", 1), ("Torque bolts", 0)])
+        pads, ticked, new = tasks()
+        self.c.put(f"/api/projects/{pid}", json={"tasks": [{"id": new["id"], "title": "Torque bolts"},
+                                                          {"id": ticked["id"], "title": "Torque bolts"}]})
+        self.assertEqual([t["done"] for t in tasks()], [0, 1])
+
     def test_dismiss_and_order(self):
         ids = self.c.post(f"/api/cars/{self.car}/schedules", json={"items": [
             {"title": "Wipers", "interval_months": 12, "last_date": day(-400)},      # overdue

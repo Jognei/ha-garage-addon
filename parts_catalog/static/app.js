@@ -628,12 +628,16 @@ async function projectsTab(el, car) {
 async function projectDialog(car, p) {
   const mine = new Set(p ? p.parts.map((x) => x.id) : []);
   const parts = await usableParts(car, (x) => mine.has(x.id));
+  // each step is its own box carrying its id, so retyping a step keeps its tick
+  const stepRow = (t) => `<div class="row" style="gap:6px"><input class="step" aria-label="Step" data-id="${t.id || ''}" value="${esc(t.title || '')}" placeholder="${esc(t.hint || '')}" style="flex:1">
+    <button type="button" class="link" title="Remove this step" aria-label="Remove this step">✕</button></div>`;
   const form = openDialog(p ? 'Edit project' : 'New project', `
     <div class="form">
       <label class="wide">Project<input name="title" required value="${esc(p ? p.title : '')}" placeholder="e.g. Suspension refresh"></label>
       <label>Status<select name="status">${options(REF.project_statuses, p ? p.status : 'Planned')}</select></label>
       <label>Target date<input type="date" name="target_date" value="${esc(p ? p.target_date || '' : '')}"></label>
-      <label class="wide">Steps (one per line)<textarea name="steps" rows="6" placeholder="Order parts&#10;Replace front control arms&#10;Get an alignment">${esc(p ? p.tasks.map((t) => t.title).join('\n') : '')}</textarea></label>
+      <label class="wide">Steps<div id="steps" style="display:grid;gap:6px">${(p && p.tasks.length ? p.tasks : [{ hint: 'e.g. Order parts' }]).map(stepRow).join('')}</div>
+        <button type="button" class="link" id="addStep" style="align-self:flex-start;color:var(--accent)">＋ Add a step</button></label>
       <label class="wide">Notes<textarea name="notes" placeholder="Plan, torque specs, things to order…">${esc(p ? p.notes : '')}</textarea></label>
     </div>
     ${parts.length ? `<h3>Parts for this project</h3>
@@ -645,12 +649,25 @@ async function projectDialog(car, p) {
     ${p ? '<div style="margin-top:14px"><button type="button" class="danger" id="delProj">Delete project</button></div>' : ''}`,
   async (data, f) => {
     const payload = { title: data.title, status: data.status, target_date: data.target_date, notes: data.notes,
-      tasks: data.steps.split('\n').map((x) => x.trim()).filter(Boolean), part_ids: $$('input[name=part]:checked', f).map((i) => +i.value) };
+      tasks: $$('.step', f).map((i) => ({ id: +i.dataset.id || undefined, title: i.value.trim() })).filter((t) => t.title),
+      part_ids: $$('input[name=part]:checked', f).map((i) => +i.value) };
     if (p) await api('/projects/' + p.id, { method: 'PUT', json: payload });
     else await api(`/cars/${car.id}/projects`, { json: payload });
     toast('Project saved');
     rerender();
   });
+  const steps = $('#steps', form);
+  const addStep = (row) => {
+    if (row) row.insertAdjacentHTML('afterend', stepRow({})); else steps.insertAdjacentHTML('beforeend', stepRow({}));
+    $('.step', row ? row.nextElementSibling : steps.lastElementChild).focus();
+  };
+  $('#addStep', form).onclick = () => addStep();
+  steps.onkeydown = (e) => {
+    if (e.key !== 'Enter' || !e.target.classList.contains('step')) return;
+    e.preventDefault();  // Enter adds a step after this one instead of saving the project
+    addStep(e.target.parentNode);
+  };
+  steps.onclick = (e) => { if (e.target.matches('button')) e.target.parentNode.remove(); };
   if ($('#partFilter', form)) $('#partFilter', form).oninput = (e) => {
     const q = e.target.value.trim().toLowerCase();
     $$('.use-row', form).forEach((r) => { r.hidden = !!q && !r.dataset.text.includes(q) && !$('input[name=part]', r).checked; });
