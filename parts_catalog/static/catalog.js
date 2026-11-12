@@ -341,8 +341,8 @@ async function catalogData() {
     const btn = $('button.primary', e.target); btn.disabled = true; btn.textContent = 'Importing…';
     try {
       const r = await fetch('api/epc/import', { method: 'POST', body });
-      const data = await r.json();
-      if (!r.ok) throw new Error(data.error || 'Import failed');
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(data.error || (r.status === 413 ? 'That selection is too big to send in one go. Import fewer files at a time.' : `Import failed (HTTP ${r.status})`));
       sessionStorage.setItem('epcLastImport', JSON.stringify(data.reports));
       toast('Import finished');
       await catalogData();
