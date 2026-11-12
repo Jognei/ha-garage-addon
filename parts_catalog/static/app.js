@@ -570,18 +570,19 @@ async function serviceDialog(car, schedules, svc, checked, pre = {}) {
     checked = $$('input[name=sched]:checked', form).map((i) => +i.value);
     if (!svc && !pre.title) form.elements.title.value = [titleFrom(), ...$$('.quick-list .on[data-q]', form).map((b) => b.dataset.q)].filter(Boolean).join(', ');
   }));
-  // quick picks add to (or take out of) "What was done"
-  // (matched as whole text, not by splitting on commas: some job names contain one)
+  // quick picks add to (or take out of) "What was done", only as a whole entry between commas
+  // (the name is matched whole, not by splitting the title on commas: some job names contain one)
   const tidy = (t) => t.replace(/\s*,\s*(,\s*)+/g, ', ').replace(/^\s*,\s*|\s*,\s*$/g, '').trim();
+  const entry = (q) => new RegExp(`(^|,)\\s*${q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*(?=,|$)`, 'g');
   if ($('.quick-edit-link', form)) $('.quick-edit-link', form).onclick = () => $('#dlg').close();
   const quickToggle = (b) => {
     const t = form.elements.title.value, q = b.dataset.q;
     const on = b.classList.contains('on');
-    form.elements.title.value = on ? tidy(t.split(q).join(',')) : tidy(t ? `${t}, ${q}` : q);
+    form.elements.title.value = on ? tidy(t.replace(entry(q), '$1')) : tidy(t ? `${t}, ${q}` : q);
     b.classList.toggle('on', !on);
   };
   $$('.quick-list button[data-q]', form).forEach((b) => {
-    b.classList.toggle('on', form.elements.title.value.includes(b.dataset.q));
+    b.classList.toggle('on', entry(b.dataset.q).test(form.elements.title.value));
     b.onclick = () => quickToggle(b);
   });
   const at = () => {
