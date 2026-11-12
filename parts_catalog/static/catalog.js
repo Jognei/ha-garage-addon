@@ -244,11 +244,13 @@ async function catalogSearch(params) {
   const res = q ? await api(`/epc/search?q=${encodeURIComponent(q)}&${vq()}`) : [];
   view.innerHTML = `${await catalogHeader(null, `Search: ${esc(q)}`, '<a href="#/catalog">Catalog</a>')}
     <div class="panel table-wrap" style="padding:0;margin-top:12px">${res.length ? `<table><thead><tr><th>Part number</th><th>Description</th><th class="num">Qty</th><th>Diagram</th><th>Fitment</th><th>Mine</th><th></th></tr></thead><tbody>
-      ${res.map((r) => `<tr><td class="mono" style="white-space:nowrap">${r.part_number ? `<a href="#/catalog/part/${esc(r.part_number)}">${esc(r.part_number_fmt)}</a>` : missing('none')}</td>
+      ${res.map((r) => (r.id == null  // a diagram found by its title or code, not one of its rows
+        ? `<tr><td colspan="3" class="small muted">Diagram</td><td><a href="#/catalog/diagram/${r.diagram_id}"><span class="mono">${esc(r.diagram_code)}</span> ${esc(r.diagram_title)}</a>${sampleTag(r.is_sample)}${vehicleLine(r)}</td><td colspan="3"></td></tr>`
+        : `<tr><td class="mono" style="white-space:nowrap">${r.part_number ? `<a href="#/catalog/part/${esc(r.part_number)}">${esc(r.part_number_fmt)}</a>` : missing('none')}</td>
         <td>${esc(r.description) || missing('no description')}${sampleTag(r.is_sample)}${r.supplement ? `<div class="small muted">${esc(r.supplement)}</div>` : ''}</td>
         <td class="num">${r.qty == null ? missing('?') : esc(r.qty)}</td>
         <td><a href="#/catalog/diagram/${r.diagram_id}?c=${encodeURIComponent(r.callout)}"><span class="mono">${esc(r.diagram_code)}</span> #${esc(r.callout)} ${esc(r.diagram_title)}</a>${vehicleLine(r)}</td>
-        <td class="small">${esc(range(r))}</td>${mineCell(r)}<td>${addBtn(r)}</td></tr>`).join('')}
+        <td class="small">${esc(range(r))}</td>${mineCell(r)}<td>${addBtn(r)}</td></tr>`)).join('')}
     </tbody></table>${res.length >= 200 ? '<div class="small muted" style="padding:8px">Showing the first 200 matches.</div>' : ''}` : `<div class="empty">${q ? `No matches.${EPC.vehicle ? ' <button class="link" id="searchAll">Search all vehicles</button>' : ''}` : 'Type a part number (any spacing) or words from the description.'}</div>`}</div>`;
   wireHeader();
   $('#epcSearch').q.value = q;
