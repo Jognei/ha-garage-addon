@@ -261,6 +261,7 @@ async function catalogData() {
   const [ov, val, tree, set] = await Promise.all([api('/epc/overview'), api('/epc/validation'), api('/epc/categories'), api('/settings')]);
   const sev = { error: 0, warning: 1, info: 2 };
   const summ = Object.entries(val.summary).sort((a, b) => sev[a[1].severity] - sev[b[1].severity]);
+  const sample = ov.sources.some((s) => s.is_sample);
   // The import form starts on the header's vehicle (or the only real one); its last choices come back while the header is unchanged.
   let last = {};
   try { last = JSON.parse(saved.get('epcImport')) || {}; } catch (e) { /* none */ }
@@ -318,7 +319,8 @@ async function catalogData() {
         <td class="num">${s.diagrams}</td><td class="num">${s.items}</td><td class="num">${s.files}</td><td class="small muted">${esc((s.imported_at || '').slice(0, 10))}</td>
         <td><button class="link danger del" data-id="${s.id}" data-name="${esc(s.name)}">Remove</button></td></tr>`).join('')}
     </tbody></table></div>
-    ${ov.sources.some((s) => s.is_sample) ? '' : '<p><button id="loadSample">Load sample data</button> <span class="small muted">(made-up records, clearly marked, for trying the catalog)</span></p>'}`;
+    <p class="row"><a class="btn" href="api/epc/export">⬇ Export catalog (zip)</a>${sample ? '<a class="btn" href="api/epc/export?samples=1">⬇ With sample data</a>' : ''}</p>
+    ${sample ? '' : '<p><button id="loadSample">Load sample data</button> <span class="small muted">(made-up records, clearly marked, for trying the catalog)</span></p>'}`;
   wireHeader();
   $('#impForm').onsubmit = async (e) => {
     e.preventDefault();
