@@ -115,8 +115,10 @@ def load_sample():
 
 @bp.route("/api/epc/import", methods=["POST"])
 def import_files():
-    """Multipart upload: files (JSON / CSV / HTML / images) + optional source, vehicle, category, diagram, create."""
-    files = request.files.getlist("file")
+    """Form: "upload" once per file (JSON / CSV / HTML / images), each sent on its own first, + optional source, vehicle,
+    category, diagram, create."""
+    from .server import finished_upload
+    files = [finished_upload(uid, "catalog") for uid in request.form.getlist("upload") if uid]
     if not files:
         return err("No files")
     f = request.form

@@ -1,5 +1,5 @@
 /* Offline parts catalog UI: vehicles, main groups, diagrams with clickable callouts, part search, import & validation.
-   Uses the helpers from app.js ($, esc, api, toast, openDialog, options, view, routes). */
+   Uses the helpers from app.js ($, esc, api, toast, openDialog, options, uploadChunked, view, routes). */
 'use strict';
 
 // Choices remembered on this device (null when never made).
@@ -335,16 +335,17 @@ async function catalogData() {
   $('#impForm').onsubmit = async (e) => {
     e.preventDefault();
     const f = e.target.elements;
-    const body = new FormData(e.target);
-    body.delete('file');  // an empty picker would send a blank file
-    [...f.file.files, ...[...folder.files].filter(importable)].forEach((x) => body.append('file', x));
-    if (!body.has('file')) return toast('Nothing to import in that folder', true);
+    const files = [...f.file.files, ...[...folder.files].filter(importable)];
+    if (!files.length) return toast('Nothing to import in that folder', true);
     saved.set('epcImport', JSON.stringify({ header: EPC.vehicle, vehicle: f.vehicle.value, category: f.category.value, source: f.source.value.trim() }));
-    const btn = $('button.primary', e.target); btn.disabled = true; btn.textContent = 'Importing…';
+    const btn = $('button.primary', e.target); btn.disabled = true;
     try {
-      const r = await fetch('api/epc/import', { method: 'POST', body });
-      const data = await r.json().catch(() => ({}));
-      if (!r.ok) throw new Error(data.error || (r.status === 413 ? 'That selection is too big to send in one go. Import fewer files at a time.' : `Import failed (HTTP ${r.status})`));
+      // each file goes up on its own (in pieces when big), then one import takes them together: a page finds its images among them
+      const body = new FormData(e.target);
+      body.delete('file');
+      for (const x of files) body.append('upload', await uploadChunked(x, { purpose: 'catalog' }, (t) => { btn.textContent = t; }));
+      btn.textContent = 'Importing…';
+      const data = await api('/epc/import', { method: 'POST', body });
       sessionStorage.setItem('epcLastImport', JSON.stringify(data.reports));
       toast('Import finished');
       await catalogData();

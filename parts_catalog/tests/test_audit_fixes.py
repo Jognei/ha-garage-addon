@@ -7,6 +7,7 @@ import os
 import re
 import shutil
 import tempfile
+import time
 import unittest
 import zipfile
 from unittest import mock
@@ -55,8 +56,14 @@ class AuditFixesTest(unittest.TestCase):
         with self.c.get("/api/backup") as r:
             return r.data
 
+    def upload(self, data, purpose, name="b.zip"):
+        uid = self.c.post("/api/documents/chunked", json={"filename": name, "size": len(data), "purpose": purpose}).get_json()["upload_id"]
+        for off in range(0, len(data), 4096):
+            self.c.put(f"/api/documents/chunked/{uid}?offset={off}", data=data[off:off + 4096], content_type="application/octet-stream")
+        return uid
+
     def restore(self, data):
-        return self.c.post("/api/restore", data={"backup": (io.BytesIO(data), "b.zip")}, content_type="multipart/form-data")
+        return self.c.post("/api/restore", data={"upload": self.upload(data, "restore")})
 
     def safety_zips(self):
         return {f: os.stat(os.path.join(self.tmp, f)).st_mtime_ns for f in os.listdir(self.tmp) if f.startswith("before-restore-")}
@@ -214,6 +221,59 @@ class AuditFixesTest(unittest.TestCase):
         self.assertIsNone(db.row("SELECT id FROM documents WHERE car_id=? AND kind='Photo'", (cid,)))
         self.assertIsNone(self.c.get(f"/api/cars/{cid}").get_json()["photo_id"])
 
+    def test_a_photo_sent_in_pieces_is_the_vehicle_photo(self):
+        from PIL import Image
+        cid = self.car("DEMO-BIG-PHOTO")
+        png = io.BytesIO()
+        Image.new("RGB", (2400, 1800), "red").save(png, "PNG")
+        r = self.c.post(f"/api/cars/{cid}/photo", data={"upload": self.upload(png.getvalue(), "photo", "car.png")})
+        self.assertEqual(r.status_code, 200, r.get_json())
+        photo = db.row("SELECT d.* FROM documents d JOIN cars c ON c.photo_id=d.id WHERE c.id=?", (cid,))
+        self.assertEqual((photo["kind"], photo["original_name"]), ("Photo", "car.jpg"))
+        with Image.open(os.path.join(db.DOC_DIR, photo["filename"])) as im:
+            self.assertEqual((im.format, im.size), ("JPEG", (1600, 1200)))  # shrunk, as a photo sent whole is
+
+    def test_a_receipt_sent_in_pieces_is_the_purchases_receipt(self):
+        cid = self.car("DEMO-BIG-RECEIPT")
+        scan = b"%PDF-1.4 " + bytes(range(256)) * 40
+        data = {"car_id": cid, "supplier": "Parts Store", "items": [{"name": "Pads"}, {"name": "Rotor"}]}
+        r = self.c.post("/api/purchases", data={"data": json.dumps(data), "upload": self.upload(scan, "receipt", "order.pdf")}).get_json()
+        self.assertIsNotNone(r["document_id"])
+        self.assertEqual({self.c.get(f"/api/parts/{pid}").get_json()["document_id"] for pid in r["ids"]}, {r["document_id"]})
+        doc = db.row("SELECT * FROM documents WHERE id=?", (r["document_id"],))
+        self.assertEqual((doc["kind"], doc["car_id"], doc["original_name"]), ("Receipt", cid, "order.pdf"))
+        with self.c.get(f"/files/{doc['id']}/order.pdf") as f:
+            self.assertEqual(f.data, scan)
+
+    def test_an_upload_is_only_taken_for_what_it_was_sent_for(self):
+        cid = self.car("DEMO-PURPOSE")
+        backup, manual = self.upload(self.backup(), "restore"), self.upload(b"%PDF-1.4 manual", "document", "manual.pdf")
+        docs = db.row("SELECT COUNT(*) AS n FROM documents")["n"]
+        purchase = json.dumps({"car_id": cid, "items": [{"name": "Pads"}]})
+        for path, form, error in ((f"/api/documents/chunked/{backup}/finish", {}, "That upload is for restore, not document"),
+                                  (f"/api/cars/{cid}/photo", {"upload": backup}, "That upload is for restore, not photo"),
+                                  ("/api/purchases", {"data": purchase, "upload": backup}, "That upload is for restore, not receipt"),
+                                  ("/api/epc/import", {"upload": backup}, "That upload is for restore, not catalog"),
+                                  ("/api/restore", {"upload": manual}, "That upload is for document, not restore")):
+            with self.subTest(path):
+                r = self.c.post(path, data=form)
+                self.assertEqual((r.status_code, r.get_json()["error"]), (400, error))
+        self.assertFalse(os.path.exists(os.path.join(self.tmp, "restore-pending")))
+        self.assertEqual(db.row("SELECT COUNT(*) AS n FROM documents")["n"], docs)
+        self.assertIsNone(db.row("SELECT id FROM parts WHERE car_id=?", (cid,)))
+        # refused, so still there for what it was sent for, and used up once used
+        self.assertEqual(self.c.post(f"/api/documents/chunked/{manual}/finish").status_code, 200)
+        self.assertEqual(self.c.post(f"/api/documents/chunked/{manual}/finish").status_code, 404)
+
+    def test_abandoned_uploads_of_every_purpose_are_swept(self):
+        old = [self.upload(b"x", purpose, "x.bin") for purpose in server.UPLOAD_PURPOSES]
+        long_ago = time.time() - 2 * 86400 - 60
+        for uid in old:
+            for p in server.upload_paths(uid):
+                os.utime(p, (long_ago, long_ago))
+        self.upload(b"x", "document", "x.bin")  # starting one sweeps
+        self.assertEqual([uid for uid in old if any(os.path.exists(p) for p in server.upload_paths(uid))], [])
+
     def test_backup_is_sent_from_disk_and_removed_once_sent(self):
         made, real = [], tempfile.mkdtemp
 
@@ -278,7 +338,7 @@ class AuditFixesTest(unittest.TestCase):
         with zipfile.ZipFile(bad, "w") as z:
             z.writestr("garage.db", b"not a database")
         before = self.safety_zips()
-        r = self.c.post("/api/restore", data={"backup": (io.BytesIO(bad.getvalue()), "b.zip")}, content_type="multipart/form-data")
+        r = self.restore(bad.getvalue())
         self.assertEqual(r.status_code, 400)
         self.assertFalse(os.path.exists(os.path.join(self.tmp, "restore-pending")))
         self.assertFalse(os.path.exists(os.path.join(self.tmp, "restore-staging")))

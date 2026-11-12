@@ -296,17 +296,21 @@ class CatalogTest(unittest.TestCase):
         self.assertEqual(next(i for i in d["items"] if i["callout"] == "1")["garage"][0]["status"], "On hand")
         # upload
         csv_bytes = b"diagram,callout,part number,description,qty\n12_0001,1,12311234567,Alternator,1\n"
-        r = self.c.post("/api/epc/import", data={"file": (io.BytesIO(csv_bytes), "alt.csv"), "vehicle": "DEMO-SEDAN", "category": "12"},
-                        content_type="multipart/form-data")
-        self.assertEqual(r.get_json()["reports"][0]["counts"]["items_added"], 1)
+        reports = self.post_import(("alt.csv", csv_bytes), vehicle="DEMO-SEDAN", category="12")
+        self.assertEqual(reports[0]["counts"]["items_added"], 1)
         self.assertEqual(self.c.get(f"/api/epc/diagrams?vehicle={epc.row('SELECT id FROM vehicles WHERE code=?', ('DEMO-SEDAN',))['id']}&category={epc.row('SELECT id FROM categories WHERE code=?', ('12',))['id']}").get_json()[0]["code"], "12_0001")
 
     def test_garage_number_typed_with_dots(self):
         self.c.post("/api/parts", json={"name": "Sample bolt", "part_number": "99.99.9.999.003"})
         self.assertEqual([g["name"] for g in self.c.get("/api/epc/parts/99999999003").get_json()["garage"]], ["Sample bolt"])
 
-    def post_import(self, *files):
-        r = self.c.post("/api/epc/import", data={"file": [(io.BytesIO(b), n) for n, b in files]}, content_type="multipart/form-data")
+    def post_import(self, *files, **form):
+        uploads = []
+        for n, b in files:  # each file its own upload, as the UI sends them; the import names them together
+            uid = self.c.post("/api/documents/chunked", json={"filename": n, "size": len(b), "purpose": "catalog"}).get_json()["upload_id"]
+            self.c.put(f"/api/documents/chunked/{uid}?offset=0", data=b, content_type="application/octet-stream")
+            uploads.append(uid)
+        r = self.c.post("/api/epc/import", data={**form, "upload": uploads})
         return r.get_json()["reports"]
 
     def assert_not_locked(self):

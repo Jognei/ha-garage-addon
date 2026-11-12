@@ -176,12 +176,16 @@ def today():
 
 
 class BadInput(ValueError):
-    """A value the API can't accept; answered as 400 with this message."""
+    """A value the API can't accept; answered with this message, as 400 unless `code` says otherwise."""
+
+    def __init__(self, msg, code=400):
+        super().__init__(msg)
+        self.code = code
 
 
 @app.errorhandler(BadInput)
 def bad_input(e):
-    return err(str(e), 400)
+    return err(str(e), e.code)
 
 
 def to_date(v, field="Date"):
@@ -371,7 +375,7 @@ def api_car_photo(car_id):
         return err("No such car", 404)
     old = car.get("photo_id")
     if request.method == "POST":
-        f = request.files.get("photo")
+        f = request.files.get("photo") or finished_upload(request.form.get("upload"), "photo")
         if not f:
             return err("Choose a photo")
         did = store_document(f, car_id, "Photo", f"{car['name']} photo")
@@ -969,7 +973,7 @@ def api_part(pid):
 @app.route("/api/purchases", methods=["POST"])
 def api_purchase():
     """Add several bought parts at once, optionally with the receipt/screenshot.
-    Multipart: field "data" (JSON) + optional file "receipt". Or plain JSON.
+    Multipart: field "data" (JSON) + optional file "receipt", or "upload" naming one sent in pieces. Or plain JSON.
     data = {car_id, supplier, purchased_date, order_ref, status, items: [{name, part_number, brand, qty, price, ...}]}"""
     if request.files or request.form:
         data = json.loads(request.form.get("data") or "{}")
@@ -985,7 +989,7 @@ def api_purchase():
     for r in rows:
         part_values(r)  # a bad value answers 400 before the receipt or any part is stored
     doc_id = None
-    f = request.files.get("receipt")
+    f = request.files.get("receipt") or finished_upload(request.form.get("upload"), "receipt")
     if f and f.filename:
         doc_id = store_document(f, data.get("car_id"), "Receipt",
                                 data.get("receipt_title") or f"{data.get('supplier') or 'Purchase'} {data.get('purchased_date') or today()}")
@@ -1021,9 +1025,12 @@ def register_document(name, orig, car_id, kind, title, notes=""):
 
 
 # ---- chunked uploads: Home Assistant Ingress rejects big request bodies (HTTP 413), so large files
-# (service manuals) go up in pieces: start -> PUT each piece at its offset -> finish.
+# (service manuals, backups, photos, receipts, catalog files) go up in pieces: start -> PUT each piece at
+# its offset -> finish (a document), or the request the file is for names the upload (finished_upload).
 
 UPLOAD_ID = re.compile(r"^[0-9a-f]{32}$")
+# what an upload is for, given at its start: a document, or the file of a photo, receipt, restore or catalog import
+UPLOAD_PURPOSES = ("document", "photo", "receipt", "restore", "catalog")
 
 
 def upload_paths(uid):
@@ -1033,13 +1040,46 @@ def upload_paths(uid):
     return os.path.join(d, uid + ".json"), os.path.join(d, uid + ".part")
 
 
+class Upload:
+    """A finished upload, used like a request's file: its filename, and save() moves it to a path, using it up."""
+
+    def __init__(self, paths, meta):
+        self.meta_p, self.part_p = paths
+        self.meta = meta
+        self.filename = meta["filename"]
+
+    def save(self, dst):
+        shutil.move(self.part_p, dst)
+        os.remove(self.meta_p)
+
+
+def finished_upload(uid, purpose):
+    """The complete upload `uid` if it was started for `purpose` (None for no `uid`); else 404, 409 or 400."""
+    if not uid:
+        return None
+    paths = upload_paths(uid)
+    if not paths or not os.path.exists(paths[0]):
+        raise BadInput("No such upload", 404)
+    with open(paths[0], encoding="utf-8") as f:
+        meta = json.load(f)
+    if meta.get("purpose") != purpose:
+        raise BadInput(f"That upload is for {meta.get('purpose')}, not {purpose}")
+    have = os.path.getsize(paths[1])
+    if have != meta["size"]:
+        raise BadInput(f"Upload incomplete ({have} of {meta['size']} bytes)", 409)
+    return Upload(paths, meta)
+
+
 @app.route("/api/documents/chunked", methods=["POST"])
 def api_chunked_start():
     b = body()
     orig = os.path.basename(str(b.get("filename") or "")).strip()
     size = to_int(b.get("size"))
+    purpose = b.get("purpose") or "document"
     if not orig or size is None or size < 0:
         return err("filename and size are required")
+    if purpose not in UPLOAD_PURPOSES:
+        return err(f"An upload is for one of {', '.join(UPLOAD_PURPOSES)}, not {str(purpose)[:30]!r}")
     d = os.path.join(db.DATA_DIR, "uploads")
     os.makedirs(d, exist_ok=True)
     for fn in os.listdir(d):  # forget uploads abandoned more than two days ago
@@ -1052,7 +1092,7 @@ def api_chunked_start():
     uid = uuid.uuid4().hex
     meta_p, part_p = upload_paths(uid)
     with open(meta_p, "w", encoding="utf-8") as f:
-        json.dump({"filename": orig, "size": size, "car_id": b.get("car_id"), "kind": b.get("kind") or "Manual",
+        json.dump({"filename": orig, "size": size, "purpose": purpose, "car_id": b.get("car_id"), "kind": b.get("kind") or "Manual",
                    "title": b.get("title") or "", "notes": b.get("notes") or ""}, f)
     open(part_p, "wb").close()
     return jsonify(upload_id=uid, received=0)
@@ -1080,20 +1120,9 @@ def api_chunked_piece(uid):
 
 @app.route("/api/documents/chunked/<uid>/finish", methods=["POST"])
 def api_chunked_finish(uid):
-    paths = upload_paths(uid)
-    if not paths or not os.path.exists(paths[0]):
-        return err("No such upload", 404)
-    meta_p, part_p = paths
-    with open(meta_p, encoding="utf-8") as f:
-        meta = json.load(f)
-    have = os.path.getsize(part_p)
-    if have != meta["size"]:
-        return jsonify(error=f"Upload incomplete ({have} of {meta['size']} bytes)", received=have), 409
-    name = new_doc_name(meta["filename"])
-    os.replace(part_p, os.path.join(db.DOC_DIR, name))
-    os.remove(meta_p)
-    did = register_document(name, meta["filename"], meta["car_id"], meta["kind"], meta["title"], meta["notes"])
-    return jsonify(id=did)
+    up = finished_upload(uid, "document")
+    m = up.meta
+    return jsonify(id=store_document(up, m["car_id"], m["kind"], m["title"], m["notes"]))
 
 
 @app.route("/api/documents", methods=["GET", "POST"])
@@ -1367,10 +1396,10 @@ def database_ok(path, table):
 
 @app.route("/api/restore", methods=["POST"])
 def api_restore():
-    """Replace all data with a backup zip (e.g. moving from the PC to the Home Assistant add-on).
+    """Replace all data with a backup zip (e.g. moving from the PC to the Home Assistant add-on), sent first as "upload".
     The zip is unpacked and checked, the current data is saved as data/before-restore-<time>.zip, the backup
     becomes data/restore-pending/, swapped in at the next start (db.apply_pending_restore), and we restart."""
-    f = request.files.get("backup")
+    f = finished_upload(request.form.get("upload"), "restore")
     if not f:
         return err("Choose a backup zip")
     tmp = tempfile.mkdtemp()

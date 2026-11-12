@@ -57,11 +57,13 @@ $('#dlg').addEventListener('close', (e) => {
   if (!e.target.open && t.parentNode !== document.body) document.body.appendChild(t);
 });
 
-// Big files (service manuals) go up in pieces: Home Assistant Ingress rejects large request bodies.
+// Files go up in pieces: Home Assistant Ingress refuses a request body over 16 MiB. fields.purpose says what the
+// upload is for (a document unless it says otherwise); this returns its id, for the request that uses it.
 const CHUNK = 4 * 1024 * 1024;
 async function uploadChunked(file, fields, onProgress) {
   const start = await api('/documents/chunked', { json: { ...fields, filename: file.name, size: file.size } });
   let sent = 0, tries = 0;
+  onProgress(`Uploading ${file.name}… 0%`);
   while (sent < file.size) {
     const r = await fetch(`api/documents/chunked/${start.upload_id}?offset=${sent}`, { method: 'PUT', body: file.slice(sent, sent + CHUNK) }).catch(() => null);
     const d = r ? await r.json().catch(() => ({})) : {};
@@ -74,9 +76,15 @@ async function uploadChunked(file, fields, onProgress) {
     }
     tries = 0;
     sent = d.received;
-    onProgress(Math.floor((100 * sent) / file.size));
+    onProgress(`Uploading ${file.name}… ${Math.floor((100 * sent) / file.size)}%`);
   }
-  return api(`/documents/chunked/${start.upload_id}/finish`, { method: 'POST', json: {} });
+  return start.upload_id;
+}
+
+// A file that fits in one piece goes in the request as `field`; a bigger one goes up in pieces and the request names it.
+async function attachFile(fd, field, file, purpose, onProgress) {
+  if (file.size <= CHUNK) fd.append(field, file);
+  else fd.append('upload', await uploadChunked(file, { purpose }, onProgress));
 }
 
 // Generic modal form. onSubmit(formData, form, okText) may throw to keep the dialog open; okText(t) relabels its OK button.
@@ -928,14 +936,15 @@ function purchaseDialog(cars, car) {
     <h3>Items</h3>
     <div class="table-wrap"><table class="items-table"><thead><tr><th>Name</th><th>Part #</th><th>Brand</th><th>Qty</th><th>Price each</th></tr></thead><tbody id="items">${row()}${row()}${row()}</tbody></table></div>
     <button type="button" class="link" id="moreRows">＋ more rows</button>`,
-  async (data, f) => {
+  async (data, f, okText) => {
     const items = $$('#items tr', f).map((tr) => ({ name: $('.n', tr).value.trim(), part_number: $('.pn', tr).value.trim(), brand: $('.b', tr).value.trim(), qty: $('.q', tr).value, price: $('.pr', tr).value }))
       .filter((i) => i.name || i.part_number);
     if (!items.length) throw new Error('Add at least one item');
     const fd = new FormData();
     const { receipt, ...rest } = data;
     fd.append('data', JSON.stringify({ ...rest, items }));
-    if (f.elements.receipt.files[0]) fd.append('receipt', f.elements.receipt.files[0]);
+    if (f.elements.receipt.files[0]) await attachFile(fd, 'receipt', f.elements.receipt.files[0], 'receipt', okText);
+    okText('Saving…');
     await api('/purchases', { method: 'POST', body: fd });
     toast(`Added ${items.length} parts`);
     rerender();
@@ -983,18 +992,18 @@ async function documentsTab(el, car) {
         <label>Title <span class="muted small">(one file only)</span><input name="title" placeholder="Service manual"></label></div>`,
     async (data, f, okText) => {
       const files = Array.from(f.elements.file.files);
-      okText('Uploading…');
-      const small = files.filter((x) => x.size <= CHUNK);
-      if (small.length) {
-        const fd = new FormData();
-        small.forEach((x) => fd.append('file', x));
-        fd.append('car_id', car.id); fd.append('kind', data.kind);
-        if (files.length === 1) fd.append('title', data.title);
-        await api('/documents', { method: 'POST', body: fd });
-      }
-      for (const x of files.filter((y) => y.size > CHUNK)) {
-        await uploadChunked(x, { car_id: car.id, kind: data.kind, title: files.length === 1 ? data.title : '' },
-          (pct) => okText(`Uploading ${x.name}… ${pct}%`));
+      const title = files.length === 1 ? data.title : '';
+      for (const x of files) {  // one file per request: small ones together could go over Ingress's limit
+        if (x.size <= CHUNK) {
+          okText(`Uploading ${x.name}…`);
+          const fd = new FormData();
+          fd.append('file', x); fd.append('car_id', car.id); fd.append('kind', data.kind);
+          if (title) fd.append('title', title);
+          await api('/documents', { method: 'POST', body: fd });
+        } else {
+          const id = await uploadChunked(x, { car_id: car.id, kind: data.kind, title }, okText);
+          await api(`/documents/chunked/${id}/finish`, { method: 'POST', json: {} });
+        }
       }
       toast(files.length === 1 ? 'Uploaded' : `Uploaded ${files.length} files`);
       docFilter = data.kind;  // show what was just added
@@ -1068,8 +1077,11 @@ function carDetails(el, car) {
   };
   $('#photoForm').onsubmit = (e) => {
     e.preventDefault();
+    const btn = $('button:not([type=button])', e.target);
     submitting(e.target, async () => {
-      await api(`/cars/${car.id}/photo`, { method: 'POST', body: new FormData(e.target) });
+      const fd = new FormData();
+      await attachFile(fd, 'photo', e.target.photo.files[0], 'photo', (t) => { btn.textContent = t; });
+      await api(`/cars/${car.id}/photo`, { method: 'POST', body: fd });
       toast('Photo saved'); rerender();
     }, 'Uploading…');
   };
@@ -1352,9 +1364,11 @@ actions:
     const file = e.target.backup.files[0];
     if (!file || !confirm(`Replace ALL data here with ${file.name}? The current data is saved as a before-restore zip first.`)) return;
     const btn = $('button', e.target); btn.disabled = true;
-    $('#restoreMsg').textContent = 'Uploading and checking the backup…';
     try {
-      await api('/restore', { method: 'POST', body: new FormData(e.target) });
+      const fd = new FormData();
+      fd.append('upload', await uploadChunked(file, { purpose: 'restore' }, (t) => { $('#restoreMsg').textContent = t; }));
+      $('#restoreMsg').textContent = 'Checking the backup…';
+      await api('/restore', { method: 'POST', body: fd });
       $('#restoreMsg').textContent = 'Restoring and restarting…';
       if (!(await waitForRestart($('#restoreMsg')))) return;
       toast('Backup restored');

@@ -44,6 +44,12 @@ class AddonTest(unittest.TestCase):
         (db.DATA_DIR, db.DB_PATH, db.DOC_DIR, epc.EPC_DIR, epc.EPC_DB, epc.FILES_DIR, server.SETTINGS_PATH) = cls.saved
         shutil.rmtree(cls.tmp, ignore_errors=True)
 
+    def restore(self, data):
+        uid = self.c.post("/api/documents/chunked", json={"filename": "b.zip", "size": len(data), "purpose": "restore"}).get_json()["upload_id"]
+        for off in range(0, len(data), 4096):
+            self.c.put(f"/api/documents/chunked/{uid}?offset={off}", data=data[off:off + 4096], content_type="application/octet-stream")
+        return self.c.post("/api/restore", data={"upload": uid})
+
     def test_document_kinds(self):
         cid = self.c.post("/api/cars", json={"name": "Kinds car"}).get_json()["id"]
         ref = self.c.get("/api/refdata").get_json()["doc_kinds"]
@@ -73,7 +79,7 @@ class AddonTest(unittest.TestCase):
         self.assertTrue(any(n.startswith("documents/") for n in names))
         # change something, then restore the backup
         self.c.post("/api/cars", json={"name": "Temporary car"})
-        r = self.c.post("/api/restore", data={"backup": (io.BytesIO(backup), "b.zip")}, content_type="multipart/form-data")
+        r = self.restore(backup)
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
         self.assertTrue(os.path.exists(os.path.join(self.tmp, "restore-pending", "garage.db")))
         self.assertTrue(any(f.startswith("before-restore-") for f in os.listdir(self.tmp)))
@@ -92,22 +98,20 @@ class AddonTest(unittest.TestCase):
         self.assertFalse(db.apply_pending_restore())
 
     def test_restore_rejects_bad_zips(self):
-        post = lambda data: self.c.post("/api/restore", data={"backup": (io.BytesIO(data), "x.zip")},  # noqa: E731
-                                        content_type="multipart/form-data")
-        self.assertEqual(post(b"not a zip").status_code, 400)
+        self.assertEqual(self.restore(b"not a zip").status_code, 400)
         buf = io.BytesIO()
         with zipfile.ZipFile(buf, "w") as z:
             z.writestr("other.txt", "x")
-        self.assertEqual(post(buf.getvalue()).status_code, 400)
+        self.assertEqual(self.restore(buf.getvalue()).status_code, 400)
         buf = io.BytesIO()
         with zipfile.ZipFile(buf, "w") as z:
             z.writestr("garage.db", "x")
             z.writestr("../evil.txt", "x")
-        self.assertEqual(post(buf.getvalue()).status_code, 400)
+        self.assertEqual(self.restore(buf.getvalue()).status_code, 400)
         buf = io.BytesIO()
         with zipfile.ZipFile(buf, "w") as z:
             z.writestr("garage.db", "definitely not sqlite")
-        self.assertEqual(post(buf.getvalue()).status_code, 400)
+        self.assertEqual(self.restore(buf.getvalue()).status_code, 400)
         self.assertFalse(os.path.exists(os.path.join(self.tmp, "restore-pending")))
 
     def test_allowlist_and_addon_settings(self):
@@ -140,6 +144,14 @@ class AddonTest(unittest.TestCase):
         for fn in ("index.html", "app.js", "catalog.js"):
             with open(os.path.join(ROOT, "static", fn), encoding="utf-8") as f:
                 self.assertIsNone(bad.search(f.read()), fn)
+
+    def test_ui_sends_only_upload_purposes_the_server_takes(self):
+        sent = set()
+        for fn in ("app.js", "catalog.js"):
+            with open(os.path.join(ROOT, "static", fn), encoding="utf-8") as f:
+                sent |= set(re.findall(r"purpose: '(\w+)'", f.read()))
+        self.assertTrue(sent)
+        self.assertEqual(sent - set(server.UPLOAD_PURPOSES), set())
 
 
 if __name__ == "__main__":
