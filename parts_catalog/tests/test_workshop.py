@@ -8,7 +8,7 @@ import zipfile
 
 os.environ.setdefault("PARTS_CATALOG_DATA", tempfile.mkdtemp())
 
-from app import workshop  # noqa: E402
+from app import db, workshop  # noqa: E402
 from app.server import app  # noqa: E402
 
 
@@ -29,6 +29,7 @@ def pack():
 
 class WorkshopTests(unittest.TestCase):
     def setUp(self):
+        db.init()  # other test modules may have removed the shared data folder
         self.c = app.test_client()
         for fn in os.listdir(workshop.DIR) if os.path.isdir(workshop.DIR) else []:
             os.remove(os.path.join(workshop.DIR, fn))
