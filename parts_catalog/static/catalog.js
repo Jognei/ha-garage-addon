@@ -253,18 +253,25 @@ async function catalogSearch(params) {
 }
 
 async function catalogData() {
-  const [ov, val] = await Promise.all([api('/epc/overview'), api('/epc/validation')]);
+  const [ov, val, tree] = await Promise.all([api('/epc/overview'), api('/epc/validation'), api('/epc/categories')]);
   const sev = { error: 0, warning: 1, info: 2 };
   const summ = Object.entries(val.summary).sort((a, b) => sev[a[1].severity] - sev[b[1].severity]);
+  // The import form starts on the header's vehicle (or the only real one); its last choices come back while the header is unchanged.
+  let last = {};
+  try { last = JSON.parse(saved.get('epcImport')) || {}; } catch (e) { /* none */ }
+  const real = ov.vehicles.filter((v) => !v.is_sample);
+  const shown = EPC.vehicle ? ov.vehicles.find((v) => String(v.id) === EPC.vehicle) : real.length === 1 ? real[0] : null;
+  const impVehicle = last.header === EPC.vehicle && (last.vehicle === '' || ov.vehicles.some((v) => v.code === last.vehicle)) ? last.vehicle : shown && shown.code;
+  const groups = tree.flatMap((c) => [c, ...c.children]).map((c) => [c.code, `${c.code} - ${c.name}`]);
   view.innerHTML = `${await catalogHeader(ov.vehicles, 'Catalog data &amp; import', '<a href="#/catalog">Catalog</a>')}
     <h2>Import local files</h2>
     <form class="panel form" id="impForm">
       <label class="wide">Files: JSON bundle, CSV, saved HTML pages (with their image), or diagram images
         <input type="file" name="file" multiple required accept=".json,.csv,.tsv,.txt,.html,.htm,image/*"></label>
-      <label>Link to vehicle<select name="vehicle">${options(ov.vehicles.map((v) => [v.code, v.code]), ov.vehicles.find((v) => !v.is_sample)?.code, 'None')}</select></label>
-      <label>Main group for new diagrams<input name="category" placeholder="e.g. 11"></label>
+      <label>Link to vehicle<select name="vehicle">${options(ov.vehicles.map((v) => [v.code, v.code]), impVehicle, 'None')}</select></label>
+      <label>Main group for new diagrams<select name="category">${options(groups, last.category, 'None')}</select></label>
       <label>Diagram code (one HTML page)<input name="diagram" placeholder="default: file name"></label>
-      <label>Source name<input name="source" placeholder="e.g. My saved pages"></label>
+      <label>Source name<input name="source" value="${esc(last.source || '')}" placeholder="e.g. My saved pages"></label>
       <label class="row" style="flex-direction:row"><input type="checkbox" name="create" value="1"> Images with no matching diagram become new diagrams</label>
       <div><button class="primary">Import</button></div>
     </form>
@@ -286,6 +293,8 @@ async function catalogData() {
   wireHeader();
   $('#impForm').onsubmit = async (e) => {
     e.preventDefault();
+    const f = e.target.elements;
+    saved.set('epcImport', JSON.stringify({ header: EPC.vehicle, vehicle: f.vehicle.value, category: f.category.value, source: f.source.value.trim() }));
     const btn = $('button.primary', e.target); btn.disabled = true; btn.textContent = 'Importing…';
     try {
       const r = await fetch('api/epc/import', { method: 'POST', body: new FormData(e.target) });
