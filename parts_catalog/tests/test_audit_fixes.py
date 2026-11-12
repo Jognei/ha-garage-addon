@@ -90,6 +90,21 @@ class AuditFixesTest(unittest.TestCase):
         titles = [u["title"] for u in self.c.get(f"/api/cars/{cid}").get_json()["upcoming"]]
         self.assertEqual(titles, ["Wipers", "Tires", "Coolant"])  # overdue first, then the dragged order
 
+    def test_drag_order_applies_within_each_state(self):
+        cid = self.car("DEMO-GROUPS", 50000)
+        ids = self.c.post(f"/api/cars/{cid}/schedules", json={"items": [
+            {"title": "Oil", "interval_miles": 5000, "last_mileage": 40000},              # overdue
+            {"title": "Tires", "interval_miles": 10000, "last_mileage": 48000},           # ok, 8,000 of 10,000 left
+            {"title": "Coolant", "interval_miles": 30000, "last_mileage": 45000},         # ok, 25,000 of 30,000 left
+            {"title": "Spark plugs", "interval_miles": 60000, "last_mileage": 45000},     # ok, not dragged
+            {"title": "Brakes", "interval_miles": 10000, "last_mileage": 30000,
+             "snoozed_until": (dt.date.today() + dt.timedelta(days=30)).isoformat()},
+            {"title": "Wipers", "interval_miles": 10000}]}).get_json()["ids"]             # never done
+        _, tires, coolant, _, brakes, wipers = ids
+        self.c.post(f"/api/cars/{cid}/schedules/order", json={"ids": [wipers, brakes, coolant, tires]})
+        titles = [u["title"] for u in self.c.get(f"/api/cars/{cid}").get_json()["upcoming"]]
+        self.assertEqual(titles, ["Oil", "Coolant", "Tires", "Spark plugs", "Brakes", "Wipers"])
+
     def test_editing_a_done_project_keeps_its_finish_date(self):
         cid = self.car("DEMO-PROJ")
         pid = self.c.post(f"/api/cars/{cid}/projects", json={"title": "Control arms", "status": "Done",

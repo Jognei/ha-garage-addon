@@ -502,8 +502,7 @@ def upcoming(car, manual=False):
     out.sort(key=lambda u: (order[u["state"]], u["rank"], u["title"]))
     if manual:
         # a dragged order applies within each state, so overdue and due-soon always come first
-        lead = lambda u: 0 if u["state"] == "overdue" else 1 if u["state"] == "soon" else 2  # noqa: E731
-        out.sort(key=lambda u: (lead(u), u.get("sort_order") is None, u.get("sort_order") or 0))  # stable
+        out.sort(key=lambda u: (order[u["state"]], u.get("sort_order") is None, u.get("sort_order") or 0))  # stable
     return out
 
 
