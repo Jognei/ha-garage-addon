@@ -7,6 +7,7 @@ Values that a source doesn't give stay empty/NULL (shown as missing), never gues
 Re-importing the same diagram from the same source replaces that source's rows for the diagram, so
 imports are repeatable. Rows from a different source are kept and show up as duplicates in validation.
 """
+import codecs
 import csv
 import hashlib
 import html
@@ -54,26 +55,40 @@ def clean(v):
     return re.sub(r"\s+", " ", html.unescape(str(v))).strip()
 
 
-def opt(v):
-    v = clean(v)
-    return v or None
+MONTHS = ("january", "february", "march", "april", "may", "june", "july", "august", "september", "october", "november", "december")
 
 
-def yyyymm(v):
-    """'1991-02', '02/1991', '199102', '02.91' -> '199102'. Unparseable -> None (left missing)."""
+def yyyymm(v, rep=None, where=""):
+    """'1991-02', '02/1991', '199102', '02.91', '1991-02-15', '15/02/1991', 'Feb 1991' -> '199102'. Unreadable -> None, reported to rep."""
     v = clean(v)
     if not v:
         return None
-    m = re.match(r"^(\d{4})[-/.]?(\d{2})$", v)
-    if m:
-        return m.group(1) + m.group(2)
-    m = re.match(r"^(\d{1,2})[-/.](\d{4})$", v)
-    if m:
-        return f"{m.group(2)}{int(m.group(1)):02d}"
-    m = re.match(r"^(\d{1,2})[-/.](\d{2})$", v)
-    if m:
-        y = int(m.group(2))
-        return f"{1900 + y if y > 30 else 2000 + y}{int(m.group(1)):02d}"
+    y = mo = None
+    day, ambiguous = 1, False
+    ym = re.match(r"^(\d{4})(?:(\d{2})|[-/.](\d{1,2})(?:[-/.](\d{1,2}))?)$", v)
+    my = re.match(r"^(\d{1,2})[-/.](\d{4}|\d{2})$", v)
+    dmy = re.match(r"^(\d{1,2})[-/.](\d{1,2})[-/.](\d{4}|\d{2})$", v)
+    named = re.match(r"^(?:(\d{1,2})[\s.-]*)?([a-z]{3,})\.?[\s.-]*(?:(\d{1,2}),?\s+)?(\d{4}|\d{2})$", v.lower())
+    if ym:
+        y, mo, day = ym.group(1), int(ym.group(2) or ym.group(3)), int(ym.group(4) or 1)
+    elif my:
+        y, mo = my.group(2), int(my.group(1))
+    elif dmy:
+        a, b, y = int(dmy.group(1)), int(dmy.group(2)), dmy.group(3)
+        if a > 12 or a == b:
+            day, mo = a, b
+        elif b > 12:
+            mo, day = a, b
+        else:
+            ambiguous = True
+    elif named:
+        mo = next((i + 1 for i, n in enumerate(MONTHS) if n.startswith(named.group(2))), None)
+        y, day = named.group(4), int(named.group(1) or named.group(3) or 1)
+    if y and mo and 1 <= mo <= 12 and 1 <= day <= 31:
+        y = int(y) if len(y) == 4 else int(y) + (1900 if int(y) > 30 else 2000)
+        return f"{y}{mo:02d}"
+    if rep:
+        rep.problem(f"{where}: can't read date {v!r}{' (day and month could be either way round)' if ambiguous else ''}, left empty")
     return None
 
 
@@ -180,7 +195,7 @@ def upsert_vehicle(v, source_id, rep):
     vals = {k: clean(v.get(k)) for k in VEHICLE_FIELDS if v.get(k) is not None}
     for k in ("prod_from", "prod_to"):
         if v.get(k) is not None:
-            vals[k] = yyyymm(v.get(k))
+            vals[k] = yyyymm(v.get(k), rep, f"Vehicle {code}, {k}")
     conn = epc.connect()
     r = conn.execute("SELECT id FROM vehicles WHERE code=?", (code,)).fetchone()
     if r:
@@ -270,6 +285,7 @@ def replace_items(diagram_id, items, source_id, rep, source_file_id=None):
     """Replace this source's items on a diagram. Exact duplicates within the input are reported and skipped."""
     conn = epc.connect()
     conn.execute("DELETE FROM diagram_items WHERE diagram_id=? AND source_id IS ?", (diagram_id, source_id))
+    code = conn.execute("SELECT code FROM diagrams WHERE id=?", (diagram_id,)).fetchone()[0]
     seen = set()
     for n, it in enumerate(items):
         raw = clean(it.get("part_number"))
@@ -278,9 +294,12 @@ def replace_items(diagram_id, items, source_id, rep, source_file_id=None):
             pn = ""
         q = it.get("qty")
         q = None if q is None or clean(q) == "" else clean(q)
-        rec = dict(diagram_id=diagram_id, callout=clean(it.get("callout")), part_number=pn, part_number_raw=raw,
+        callout = clean(it.get("callout"))
+        where = f"Diagram {code} callout {callout or '?'}"
+        rec = dict(diagram_id=diagram_id, callout=callout, part_number=pn, part_number_raw=raw,
                    description=clean(it.get("description")), supplement=clean(it.get("supplement")), qty=q, qty_num=qty_num(q),
-                   from_date=yyyymm(it.get("from")), to_date=yyyymm(it.get("to")), fitment_note=clean(it.get("fitment_note")),
+                   from_date=yyyymm(it.get("from"), rep, where + ", from"), to_date=yyyymm(it.get("to"), rep, where + ", to"),
+                   fitment_note=clean(it.get("fitment_note")),
                    sort=it.get("sort", n), source_id=source_id, source_file_id=source_file_id)
         key = (rec["callout"], pn, rec["description"], rec["supplement"], rec["from_date"], rec["to_date"], rec["qty"], rec["fitment_note"])
         if key in seen:
@@ -332,7 +351,7 @@ def add_supersession(old, new, source_id, rep, date=None, note=""):
         rep.problem(f"Bad supersession skipped: {old} -> {new}")
         return
     epc.connect().execute("INSERT OR REPLACE INTO supersessions (old_pn, new_pn, date, note, source_id) VALUES (?,?,?,?,?)",
-                          (old, new, opt(date), clean(note), source_id))
+                          (old, new, yyyymm(date, rep, f"Supersession {old} -> {new}"), clean(note), source_id))
     rep.count("supersessions_added")
 
 
@@ -502,7 +521,10 @@ def import_csv(path, source_name=None, kind=None, vehicle=None, category=None, i
     vehicles, categories, diagrams). `vehicle` links every diagram in an items/diagrams CSV to that vehicle."""
     with open(path, "rb") as f:
         raw = f.read()
-    text = raw.decode("utf-8-sig", errors="replace")
+    try:
+        text, cp1252 = raw.decode("utf-8-sig"), False
+    except UnicodeDecodeError:
+        text, cp1252 = raw.decode("cp1252", errors="replace"), True
     try:
         dialect = csv.Sniffer().sniff(text[:4000], delimiters=",;\t|")
     except csv.Error:
@@ -518,6 +540,8 @@ def import_csv(path, source_name=None, kind=None, vehicle=None, category=None, i
     sid = get_source(name, "csv", is_sample)
     rep = Report(name)
     rep.count("kind_" + kind)
+    if cp1252:
+        rep.problem("Not valid UTF-8: read as Windows-1252")
     fid = store_file(sid, path, "csv", data=raw)
     m = map_headers(headers, CSV_FIELDS[kind])
     val = lambda r, k: r[m[k]] if k in m and m[k] < len(r) else None  # noqa: E731
@@ -656,14 +680,22 @@ def import_html(path, source_name=None, diagram=None, category=None, vehicle=Non
     Generic: any page with a parts table works. Only local files are read; remote image URLs are ignored."""
     with open(path, "rb") as f:
         raw = f.read()
-    text = raw.decode("utf-8", errors="replace")
-    p = _PageParser()
-    p.feed(text)
     name = source_name or "Saved HTML pages"
     sid = get_source(name, "html", is_sample)
     rep = Report(name)
     fid = store_file(sid, path, "html", data=raw)
     rep.count("html_files")
+    cs = re.search(rb"""<meta[^>]+charset\s*=\s*["']?\s*([\w.:-]+)""", raw, re.I)
+    enc = cs.group(1).decode("ascii") if cs else "utf-8"
+    try:
+        enc = codecs.lookup(enc).name
+    except LookupError:
+        rep.problem(f"{os.path.basename(path)}: unknown charset {enc!r}, read as UTF-8")
+        enc = "utf-8"
+    # browsers read pages labelled Latin-1 or ASCII as Windows-1252
+    text = raw.decode("cp1252" if enc in ("iso8859-1", "ascii") else enc, errors="replace")
+    p = _PageParser()
+    p.feed(text)
     code = clean(diagram) or slug(os.path.splitext(os.path.basename(path))[0])
     page_title = clean(title) or clean(p.title)
     found = find_parts_table(p.tables)

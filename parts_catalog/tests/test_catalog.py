@@ -168,8 +168,8 @@ class CatalogTest(unittest.TestCase):
 
     def write_csv(self, name, text, **kw):
         p = os.path.join(tempfile.mkdtemp(dir=self.tmp), name)
-        with open(p, "w", encoding="utf-8") as f:
-            f.write(text)
+        with open(p, "wb") as f:
+            f.write(text if isinstance(text, bytes) else text.encode("utf-8"))
         return epc_import.import_csv(p, "Test headers", **kw)
 
     def test_csv_header_names(self):
@@ -185,6 +185,25 @@ class CatalogTest(unittest.TestCase):
         rep = self.write_csv("spaced.csv", "Diagram code,Ref,Part number,Name\n95_0003,1,95111234568,Hose\n")
         self.assertEqual(rep.counts.get("kind_items"), 1)
         self.assertEqual(epc.row("SELECT description FROM diagram_items WHERE part_number='95111234568'")["description"], "Hose")
+
+    def test_dates_and_encodings(self):
+        for v in ("1990-08-01", "1990/08/01", "13/8/1990", "8/13/1990", "8/8/1990", "Aug 1990", "1-Aug-90", "1990-8"):
+            self.assertEqual(epc_import.yyyymm(v), "199008", v)
+        for v in ("8/1/1990", "1990-13", "13/1990", "Augx 1990"):
+            self.assertIsNone(epc_import.yyyymm(v), v)
+        rep = self.write_csv("dates.csv", "diagram,callout,part number,description,to\n96_0001,1,96111234567,Sch\xf8n pump,8/1/1990\n".encode("cp1252"))
+        self.assertIn("Diagram 96_0001 callout 1, to: can't read date '8/1/1990' (day and month could be either way round), left empty", rep.problems)
+        self.assertIn("Not valid UTF-8: read as Windows-1252", rep.problems)
+        self.assertEqual(epc.row("SELECT description FROM diagram_items WHERE part_number='96111234567'")["description"], "Schøn pump")
+        d = tempfile.mkdtemp(dir=self.tmp)
+        with open(os.path.join(d, "page.html"), "wb") as f:
+            f.write('<html><head><meta charset="windows-1252"></head><body><table><tr><th>No.</th><th>Description</th><th>Part Number</th></tr>'
+                    '<tr><td>1</td><td>Sch\xf8n hose</td><td>96 11 1 234 568</td></tr></table></body></html>'.encode("cp1252"))
+        epc_import.import_html(os.path.join(d, "page.html"), "Test HTML charset", "96_0002")
+        self.assertEqual(epc.row("SELECT description FROM diagram_items WHERE part_number='96111234568'")["description"], "Schøn hose")
+        # the newest replacement wins however its date was written
+        self.write_csv("sup.csv", "old,new,date\n96111230001,96111230002,1992-01\n96111230001,96111230003,02/1992\n")
+        self.assertEqual(epc.supersession_chain("96111230001")[0][0]["new_pn"], "96111230003")
 
     def test_images_import(self):
         d = tempfile.mkdtemp(dir=self.tmp)
