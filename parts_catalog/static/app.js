@@ -850,10 +850,10 @@ async function partsSection(el, { car = null, params = new URLSearchParams() } =
     </tbody></table>` : `<div class="empty">${none}</div>`}</div>
     ${carFilter === 'none' ? '<h2>Unassigned files</h2><div id="looseFiles"></div>' : ''}`;
 
-  // filters go into the address, replaced rather than added so Back still leaves the page
+  // filters go into the address, replaced rather than added so Back still leaves the page; the router draws it, so the last tap wins
   const refilter = (next) => {
     history.replaceState(null, '', `#${car ? '/car/' + car.id : ''}/parts${String(next) ? '?' + next : ''}`);
-    partsSection(el, { car, params: next });
+    rerender();
   };
   const pick = (f) => { localStorage.setItem('partsFilter', f); return withParam(params, 'status', f); };
   $$('[data-f]', el).forEach((b) => (b.onclick = () => refilter(pick(b.dataset.f))));
