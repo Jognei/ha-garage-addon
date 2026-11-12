@@ -8,6 +8,7 @@ Re-importing the same diagram from the same source replaces that source's rows f
 imports are repeatable. Rows from a different source are kept and show up as duplicates in validation.
 """
 import codecs
+import contextlib
 import csv
 import hashlib
 import html
@@ -16,6 +17,7 @@ import json
 import os
 import re
 import shutil
+import threading
 from collections import Counter
 from html.parser import HTMLParser
 
@@ -113,6 +115,27 @@ def get_source(name, kind="", is_sample=False, note=""):
                         (name, kind, 1 if is_sample else 0, note)).lastrowid
 
 
+_stored = threading.local()
+
+
+@contextlib.contextmanager
+def undo_on_failure():
+    """One import: if it fails, its rows are rolled back and the files it stored deleted, and the error goes on."""
+    _stored.paths = []
+    try:
+        yield
+    except BaseException:
+        epc.connect().rollback()
+        for rel in _stored.paths:
+            try:
+                os.remove(epc.file_path(rel))
+            except OSError:
+                pass
+        raise
+    finally:
+        _stored.paths = None
+
+
 def store_file(source_id, path, kind, data=None, name=None):
     """Copy a local file (or bytes) into data/epc/files/<source>/. Same content from the same source is stored once."""
     conn = epc.connect()
@@ -131,6 +154,8 @@ def store_file(source_id, path, kind, data=None, name=None):
     rel = os.path.join(rel_dir, base + ext)
     if os.path.exists(epc.file_path(rel)):
         rel = os.path.join(rel_dir, f"{base}-{sha[:8]}{ext}")
+    if getattr(_stored, "paths", None) is not None:
+        _stored.paths.append(rel)
     with open(epc.file_path(rel), "wb") as f:
         f.write(data)
     return conn.execute("INSERT INTO source_files (source_id, kind, original_name, stored_path, sha256, size) VALUES (?,?,?,?,?,?)",

@@ -461,6 +461,17 @@ class CatalogTest(unittest.TestCase):
         self.assertIn('"skipped": "Can\'t tell what this CSV holds from its headers', r.stdout)
         self.assertNotEqual(tool(os.path.join(d, "README.txt")).returncode, 0)  # named on its own it is meant as data
 
+    def test_failed_import_leaves_no_stored_files(self):
+        bundle = json.dumps({"source": {"name": "Half stored"}, "diagrams": [{"code": "86_0100", "image": "front.png"}, {"code": "86_0101", "sort": {"x": 1}}]})
+        self.assertIn("error", self.post_import(("half.json", bundle.encode()), ("front.png", png_bytes()))[0])
+        self.assertEqual(os.listdir(epc.file_path(os.path.join("files", "Half-stored"))), [])
+        d, data = tempfile.mkdtemp(dir=self.tmp), tempfile.mkdtemp(dir=self.tmp)
+        with open(os.path.join(d, "half.json"), "w", encoding="utf-8") as f:
+            f.write(bundle)
+        make_png(os.path.join(d, "front.png"))
+        subprocess.run([sys.executable, TOOL, d], env=dict(os.environ, PARTS_CATALOG_DATA=data), stdin=subprocess.DEVNULL, capture_output=True, timeout=60)
+        self.assertEqual(os.listdir(os.path.join(data, "epc", "files", "Half-stored")), [])
+
     def test_same_code_on_two_vehicles(self):
         def bundle(source, vehicle, title, pn):
             return {"source": {"name": source}, "vehicles": [{"code": vehicle, "series": vehicle[:3], "model": "x"}],

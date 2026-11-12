@@ -175,15 +175,16 @@ def import_files():
                 if p in htmls and len(htmls) == 1 and len(images) == 1:
                     kw["image"] = images[0]
                     referred.add(images[0])
-                rep = epc_import.import_path(p, **kw).as_dict()
+                with epc_import.undo_on_failure():
+                    rep = epc_import.import_path(p, **kw).as_dict()
                 rep["problems"] += problems
                 reports.append(rep)
             except Exception as e:  # noqa: BLE001 - report per file
-                epc.connect().rollback()
                 reports.append({"source": os.path.basename(p), "error": str(e)})
         loose = [p for p in images if p not in referred]
         if loose:
-            reports.append(epc_import.import_images(loose, opts["source_name"], opts["create"], opts["category"], opts["vehicle"]).as_dict())
+            with epc_import.undo_on_failure():
+                reports.append(epc_import.import_images(loose, opts["source_name"], opts["create"], opts["category"], opts["vehicle"]).as_dict())
         clashes = epc_import.Report("Uploaded files")
         for dst, n in Counter(sent_as.values()).items():
             if n > 1:

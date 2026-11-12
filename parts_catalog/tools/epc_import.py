@@ -71,11 +71,11 @@ def main():
 
     def run(name, do, skip=()):
         try:
-            print(json.dumps(do().as_dict(), indent=1))
+            with epc_import.undo_on_failure():
+                print(json.dumps(do().as_dict(), indent=1))
         except skip as e:
             print(json.dumps({"source": name, "skipped": str(e)}, indent=1))
         except Exception as e:  # noqa: BLE001 - report the file and go on with the rest
-            epc.connect().rollback()
             failed.append(name)
             print(json.dumps({"source": name, "error": str(e)}, indent=1))
 
