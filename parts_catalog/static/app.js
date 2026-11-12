@@ -754,6 +754,9 @@ async function partsSection(el, { car = null, params = new URLSearchParams() } =
         const carMi = (cars.find((c) => c.id === p.car_id) || {}).mileage;
         await save({ status: 'Installed', installed_mileage: p.installed_mileage ?? carMi ?? null, installed_date: p.installed_date || today() }, 'Marked installed');
       } else {
+        const mi = $('.mi', tr).value.trim(), on = $('.idate', tr).value;
+        const lost = [mi && `mileage (${mi})`, on && `date (${on})`].filter(Boolean).join(' and ');
+        if (lost && !confirm(`Move ${p.name} back to on hand? Its install ${lost} will be cleared.`)) { e.target.checked = true; return; }
         await save({ status: 'On hand', installed_mileage: null, installed_date: null }, 'Back to on hand');
       }
       reload();
@@ -964,6 +967,7 @@ function carDetails(el, car) {
     toast('Photo saved'); rerender();
   };
   if ($('#delPhoto')) $('#delPhoto').onclick = async () => {
+    if (!confirm(`Remove the photo of ${car.name}? The file is deleted.`)) return;
     await api(`/cars/${car.id}/photo`, { method: 'DELETE' }); toast('Photo removed'); rerender();
   };
   $('#delCar').onclick = async () => {
