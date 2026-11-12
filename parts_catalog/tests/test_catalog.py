@@ -139,6 +139,23 @@ class CatalogTest(unittest.TestCase):
         self.assertEqual(len(epc.diagram_detail(dg["id"])["items"]), 4)
         self.assertEqual(epc.row("SELECT COUNT(*) AS n FROM source_files WHERE source_id=(SELECT id FROM sources WHERE name='Test HTML')")["n"], 2)
 
+    def html_items(self, code, tables):
+        p = os.path.join(tempfile.mkdtemp(dir=self.tmp), code + ".html")
+        with open(p, "w", encoding="utf-8") as f:
+            f.write("<html><body>" + "".join("<table>" + "".join("<tr>" + "".join(f"<td>{c}</td>" for c in r) + "</tr>" for r in t) + "</table>"
+                                             for t in tables) + "</body></html>")
+        epc_import.import_html(p, "Test HTML tables", code)
+        return [(i["callout"], i["part_number"], i["description"]) for i in epc.diagram_detail(self.diag(code)["id"])["items"]]
+
+    def test_html_tables_without_spaced_numbers(self):
+        recent = [["Part number", "Description"], ["11 51 1 234 999", "Thermostat"]]
+        dashed = [["No.", "Description", "Qty", "Part Number"], ["1", "Water pump", "1", "11-51-1-234-567"], ["2", "Gasket", "1", "11.51.1.234.568"]]
+        self.assertEqual(self.html_items("97_0001", [recent, dashed]), [("1", "11511234567", "Water pump"), ("2", "11511234568", "Gasket")])
+        other_make = [["Ref", "Part No.", "Description"], ["1", "16100-39466", "Water pump"], ["2", "90915-YZZD1", "Oil filter"]]
+        self.assertEqual(self.html_items("97_0002", [other_make]), [("1", "1610039466", "Water pump"), ("2", "90915YZZD1", "Oil filter")])
+        no_numbers = [["No.", "Description", "Part Number"], ["1", "Water pump", ""], ["2", "Gasket", ""]]
+        self.assertEqual(self.html_items("97_0003", [no_numbers]), [("1", "", "Water pump"), ("2", "", "Gasket")])
+
     def test_csv_import_and_duplicates(self):
         d = tempfile.mkdtemp(dir=self.tmp)
         p = os.path.join(d, "items.csv")

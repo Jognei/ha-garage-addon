@@ -652,24 +652,23 @@ class _PageParser(HTMLParser):
             self.title += data
 
 
-PN_CELL = re.compile(r"^\d{2}\s?\d{2}\s?\d\s?\d{3}\s?\d{3}$")
-
-
 def find_parts_table(tables):
-    """The table that looks most like a parts list: a part-number header, or a column of 11-digit numbers."""
+    """The table that looks most like a parts list: part-number and description or callout headers, or a column of 11-digit numbers."""
     best, best_score = None, 0
     for t in tables:
         for hi in range(min(3, len(t))):
             head, body = t[hi], t[hi + 1:]
             m = map_headers(head, ["callout", "part_number", "description", "supplement", "qty", "from", "to", "fitment_note"])
             pn_col = m.get("part_number")
+            # under a part-number header any part number counts; without one, only an 11-digit column is taken for one
+            is_pn = epc.looks_like_pn if pn_col is not None else lambda c: epc.PN_RE.match(epc.norm_pn(c))
             hits = 0
             for col in ([pn_col] if pn_col is not None else range(max((len(r) for r in body), default=0))):
-                h = sum(1 for r in body if col < len(r) and PN_CELL.match(r[col]))
+                h = sum(1 for r in body if col < len(r) and is_pn(r[col]))
                 if h > hits:
                     hits, pn_col = h, col
             score = hits * 2 + len(m)
-            if hits and score > best_score:
+            if (hits or "part_number" in m and ("description" in m or "callout" in m)) and score > best_score:
                 m["part_number"] = pn_col
                 best, best_score = (m, body), score
     return best

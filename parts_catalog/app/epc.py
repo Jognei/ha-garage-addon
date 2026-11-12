@@ -234,6 +234,12 @@ def norm_pn(v):
     return re.sub(r"[\s\-./]", "", str(v or "")).upper()
 
 
+def looks_like_pn(v):
+    """Normalised, 3+ letters/digits with at least one digit."""
+    pn = norm_pn(v)
+    return bool(re.match(r"^[0-9A-Z]{3,}$", pn)) and any(ch.isdigit() for ch in pn)
+
+
 def fmt_pn(pn):
     """BMW 11-digit numbers display as 11 53 1 740 996."""
     if pn and PN_RE.match(pn):
