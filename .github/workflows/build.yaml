@@ -39,6 +39,15 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Refuse to overwrite a published version
+        if: github.event_name != 'pull_request'
+        env:
+          TAG: ${{ steps.v.outputs.image }}:${{ steps.v.outputs.version }}
+        run: |
+          if docker manifest inspect "$TAG" > /dev/null 2>&1; then
+            echo "::error::$TAG is already published. Raise version: in parts_catalog/config.yaml so this build doesn't overwrite it."
+            exit 1
+          fi
       - uses: docker/build-push-action@v6
         with:
           context: parts_catalog
