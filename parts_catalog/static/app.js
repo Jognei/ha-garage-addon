@@ -687,7 +687,7 @@ function presetsDialog(car, existing) {
     <p class="muted small">Tick what applies to this vehicle. Change intervals to match your manual. If you know when each was last done, fill it in so “upcoming” is accurate (you can also do that later).</p>
     <div class="table-wrap"><table class="items-table"><thead><tr><th></th><th>Service</th><th>Miles</th><th>Months</th><th>Last done date</th><th>Last done mi</th></tr></thead><tbody>
       ${list.map((p, i) => `${i === 0 || list[i - 1].group !== p.group ? `<tr class="group-row"><td colspan="6">${esc(p.group)}</td></tr>` : ''}<tr data-i="${i}"><td><input type="checkbox" class="pick"></td><td>${esc(p.title)}</td>
-        <td><input class="im" value="${p.interval_miles ?? ''}" style="width:80px"></td><td><input class="imo" value="${p.interval_months ?? ''}" style="width:60px"></td>
+        <td><input class="im" inputmode="numeric" value="${p.interval_miles ?? ''}" style="width:80px"></td><td><input class="imo" inputmode="numeric" value="${p.interval_months ?? ''}" style="width:60px"></td>
         <td><input type="date" class="ld"></td><td><input class="lm" inputmode="numeric" style="width:90px"></td></tr>`).join('')}
     </tbody></table></div>`,
   async (_, f) => {
@@ -834,7 +834,7 @@ function partDialog(p, cars, car) {
 
 function purchaseDialog(cars, car) {
   const row = () => `<tr><td><input class="n" placeholder="Name"></td><td><input class="pn" placeholder="Part #"></td><td><input class="b" placeholder="Brand"></td>
-    <td><input class="q" value="1" style="width:50px"></td><td><input class="pr" placeholder="0.00" style="width:80px"></td></tr>`;
+    <td><input class="q" inputmode="numeric" value="1" style="width:50px"></td><td><input class="pr" inputmode="decimal" placeholder="0.00" style="width:80px"></td></tr>`;
   const form = openDialog('Add a purchase', `
     <div class="form">
       <label>Vehicle<select name="car_id">${options(cars.map((c) => [c.id, c.name]), car && car.id, 'Not assigned')}</select></label>
