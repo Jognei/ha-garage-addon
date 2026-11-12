@@ -237,6 +237,14 @@ class AuditFixesTest(unittest.TestCase):
         self.assertIsNone(db.row("SELECT id FROM documents WHERE car_id=? AND kind='Photo'", (cid,)))
         self.assertIsNone(self.c.get(f"/api/cars/{cid}").get_json()["photo_id"])
 
+    def test_a_file_for_a_vehicle_id_that_is_not_a_number_is_refused_before_it_is_kept(self):
+        files = set(os.listdir(db.DOC_DIR))
+        r = self.c.post("/api/documents", data={"car_id": "Wagon", "kind": "Manual", "file": (io.BytesIO(b"%PDF-1.4"), "m.pdf")},
+                        content_type="multipart/form-data")
+        self.assertEqual((r.status_code, set(os.listdir(db.DOC_DIR))), (400, files))
+        r = self.c.post("/api/documents/chunked", json={"filename": "big.pdf", "size": 8, "car_id": "Wagon"})  # before it is sent
+        self.assertEqual((r.status_code, r.get_json().get("error")), (400, "Vehicle must be a number, not 'Wagon'"))
+
     def test_a_photo_sent_in_pieces_is_the_vehicle_photo(self):
         from PIL import Image
         cid = self.car("DEMO-BIG-PHOTO")

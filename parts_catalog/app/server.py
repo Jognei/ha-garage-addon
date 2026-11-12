@@ -1027,6 +1027,7 @@ def api_purchase():
 # ---------- documents (manuals, receipts) ----------
 
 def store_document(f, car_id, kind, title, notes=""):
+    car_id = to_int(car_id, "Vehicle")  # before the file is saved, so a bad one leaves none behind
     orig = os.path.basename(f.filename or "file")
     name = new_doc_name(orig)
     f.save(os.path.join(db.DOC_DIR, name))
@@ -1041,7 +1042,7 @@ def register_document(name, orig, car_id, kind, title, notes=""):
     """Add a row for a file already saved in DOC_DIR under `name`."""
     return db.execute("""INSERT INTO documents (car_id, kind, title, filename, original_name, size, notes)
                          VALUES (?,?,?,?,?,?,?)""",
-                      (to_int(car_id), kind if kind in db.DOC_KINDS else "Other",
+                      (car_id, kind if kind in db.DOC_KINDS else "Other",
                        title or os.path.splitext(orig)[0], name, orig,
                        os.path.getsize(os.path.join(db.DOC_DIR, name)), notes or "")).lastrowid
 
@@ -1097,6 +1098,7 @@ def api_chunked_start():
     b = body()
     orig = os.path.basename(str(b.get("filename") or "")).strip()
     size = to_int(b.get("size"))
+    car_id = to_int(b.get("car_id"), "Vehicle")
     purpose = b.get("purpose") or "document"
     if not orig or size is None or size < 0:
         return err("filename and size are required")
@@ -1114,7 +1116,7 @@ def api_chunked_start():
     uid = uuid.uuid4().hex
     meta_p, part_p = upload_paths(uid)
     with open(meta_p, "w", encoding="utf-8") as f:
-        json.dump({"filename": orig, "size": size, "purpose": purpose, "car_id": b.get("car_id"), "kind": b.get("kind") or "Manual",
+        json.dump({"filename": orig, "size": size, "purpose": purpose, "car_id": car_id, "kind": b.get("kind") or "Manual",
                    "title": b.get("title") or "", "notes": b.get("notes") or ""}, f)
     open(part_p, "wb").close()
     return jsonify(upload_id=uid, received=0)
