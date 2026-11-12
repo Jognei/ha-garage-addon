@@ -1,5 +1,5 @@
 """Offline catalog: importers, queries, validation, API. Run with the other tests:
-.venv\\Scripts\\python -m unittest discover tests"""
+cd parts_catalog && python -m unittest discover tests"""
 import io
 import json
 import os

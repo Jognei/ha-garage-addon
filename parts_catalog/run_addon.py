@@ -1,4 +1,4 @@
-"""Add-on entry point (the container's CMD). Plays the role run.pyw has on the PC:
+"""Add-on entry point (the container's CMD). Does what the PC launcher (not part of this repository) does on a PC:
 runs `python -m app` with data in /data and restarts it on exit code 3 (restore / settings) or a crash."""
 import json
 import os

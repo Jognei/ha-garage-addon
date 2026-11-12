@@ -24,7 +24,7 @@ STATIC = os.path.join(db.ROOT, "static")
 SETTINGS_PATH = os.path.join(db.DATA_DIR, "settings.json")
 DEFAULT_SETTINGS = {"lan": False, "port": 8765, "catalog": False, "agent_key": None}
 RESTART_CODE = 3
-# Set by the Home Assistant add-on (ha-addon/run.sh): no phone-access toggle, and optionally only
+# Set by the Home Assistant add-on (run_addon.py): no phone-access toggle, and optionally only
 # accept requests from HA's ingress proxy.
 ADDON = os.environ.get("PARTS_CATALOG_ADDON") == "1"
 ALLOWED_CLIENTS = {a.strip() for a in os.environ.get("PARTS_CATALOG_ALLOW", "").split(",") if a.strip()}
@@ -1109,7 +1109,7 @@ def api_settings():
             restart = True
         save_settings(s)
         if restart:
-            # run.pyw (the supervisor) relaunches us with the new bind address.
+            # The PC launcher (not part of this repository) relaunches us with the new bind address.
             threading.Timer(0.5, lambda: os._exit(RESTART_CODE)).start()
         return jsonify(ok=True, restarting=restart, settings=s)
     return jsonify(settings=s, lan_addresses=lan_addresses(), data_dir=db.DATA_DIR, addon=ADDON,

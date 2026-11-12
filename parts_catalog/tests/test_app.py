@@ -1,4 +1,4 @@
-"""Run: .venv\\Scripts\\python -m unittest discover tests"""
+"""Run: cd parts_catalog && python -m unittest discover tests"""
 import datetime as dt
 import io
 import json

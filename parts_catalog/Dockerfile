@@ -4,8 +4,8 @@ FROM python:3.12-slim-bookworm
 
 ENV PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1
 COPY . /tmp/src
-# If the build folder carries pre-downloaded wheels (tools/make_ha_addon.py does, for HA installs whose build
-# network has no DNS), install offline; otherwise from PyPI.
+# If the build folder carries pre-downloaded wheels (a packaging script, not part of this repository, adds them
+# for HA installs whose build network has no DNS), install offline; otherwise from PyPI.
 RUN cd /tmp/src \
  && if [ -d wheels ]; then pip install --no-cache-dir --no-index --find-links wheels -r requirements.txt; \
     else pip install --no-cache-dir -r requirements.txt; fi \
