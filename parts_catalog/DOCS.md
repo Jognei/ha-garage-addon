@@ -19,7 +19,25 @@ works, and Home Assistant handles sign-in.
 - **Estimated due dates:** when a service is due by mileage, the app estimates when you'll get there from your
   last year of odometer readings ("≈ Mar 2027").
 - **✓ on a garage card** logs that service as done, with the schedule already ticked.
+- **Dismiss for now:** ✕ on a garage card (or **Dismiss** in vehicle › Services) stops an overdue or due-soon service
+  showing as one until a date you pick. Logging it as done clears that, and **Bring back** undoes it. Until that
+  date it also stays out of `sensor.garage_overdue` and `sensor.garage_due_soon`.
+- **Service order:** drag a service by its icon, on the garage card or in vehicle › Services, to put it where you
+  want. Overdue and due-soon services still come first. **Back to most urgent first** undoes it.
+- **Quick services:** one-tap jobs (wash, fuel fill-up…) in **Log a service** that fill in what was done. Pick
+  which ones show, and add your own, under **Settings › Quick services**.
+- **Part quantities:** when you log a service, a part you have several of asks how many you used ("use 1 of 4").
+  The ones you used are marked installed, and the rest stay as they were.
+- **Customize cards** (garage page): show or hide the photo, the large odometer, the next project and the
+  buttons, hide services that are OK, and pick how many upcoming services a card lists. It applies on every device.
+- **Vehicle notes:** history, quirks and mods, at the top of the vehicle page (**＋ Add notes about this vehicle**).
 - **Export CSV:** service history (vehicle › Services) and parts (Parts › ⬇ CSV), for a spreadsheet or a buyer.
+
+## Projects
+A project is a bigger job, like a brake overhaul or a suspension refresh, with steps to tick off and the parts you
+set aside for it (vehicle › Projects). **Start** marks it in progress. **✓ Finish & log** opens **Log a service**
+with the project's name, the steps you ticked in the notes, and its parts on hand ticked; the project is done when
+you save that service. A vehicle's first open project shows on its garage card.
 
 ## Home Assistant sensors
 The add-on keeps these up to date (turn off with **Publish sensors**):
@@ -66,9 +84,20 @@ actions:
       mileage: "{{ trigger.to_state.state | int }}"
 ```
 
+## Car wash weather
+Under **Settings › Car wash weather**, turn on **Tell me when it's a good day to wash the car** and pick a Home
+Assistant weather entity. The add-on checks it every half hour. When it's warmer than your minimum and no rain is
+forecast for as many hours ahead as you choose, it sends a notification to the phones you tick (with none ticked,
+to Home Assistant's notifications). It sends no more often than you allow, not before the hour you set, and not
+soon after you log a service with "wash" or "detail" in its name. **Send a test** tries it out.
+
+While it's on, `binary_sensor.garage_wash_weather` is `on` on a good wash day, with a `summary` and the `reasons`
+as attributes.
+
 ## AI agents (MCP)
 Let an AI assistant such as Claude, or any app that supports MCP, work with your garage. It can list vehicles,
-check what's due, read service history, record odometer readings, log services, and add or update parts.
+check what's due, read service history, record odometer readings, log services, write a vehicle's notes
+(`set_vehicle_notes`), and add or update parts.
 1. In the add-on, go to **Settings › AI agents** and click **Turn on: create an agent key**.
 2. Turn on **Direct network access** and set a host port under **Network**, so the agent can reach the add-on.
 3. In the agent app, add an MCP server of type **HTTP**: `http://<home-assistant-ip>:<port>/mcp`, with the header
