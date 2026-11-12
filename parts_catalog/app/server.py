@@ -708,7 +708,9 @@ def refresh_schedule(sid):
 
 
 def mergeable(r):
-    return r["status"] == "On hand" and r["service_id"] is None and r["installed_date"] is None and r["installed_mileage"] is None
+    # a quantity of 0 was set by hand, and a merge counts it as 1; none at all is 1, as save_service counts it
+    return (r["status"] == "On hand" and r["service_id"] is None and r["installed_date"] is None and r["installed_mileage"] is None
+            and (r["qty"] is None or r["qty"] > 0))
 
 
 def back_on_hand(pid, car_id):

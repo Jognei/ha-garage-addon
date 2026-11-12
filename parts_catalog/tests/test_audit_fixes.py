@@ -813,6 +813,15 @@ class AuditFixesTest(unittest.TestCase):
         self.assertEqual(self.stock("Plug unticked by hand"), [(2, "On hand", None, None), (4, "On hand", None, None)])
         self.assertEqual([p["qty"] for s in self.c.get(f"/api/cars/{cid}/services").get_json() if s["id"] == rest for p in s["parts"]], [2])
 
+    def test_a_partly_used_row_set_to_0_since_stays_apart(self):
+        cid = self.car("DEMO-MERGE-ZERO")
+        for name, left, stock in (("Plug none left", 0, [(0, "On hand", None, None), (4, "On hand", None, None)]),
+                                  ("Plug no qty", None, [(5, "On hand", None, None)])):
+            pid, svc = self.use_four_of_six(cid, name, car_id=cid)
+            self.c.put(f"/api/parts/{pid}", json={"qty": left})
+            self.c.delete(f"/api/services/{svc}")
+            self.assertEqual(self.stock(name), stock, name)
+
     def test_a_service_that_used_a_row_and_its_copy_gives_one_row_back(self):
         cid = self.car("DEMO-MERGE-BOTH")
         pid, svc = self.use_four_of_six(cid, "Plug all used", car_id=cid)
