@@ -239,6 +239,17 @@ class AuditFixesTest(unittest.TestCase):
         self.assertEqual((p["status"], p["installed_date"], p["installed_mileage"]), ("On hand", None, None))
         self.assertEqual(self.c.get(f"/api/parts/{washer}").get_json()["status"], "Installed")
 
+    def test_using_none_of_a_part_is_refused(self):
+        cid = self.car("DEMO-QTY")
+        plugs = self.c.post("/api/parts", json={"car_id": cid, "name": "Spark plug", "qty": 6, "status": "On hand"}).get_json()["id"]
+        r = self.c.post(f"/api/cars/{cid}/services", json={"title": "Plugs", "parts": [{"id": plugs, "qty": 0}]})
+        self.assertEqual(r.status_code, 400)
+        self.assertEqual(self.c.get(f"/api/cars/{cid}/services").get_json(), [])
+        self.assertEqual(self.c.get(f"/api/parts/{plugs}").get_json()["status"], "On hand")
+        self.c.post(f"/api/cars/{cid}/services", json={"title": "Plugs", "parts": [{"id": plugs, "qty": 8}]})
+        p = self.c.get(f"/api/parts/{plugs}").get_json()
+        self.assertEqual((p["qty"], p["status"]), (6, "Installed"))  # more than the row has: the whole row
+
 
 if __name__ == "__main__":
     unittest.main()

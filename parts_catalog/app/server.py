@@ -635,6 +635,12 @@ def refresh_schedule(sid):
 def save_service(car_id, service_id, b):
     if not (b.get("title") or "").strip():
         return err("What was done? (title required)")
+    # parts used: [{"id": 7, "qty": 1}] (or the older part_ids). Using fewer than the part's quantity
+    # splits it: the rest stays as it was, the used ones become their own Installed entry.
+    uses = [{"id": to_int(u.get("id")), "qty": to_int(u.get("qty"))} for u in b.get("parts") or [] if isinstance(u, dict)]
+    uses += [{"id": int(pid), "qty": None} for pid in b.get("part_ids") or []]
+    if any(u["qty"] is not None and u["qty"] < 1 for u in uses):
+        return err("Use at least 1 of each ticked part.")
     date = to_date(b.get("date")) or today()
     mileage = to_int(b.get("mileage"))
     vals = dict(date=date, mileage=mileage, title=b["title"].strip(), notes=b.get("notes") or "",
@@ -656,10 +662,6 @@ def save_service(car_id, service_id, b):
         refresh_schedule(sid)
     for sid in b.get("schedule_ids") or []:  # done now, so a "dismissed until" date no longer applies
         db.execute("UPDATE schedules SET snoozed_until=NULL WHERE id=?", (int(sid),))
-    # parts used: [{"id": 7, "qty": 1}] (or the older part_ids). Using fewer than the part's quantity
-    # splits it: the rest stays as it was, the used ones become their own Installed entry.
-    uses = [{"id": to_int(u.get("id")), "qty": to_int(u.get("qty"))} for u in b.get("parts") or [] if isinstance(u, dict)]
-    uses += [{"id": int(pid), "qty": None} for pid in b.get("part_ids") or []]
     for u in uses:
         p = db.row("SELECT * FROM parts WHERE id=?", (u["id"],))
         if not p:

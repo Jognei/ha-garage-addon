@@ -520,7 +520,10 @@ async function serviceDialog(car, schedules, svc, checked, pre = {}) {
     ${svc ? '<div style="margin-top:14px"><button type="button" class="danger" id="delSvc">Delete this service</button></div>' : ''}`,
   async (data, f) => {
     const usedParts = $$('.use-row', f).filter((r) => $('input[name=part]', r).checked)
-      .map((r) => ({ id: +$('input[name=part]', r).value, qty: $('.useq', r) ? parseInt($('.useq', r).value, 10) || null : null }));
+      .map((r) => {
+        const n = $('.useq', r) ? parseInt($('.useq', r).value, 10) : NaN;
+        return { id: +$('input[name=part]', r).value, qty: Number.isNaN(n) ? null : n };
+      });
     const payload = { ...data, schedule_ids: $$('input[name=sched]:checked', f).map((i) => +i.value), parts: usedParts };
     delete payload.part;
     if (svc) await api('/services/' + svc.id, { method: 'PUT', json: payload });
@@ -554,7 +557,14 @@ async function serviceDialog(car, schedules, svc, checked, pre = {}) {
   };
   form.elements.mileage.oninput = form.elements.date.oninput = at;
   at();
-  $$('.useq', form).forEach((i) => (i.onclick = (e) => e.preventDefault()));  // typing a quantity shouldn't toggle the tick
+  $$('.useq', form).forEach((i) => {
+    i.onclick = (e) => e.preventDefault();  // clicking into the box shouldn't toggle the tick
+    i.oninput = () => { $('input[name=part]', i.closest('.use-row')).checked = true; };
+    i.onblur = () => {  // 1 up to the row's quantity, which the box starts at
+      const n = parseInt(i.value, 10), max = +i.defaultValue;
+      i.value = Number.isNaN(n) ? max : Math.min(max, Math.max(1, n));
+    };
+  });
   if ($('#partFilter', form)) $('#partFilter', form).oninput = (e) => {
     const q = e.target.value.trim().toLowerCase();
     $$('.use-row', form).forEach((r) => { r.hidden = !!q && !r.dataset.text.includes(q) && !$('input[name=part]', r).checked; });
