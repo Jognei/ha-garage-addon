@@ -1036,6 +1036,7 @@ function carFormHtml(c) {
     <label>Transmission<input name="transmission" value="${esc(c.transmission || '')}"></label>
     <label>VIN<input name="vin" value="${esc(c.vin || '')}"></label>
     <label>Plate<input name="plate" value="${esc(c.plate || '')}"></label>
+    ${c.id ? `<label>Sensor id (sensor.garage_&lt;this&gt;_odometer)<input name="ha_slug" value="${esc(c.ha_slug || '')}" placeholder="from the name"></label>` : ''}
     <label class="wide">Notes<textarea name="notes">${esc(c.notes || '')}</textarea></label>`;
 }
 

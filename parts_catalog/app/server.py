@@ -256,7 +256,7 @@ def api_refdata():
 
 # ---------- cars & mileage ----------
 
-CAR_FIELDS = ["name", "kind", "year", "make", "model", "engine", "transmission", "vin", "plate", "notes"]
+CAR_FIELDS = ["name", "kind", "year", "make", "model", "engine", "transmission", "vin", "plate", "notes", "ha_slug"]
 
 
 CAR_ORDER = "COALESCE(c.sort_order, c.id), c.id"
@@ -264,12 +264,18 @@ CAR_ORDER = "COALESCE(c.sort_order, c.id), c.id"
 NOT_CAR_PHOTO = "NOT EXISTS (SELECT 1 FROM cars pc WHERE pc.photo_id=d.id)"
 
 
-def car_values(b):
+def car_values(b, car_id=None):
     vals = {k: (str(b[k]).strip() or None) if b.get(k) is not None else None for k in CAR_FIELDS if k in b}
     if "year" in vals:
         vals["year"] = to_int(vals["year"], "Year")
     if "archived" in b:  # hidden from the garage and HA sensors (sold, stored...) but kept with its history
         vals["archived"] = 1 if b["archived"] in (True, 1, "1", "true", "on") else 0
+    if vals.get("ha_slug"):  # the middle of its sensors' ids, sensor.garage_<ha_slug>_odometer; blank = from the name
+        if not re.fullmatch(r"[a-z0-9_]+", vals["ha_slug"]):
+            raise BadInput(f"The sensor id takes only lower-case letters, digits and _, like blue_wagon, not {vals['ha_slug']!r}")
+        other = db.row("SELECT name FROM cars WHERE ha_slug=? AND id IS NOT ?", (vals["ha_slug"], car_id))
+        if other:
+            raise BadInput(f"{other['name']} already has the sensor id {vals['ha_slug']}")
     return vals
 
 
@@ -467,7 +473,7 @@ def api_car(car_id):
         return err("No such car", 404)
     if request.method == "PUT":
         b = body()
-        vals = car_values(b)
+        vals = car_values(b, car_id)
         if "name" in vals and not vals["name"]:
             return err("Name is required.")
         if vals:
@@ -1127,12 +1133,17 @@ def file_view(did, name):
 
 def ha_summary():
     """Compact per-car summary for Home Assistant (REST sensors, and the add-on's own sensors)."""
+    from . import ha_sensors
     out = []
+    held = {r["ha_slug"] for r in db.rows("SELECT ha_slug FROM cars WHERE ha_slug IS NOT NULL")}
     for c in db.rows("SELECT * FROM cars c WHERE IFNULL(c.archived, 0)=0 ORDER BY " + CAR_ORDER):
+        if not c["ha_slug"]:  # first publish: from the name in garage order, the ids given before they were stored
+            c["ha_slug"] = ha_sensors.slug(c["name"], held)
+            db.execute("UPDATE cars SET ha_slug=? WHERE id=?", (c["ha_slug"], c["id"]))
         up = upcoming(c)
         nxt = next((u for u in up if u["state"] not in ("unknown", "snoozed")), None)
         out.append({
-            "id": c["id"], "name": c["name"], "mileage": c["mileage"], "mileage_date": c["mileage_date"],
+            "id": c["id"], "name": c["name"], "ha_slug": c["ha_slug"], "mileage": c["mileage"], "mileage_date": c["mileage_date"],
             "overdue": sum(1 for u in up if u["state"] == "overdue"),
             "due_soon": sum(1 for u in up if u["state"] == "soon"),
             "next_service": nxt and {"title": nxt["title"], "due_mileage": nxt["due_mileage"], "due_date": nxt["due_date"],

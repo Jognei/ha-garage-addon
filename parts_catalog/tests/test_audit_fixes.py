@@ -4,6 +4,7 @@ import datetime as dt
 import io
 import json
 import os
+import re
 import shutil
 import tempfile
 import unittest
@@ -12,7 +13,7 @@ from unittest import mock
 
 os.environ.setdefault("PARTS_CATALOG_DATA", tempfile.mkdtemp())
 
-from app import db, epc, epc_api, server  # noqa: E402
+from app import db, epc, epc_api, ha_sensors, server  # noqa: E402
 from app.server import app  # noqa: E402
 
 
@@ -424,6 +425,50 @@ class AuditFixesTest(unittest.TestCase):
                                       "params": {"name": "get_vehicle", "arguments": {"vehicle": "DEMO-EST"}}},
                         headers={"Authorization": f"Bearer {key}"}).get_json()["result"]
         self.assertEqual(json.loads(r["content"][0]["text"])["upcoming"][0]["est_date"], est)
+
+    def odometers(self, *cids):
+        states = ha_sensors.build_states(self.c.get("/api/ha/summary").get_json())
+        return {s["attributes"]["car_id"]: (e, s["attributes"]["friendly_name"]) for e, s in states.items()
+                if e.endswith("_odometer") and s["attributes"]["car_id"] in cids}
+
+    def test_renaming_reordering_or_hiding_a_vehicle_keeps_its_sensor_ids(self):
+        first, second = self.car("Work Van"), self.car("Work Van")
+        self.assertEqual(self.odometers(first, second), {first: ("sensor.garage_work_van_odometer", "Work Van odometer"),
+                                                         second: ("sensor.garage_work_van_2_odometer", "Work Van odometer")})
+        self.c.put(f"/api/cars/{first}", json={"archived": True})
+        third = self.car("Work Van")  # added while the first is hidden: the id the first holds stays taken
+        self.assertEqual(self.odometers(first, second, third), {second: ("sensor.garage_work_van_2_odometer", "Work Van odometer"),
+                                                                third: ("sensor.garage_work_van_3_odometer", "Work Van odometer")})
+        self.c.put(f"/api/cars/{first}", json={"archived": False})
+        self.c.post("/api/cars/order", json={"ids": [third, second, first]})
+        self.c.put(f"/api/cars/{first}", json={"name": "Red Van"})
+        self.assertEqual(self.odometers(first, second), {first: ("sensor.garage_work_van_odometer", "Red Van odometer"),
+                                                         second: ("sensor.garage_work_van_2_odometer", "Work Van odometer")})
+        y = self.c.get("/api/ha/dashboard").get_data(as_text=True)
+        self.assertEqual(re.search(r'heading: "Red Van".*?entity: (\S+)_status', y, re.S).group(1), "sensor.garage_work_van")
+
+    def test_a_vehicle_sensor_id_can_be_changed_under_details(self):
+        cid = self.car("DEMO-SLUG")
+        self.car("DEMO-SLUG-OTHER")
+        self.assertEqual(self.odometers(cid)[cid][0], "sensor.garage_demo_slug_odometer")
+        put = lambda s: self.c.put(f"/api/cars/{cid}", json={"name": "DEMO-SLUG", "ha_slug": s})  # noqa: E731
+        for bad in ("Demo Slug", "demo-slug", "demo_slug_other"):
+            self.assertEqual(put(bad).status_code, 400, bad)
+        self.assertIn("lower-case letters, digits and _", put("demo-slug").get_json()["error"])
+        self.assertIn("DEMO-SLUG-OTHER", put("demo_slug_other").get_json()["error"])
+        self.assertEqual(put("demo_slug").status_code, 200)  # Details sends it back unchanged on every save
+        self.assertEqual(put("my_car").status_code, 200)
+        self.assertEqual(self.odometers(cid)[cid][0], "sensor.garage_my_car_odometer")
+        self.assertEqual(self.c.get(f"/api/cars/{cid}").get_json()["ha_slug"], "my_car")
+
+    def test_an_existing_garage_keeps_the_sensor_ids_it_published(self):
+        # before ids were stored: from the name, in garage order, hidden vehicles left out
+        hidden, a, b, c = (self.car(n) for n in ("Old Wagon", "Old Wagon", "Old Wagon 2", "Old Wagon"))
+        self.c.put(f"/api/cars/{hidden}", json={"archived": True})
+        self.c.post("/api/cars/order", json={"ids": [hidden, c, b, a]})
+        self.c.get("/api/ha/summary")
+        slugs = {cid: self.c.get(f"/api/cars/{cid}").get_json()["ha_slug"] for cid in (hidden, a, b, c)}
+        self.assertEqual(slugs, {hidden: None, c: "old_wagon", b: "old_wagon_2", a: "old_wagon_3"})
 
     def test_agent_list_arguments(self):
         cid = self.car("DEMO-AGENT", 10000)

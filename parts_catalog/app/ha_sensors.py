@@ -6,8 +6,9 @@ a background thread writes entity states through the Supervisor's Core API proxy
   sensor.garage_overdue / sensor.garage_due_soon / sensor.garage_parts_to_get        totals
   sensor.garage_<car>_odometer / _status / _next_service / _next_service_due / _parts_to_get
 
-<car> is the vehicle name slugified ("Blue Wagon" -> blue_wagon). States set this way disappear when
-HA restarts, so everything is re-sent every few minutes, and changes are sent within PUSH_EVERY seconds.
+<car> is the vehicle's stored ha_slug, its name slugified when first published ("Blue Wagon" -> blue_wagon), so
+a rename keeps its ids. States set this way disappear when HA restarts, so everything is re-sent every few
+minutes, and changes are sent within PUSH_EVERY seconds.
 Disable with the add-on option publish_sensors: false (PARTS_CATALOG_SENSORS=0).
 """
 import json
@@ -74,7 +75,7 @@ def build_states(summary):
     }
     used = set()
     for c in cars:
-        s = slug(c["name"], used)
+        s = c.get("ha_slug") or slug(c["name"], used)
         base = f"sensor.garage_{s}"
         nm = c["name"]
         common = {"car_id": c["id"], "car": nm}
@@ -111,7 +112,7 @@ def dashboard_yaml(summary, app_path="/local_parts_catalog"):
         "  sections:",
     ]
     for c in cars:
-        s = slug(c["name"], used)
+        s = c.get("ha_slug") or slug(c["name"], used)
         b = f"sensor.garage_{s}"
         lines += [
             "    - type: grid", "      cards:",
@@ -189,7 +190,7 @@ class Publisher:
             if full or self.sent.get(eid) != st:
                 self._req("POST", eid, st)
                 self.sent[eid] = st
-        for eid in [e for e in self.sent if e not in states]:  # deleted or renamed car
+        for eid in [e for e in self.sent if e not in states]:  # deleted or hidden car, or its sensor id changed
             try:
                 self._req("DELETE", eid)
             except Exception:  # noqa: BLE001 - already gone is fine

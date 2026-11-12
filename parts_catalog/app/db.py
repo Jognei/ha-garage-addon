@@ -192,7 +192,7 @@ def add_missing_columns(conn):
             conn.execute(f"ALTER TABLE schedules ADD COLUMN {col} {ddl}")
     have = {r[1] for r in conn.execute("PRAGMA table_info(cars)")}
     for col, ddl in (("sort_order", "INTEGER"), ("archived", "INTEGER DEFAULT 0"),
-                     ("photo_id", "INTEGER REFERENCES documents(id) ON DELETE SET NULL")):
+                     ("photo_id", "INTEGER REFERENCES documents(id) ON DELETE SET NULL"), ("ha_slug", "TEXT")):
         if col not in have:
             conn.execute(f"ALTER TABLE cars ADD COLUMN {col} {ddl}")
 

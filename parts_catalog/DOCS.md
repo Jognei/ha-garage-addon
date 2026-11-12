@@ -43,7 +43,8 @@ you save that service. A vehicle's first open project shows on its garage card.
 The add-on keeps these up to date (turn off with **Publish sensors**):
 - `sensor.garage_overdue`, `sensor.garage_due_soon`, `sensor.garage_parts_to_get`: totals
 - per vehicle, `sensor.garage_<vehicle>_odometer`, `_status`, `_next_service`, `_next_service_due`, `_parts_to_get`,
-  where `<vehicle>` is the vehicle's name in lower case with `_` for spaces (renaming a vehicle renames its sensors)
+  where `<vehicle>` is the vehicle's name in lower case with `_` for spaces when its sensors are first made. The ids
+  stay when you rename, reorder, or hide and show a vehicle; to change them, edit **Sensor id** under vehicle › Details.
 
 Use them in automations, e.g. a notification when `sensor.garage_overdue` goes above 0.
 
