@@ -82,9 +82,12 @@ async function uploadChunked(file, fields, onProgress) {
 }
 
 // A file that fits in one piece goes in the request as `field`; a bigger one goes up in pieces and the request names it.
-async function attachFile(fd, field, file, purpose, onProgress) {
-  if (file.size <= CHUNK) fd.append(field, file);
-  else fd.append('upload', await uploadChunked(file, { purpose }, onProgress));
+async function attachFile(fd, field, file, purpose, onProgress, sent) {
+  if (file.size <= CHUNK) return fd.append(field, file);
+  // `sent` remembers a file a refused save already uploaded, so trying again doesn't send it a second time
+  const id = (sent && sent.get(file)) || await uploadChunked(file, { purpose }, onProgress);
+  if (sent) sent.set(file, id);
+  fd.append('upload', id);
 }
 
 // Generic modal form. onSubmit(formData, form, okText) may throw to keep the dialog open; okText(t) relabels its OK button.
@@ -931,6 +934,7 @@ function partDialog(p, cars, car) {
 function purchaseDialog(cars, car) {
   const row = () => `<tr><td><input class="n" placeholder="Name"></td><td><input class="pn" placeholder="Part #"></td><td><input class="b" placeholder="Brand"></td>
     <td><input class="q" inputmode="numeric" value="1" style="width:50px"></td><td><input class="pr" inputmode="decimal" placeholder="0.00" style="width:80px"></td></tr>`;
+  const sentReceipts = new Map();
   const form = openDialog('Add a purchase', `
     <div class="form">
       <label>Vehicle<select name="car_id">${options(cars.map((c) => [c.id, c.name]), car && car.id, 'Not assigned')}</select></label>
@@ -950,7 +954,7 @@ function purchaseDialog(cars, car) {
     const fd = new FormData();
     const { receipt, ...rest } = data;
     fd.append('data', JSON.stringify({ ...rest, items }));
-    if (f.elements.receipt.files[0]) await attachFile(fd, 'receipt', f.elements.receipt.files[0], 'receipt', okText);
+    if (f.elements.receipt.files[0]) await attachFile(fd, 'receipt', f.elements.receipt.files[0], 'receipt', okText, sentReceipts);
     okText('Saving…');
     await api('/purchases', { method: 'POST', body: fd });
     toast(`Added ${items.length} parts`);
