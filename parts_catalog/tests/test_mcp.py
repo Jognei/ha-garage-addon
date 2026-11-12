@@ -133,6 +133,27 @@ class McpTest(unittest.TestCase):
         r, _ = self.tool("log_service", vehicle="Red Coupe", title="Plugs", schedules=["spark"])
         self.assertEqual((r["schedules_reset"], r["schedules_reset_titles"]), (1, ["Spark plugs"]))
 
+    def test_agents_see_every_schedule_by_urgency(self):
+        car = self.c.post("/api/cars", json={"name": "Grey Van", "mileage": 50000}).get_json()["id"]
+        snooze = (dt.date.today() + dt.timedelta(days=30)).isoformat()
+        ids = self.c.post(f"/api/cars/{car}/schedules", json={"items": [
+            {"title": "Wipers", "interval_months": 12},                                    # never done
+            {"title": "Coolant", "interval_miles": 30000, "last_mileage": 45000},          # ok, 25,000 of 30,000 left
+            {"title": "Tires", "interval_miles": 10000, "last_mileage": 48000},            # ok, 8,000 of 10,000 left
+            {"title": "Brakes", "interval_miles": 10000, "last_mileage": 30000, "snoozed_until": snooze},
+            {"title": "Oil", "interval_miles": 5000, "last_mileage": 40000}]}).get_json()["ids"]
+        self.c.post(f"/api/cars/{car}/schedules/order", json={"ids": [ids[1], ids[2]]})
+        try:
+            self.c.put("/api/settings", json={"card": {"upcoming_rows": 0, "hide_ok": True}})
+            vs, _ = self.tool("list_vehicles")
+            nxt = next(v["next"] for v in vs if v["id"] == car)
+            self.assertEqual([u["title"] for u in nxt], ["Oil", "Tires", "Coolant", "Brakes", "Wipers"])
+            self.assertEqual(nxt[3]["snoozed_until"], snooze)
+        finally:
+            self.c.put("/api/settings", json={"card": dict(server.CARD_DEFAULTS)})
+        due, _ = self.tool("whats_due", vehicle="Grey Van")
+        self.assertEqual(due[0]["dismissed"], [{"title": "Brakes", "snoozed_until": snooze}])
+
     def test_hidden_vehicles(self):
         sold = self.c.post("/api/cars", json={"name": "Sold Roadster"}).get_json()["id"]
         kept = self.c.post("/api/cars", json={"name": "Green Roadster"}).get_json()["id"]

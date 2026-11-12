@@ -31,10 +31,12 @@ def _tool(name, description, props=None, required=()):
 
 
 TOOLS = [
-    _tool("list_vehicles", "All vehicles with odometer, overdue / due-soon counts, next services and open parts; hidden = sold or stored."),
+    _tool("list_vehicles", "All vehicles with odometer, overdue / due-soon counts, every schedule (most urgent first) and open parts; "
+                           "hidden = sold or stored."),
     _tool("get_vehicle", "One vehicle in detail: every service schedule with its due mileage/date and state, recent odometer readings.",
           {"vehicle": VEHICLE}, ["vehicle"]),
-    _tool("whats_due", "Services that are overdue or due soon (and schedules never done), for one vehicle or all that aren't hidden.",
+    _tool("whats_due", "Services that are overdue or due soon (and schedules never done or dismissed until a date), for one vehicle "
+                       "or all that aren't hidden.",
           {"vehicle": VEHICLE}),
     _tool("list_services", "Service history of a vehicle, newest first.",
           {"vehicle": VEHICLE, "limit": {"type": "integer", "default": 20}}, ["vehicle"]),
@@ -103,14 +105,14 @@ def vehicle(ref):
 
 def due_row(u):
     return {k: u.get(k) for k in ("id", "title", "state", "due_mileage", "due_date", "miles_left", "days_left",
-                                  "interval_miles", "interval_months", "last_date", "last_mileage")}
+                                  "interval_miles", "interval_months", "last_date", "last_mileage", "snoozed_until")}
 
 
 def run_tool(name, a):
     if name == "list_vehicles":
         return [{"id": c["id"], "name": c["name"], "hidden": bool(c.get("archived")), "kind": c.get("kind"), "year": c.get("year"),
                  "odometer": c.get("mileage"), "odometer_date": c.get("mileage_date"), "overdue": c["overdue"], "due_soon": c["due_soon"],
-                 "next": [due_row(u) for u in c["upcoming"]], "parts_to_get": c["parts_open"],
+                 "next": [due_row(u) for u in call("GET", f"/cars/{c['id']}?manual=0")["upcoming"]], "parts_to_get": c["parts_open"],
                  "parts_on_hand": c["parts_on_hand"], "last_service": c["last_service"]} for c in call("GET", "/cars")]
     if name == "get_vehicle":
         c = call("GET", f"/cars/{vehicle(a['vehicle'])['id']}")
@@ -123,7 +125,9 @@ def run_tool(name, a):
             up = call("GET", f"/cars/{c['id']}")["upcoming"]
             out.append({"vehicle": c["name"], "odometer": c.get("mileage"),
                         "due": [due_row(u) for u in up if u["state"] in ("overdue", "soon")],
-                        "never_done": [u["title"] for u in up if u["state"] == "unknown"]})
+                        "never_done": [u["title"] for u in up if u["state"] == "unknown"],
+                        "dismissed": [{"title": u["title"], "snoozed_until": u["snoozed_until"]}
+                                      for u in up if u["state"] == "snoozed"]})
         return out
     if name == "list_services":
         rows = call("GET", f"/cars/{vehicle(a['vehicle'])['id']}/services")

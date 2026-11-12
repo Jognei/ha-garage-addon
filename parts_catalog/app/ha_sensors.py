@@ -54,7 +54,7 @@ def status_text(c):
         return "Overdue"
     if c["due_soon"]:
         return "Due soon"
-    return "OK" if c["next_service"] else "No schedule"
+    return "OK" if c["next_service"] or c.get("snoozed") else "No schedule"
 
 
 STATUS_ICON = {"Overdue": "mdi:alert-circle", "Due soon": "mdi:clock-alert-outline", "OK": "mdi:check-circle",

@@ -7,7 +7,7 @@ import unittest
 
 os.environ.setdefault("PARTS_CATALOG_DATA", tempfile.mkdtemp())
 
-from app import db, epc, epc_api, server  # noqa: E402
+from app import db, epc, epc_api, ha_sensors, server  # noqa: E402
 from app.server import app  # noqa: E402
 
 
@@ -96,6 +96,13 @@ class ProjectsTest(unittest.TestCase):
         self.assertEqual(self.card()["upcoming"][0]["title"], "Oil")
         for sid in ids:
             self.c.delete(f"/api/schedules/{sid}")
+
+    def test_only_dismissed_schedules_read_ok_in_home_assistant(self):
+        cid = self.c.post("/api/cars", json={"name": "Dismissed car"}).get_json()["id"]
+        self.c.post(f"/api/cars/{cid}/schedules", json={"items": [
+            {"title": "Wipers", "interval_months": 12, "last_date": day(-400), "snoozed_until": day(14)}]})
+        st = ha_sensors.build_states({"cars": [c for c in server.ha_summary()["cars"] if c["id"] == cid]})
+        self.assertEqual(st["sensor.garage_dismissed_car_status"]["state"], "OK")
 
     def test_use_some_of_a_part(self):
         plugs = self.c.post("/api/parts", json={"car_id": self.car, "name": "Spark plug", "part_number": "308", "qty": 6,

@@ -433,7 +433,7 @@ def api_car(car_id):
         if car.get("photo_id"):
             delete_document(car["photo_id"])
         return jsonify(ok=True)
-    car["upcoming"] = upcoming(car, manual=True)
+    car["upcoming"] = upcoming(car, manual=request.args.get("manual") != "0")
     car["mileage_log"] = db.rows("SELECT * FROM mileage_log WHERE car_id=? ORDER BY date DESC, id DESC LIMIT 20",
                                  (car_id,))
     return jsonify(car)
@@ -1041,6 +1041,7 @@ def ha_summary():
                                      "miles_left": nxt["miles_left"], "days_left": nxt["days_left"], "state": nxt["state"]},
             "parts_needed": db.row("SELECT COUNT(*) AS n FROM parts WHERE car_id=? AND status IN ('Needed','Check','Ordered')",
                                    (c["id"],))["n"],
+            "snoozed": sum(1 for u in up if u["state"] == "snoozed"),
         })
     return {"cars": out}
 
