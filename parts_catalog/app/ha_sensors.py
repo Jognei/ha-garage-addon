@@ -6,8 +6,9 @@ a background thread writes entity states through the Supervisor's Core API proxy
   sensor.garage_overdue / sensor.garage_due_soon / sensor.garage_parts_to_get        totals
   sensor.garage_<car>_odometer / _status / _next_service / _next_service_due / _parts_to_get
 
-<car> is the vehicle name slugified ("Blue Wagon" -> blue_wagon). States set this way disappear when
-HA restarts, so everything is re-sent every few minutes, and changes are sent within PUSH_EVERY seconds.
+<car> is the vehicle's stored ha_slug, its name slugified when first published ("Blue Wagon" -> blue_wagon), so
+a rename keeps its ids. States set this way disappear when HA restarts, so everything is re-sent every few
+minutes, and changes are sent within PUSH_EVERY seconds.
 Disable with the add-on option publish_sensors: false (PARTS_CATALOG_SENSORS=0).
 """
 import json
@@ -54,7 +55,7 @@ def status_text(c):
         return "Overdue"
     if c["due_soon"]:
         return "Due soon"
-    return "OK" if c["next_service"] else "No schedule"
+    return "OK" if c.get("schedules") else "No schedule"
 
 
 STATUS_ICON = {"Overdue": "mdi:alert-circle", "Due soon": "mdi:clock-alert-outline", "OK": "mdi:check-circle",
@@ -74,7 +75,7 @@ def build_states(summary):
     }
     used = set()
     for c in cars:
-        s = slug(c["name"], used)
+        s = c.get("ha_slug") or slug(c["name"], used)
         base = f"sensor.garage_{s}"
         nm = c["name"]
         common = {"car_id": c["id"], "car": nm}
@@ -91,14 +92,15 @@ def build_states(summary):
             **({"due_mileage": ns["due_mileage"], "due_date": ns["due_date"], "miles_left": ns["miles_left"],
                 "days_left": ns["days_left"], "state": ns["state"]} if ns else {})}}
         out[f"{base}_next_service_due"] = {"state": due_text(ns), "attributes": {
-            **common, "friendly_name": f"{nm} next service due", "icon": "mdi:calendar-arrow-right"}}
+            **common, "friendly_name": f"{nm} next service due", "icon": "mdi:calendar-arrow-right",
+            **({"estimated_date": ns["est_date"]} if ns else {})}}
         out[f"{base}_parts_to_get"] = {"state": c["parts_needed"], "attributes": {
             **common, "friendly_name": f"{nm} parts to get", "icon": "mdi:package-variant", "state_class": "measurement"}}
     return out
 
 
 def dashboard_yaml(summary, app_path="/local_parts_catalog"):
-    """A ready-to-paste sections view (Edit dashboard > ⋮ > Raw configuration editor, under views:)."""
+    """A sections view to paste on a new line under views: (Raw configuration editor), indented two like the views there."""
     cars = summary["cars"]
     used = set()
     lines = [
@@ -110,7 +112,7 @@ def dashboard_yaml(summary, app_path="/local_parts_catalog"):
         "  sections:",
     ]
     for c in cars:
-        s = slug(c["name"], used)
+        s = c.get("ha_slug") or slug(c["name"], used)
         b = f"sensor.garage_{s}"
         lines += [
             "    - type: grid", "      cards:",
@@ -131,7 +133,7 @@ def dashboard_yaml(summary, app_path="/local_parts_catalog"):
         "        - {type: heading, heading: Garage app, icon: mdi:car-wrench}",
         f"        - {{type: button, name: Open the Garage app, icon: mdi:open-in-app, show_state: false, tap_action: {{action: navigate, navigation_path: {app_path}}}}}",
     ]
-    return "\n".join(lines) + "\n"
+    return "".join(f"  {ln}\n" for ln in lines)
 
 
 class Publisher:
@@ -139,6 +141,7 @@ class Publisher:
         self.get_summary, self.token, self.api = get_summary, token, api
         self.sent = {}
         self.last_full = 0
+        self.swept = False
 
     def _req(self, method, entity_id, body=None):
         req = urllib.request.Request(f"{self.api}/states/{entity_id}", method=method,
@@ -160,14 +163,34 @@ class Publisher:
         except urllib.error.HTTPError as e:
             return e.code == 404
 
+    def remove_stale(self, keep=()):
+        """Delete the add-on's states in HA that `keep` doesn't name, including ones published before this start."""
+        req = urllib.request.Request(f"{self.api}/states", headers={"Authorization": f"Bearer {self.token}"})
+        with urllib.request.urlopen(req, timeout=10) as r:
+            listed = json.loads(r.read())
+        totals = build_states({"cars": []})
+        gone = 0
+        for s in listed:
+            eid = s["entity_id"]
+            # ours: a total, or a vehicle's sensor with its car_id; never another sensor.garage_* (a user's garage door)
+            ours = eid in totals or (eid.startswith("sensor.garage_") and "car_id" in (s.get("attributes") or {}))
+            if ours and eid not in keep:
+                self._req("DELETE", eid)
+                gone += 1
+        if gone:
+            log.info("Removed %d Home Assistant sensors the add-on no longer publishes", gone)
+
     def push(self, force=False):
         states = build_states(self.get_summary())
+        if not self.swept:  # e.g. vehicles missing from a restored backup
+            self.remove_stale(keep=states)
+            self.swept = True
         full = force or time.time() - self.last_full > REFRESH_EVERY or self.ha_lost_states()
         for eid, st in states.items():
             if full or self.sent.get(eid) != st:
                 self._req("POST", eid, st)
                 self.sent[eid] = st
-        for eid in [e for e in self.sent if e not in states]:  # deleted or renamed car
+        for eid in [e for e in self.sent if e not in states]:  # deleted or hidden car, or its sensor id changed
             try:
                 self._req("DELETE", eid)
             except Exception:  # noqa: BLE001 - already gone is fine
@@ -187,11 +210,21 @@ class Publisher:
             time.sleep(PUSH_EVERY)
 
 
+def enabled():
+    return bool(os.environ.get("SUPERVISOR_TOKEN")) and os.environ.get("PARTS_CATALOG_SENSORS", "1") != "0"
+
+
 def start(get_summary):
     token = os.environ.get("SUPERVISOR_TOKEN")
-    if not token or os.environ.get("PARTS_CATALOG_SENSORS", "1") == "0":
+    if not token:
         return None
-    p = Publisher(get_summary, token)
+    p = Publisher(get_summary, token, API)
+    if not enabled():  # publish_sensors is off: take down what an earlier start published
+        try:
+            p.remove_stale()
+        except Exception as e:  # noqa: BLE001 - HA unreachable; states set this way go when HA restarts
+            log.warning("Couldn't remove Home Assistant sensors: %s", e)
+        return None
     threading.Thread(target=p.run, name="ha-sensors", daemon=True).start()
     log.info("Publishing Home Assistant sensors")
     return p

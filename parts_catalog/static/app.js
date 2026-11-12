@@ -5,15 +5,23 @@ const $ = (s, el = document) => el.querySelector(s);
 const $$ = (s, el = document) => Array.from(el.querySelectorAll(s));
 const view = $('#view');
 let REF = null;
+// router() numbers each navigation; drawn is the newest one whose page is done. Only the newest draws into #view.
+let navSeq = 0, drawn = 0;
 
 const esc = (v) => String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const money = (v) => (v == null || v === '' ? '' : '$' + Number(v).toFixed(2));
 const miles = (v) => (v == null || v === '' ? '' : Number(v).toLocaleString() + ' mi');
 const num = (v) => (v == null || v === '' ? '' : Number(v).toLocaleString());
-const today = () => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; };  // local, not UTC
+const datePlus = (days) => { const d = new Date(); d.setDate(d.getDate() + days); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; };  // local, not UTC
+const today = () => datePlus(0);
 const sCls = (s) => 's-' + String(s || '').replace(/\s+/g, '-');
 const fmtSize = (b) => (b > 1e6 ? (b / 1e6).toFixed(1) + ' MB' : Math.max(1, Math.round(b / 1e3)) + ' KB');
 const fileUrl = (d, page) => `files/${d.id || d.doc_id}/${encodeURIComponent(d.original_name || d.filename || d.doc_title || 'file')}${page ? '#page=' + page : ''}`;
+
+const OFFLINE = "Couldn't reach the app. Check your connection and try again.";
+
+// What a failed response says. data is its parsed body: {} when the server or a proxy answered with a page, not JSON.
+const failMessage = (r, data) => data.error || (r.status === 413 ? 'That file is too big to send in one go' : `Something went wrong (HTTP ${r.status})`);
 
 async function api(path, opts = {}) {
   const init = { ...opts };
@@ -22,9 +30,12 @@ async function api(path, opts = {}) {
     init.headers = { 'Content-Type': 'application/json' };
     init.body = JSON.stringify(opts.json);
   }
-  const r = await fetch('api' + path, init);
-  const data = await r.json().catch(() => ({}));
-  if (!r.ok) throw new Error(data.error || (r.status === 413 ? 'That file is too big to send in one go' : `Something went wrong (HTTP ${r.status})`));
+  const n = navSeq, loading = n !== drawn;  // asked while navigation n is drawing its page
+  const r = await fetch('api' + path, init).catch(() => null);
+  const data = r ? await r.json().catch(() => ({})) : {};
+  if (loading && n !== navSeq) return new Promise(() => {});  // a newer navigation started: page n stops here, not over the new one
+  if (!r) throw new Error(OFFLINE);
+  if (!r.ok) throw new Error(failMessage(r, data));
   return data;
 }
 
@@ -40,26 +51,50 @@ function toast(msg, bad) {
   clearTimeout(toast.t);
   toast.t = setTimeout(() => (t.hidden = true), bad ? 6000 : 2200);
 }
+// a closed dialog hides what is inside it, so a toast raised in the dialog ("Part saved") moves back out when it closes
+$('#dlg').addEventListener('close', (e) => {
+  const t = $('#toast');
+  if (!e.target.open && t.parentNode !== document.body) document.body.appendChild(t);
+});
 
-// Big files (service manuals) go up in pieces: Home Assistant Ingress rejects large request bodies.
+// Files go up in pieces: Home Assistant Ingress refuses a request body over 16 MiB. fields.purpose says what the
+// upload is for (a document unless it says otherwise); this returns its id, for the request that uses it.
 const CHUNK = 4 * 1024 * 1024;
 async function uploadChunked(file, fields, onProgress) {
   const start = await api('/documents/chunked', { json: { ...fields, filename: file.name, size: file.size } });
-  let sent = 0;
+  let sent = 0, tries = 0;
+  onProgress(`Uploading ${file.name}… 0%`);
   while (sent < file.size) {
-    const r = await fetch(`api/documents/chunked/${start.upload_id}?offset=${sent}`, { method: 'PUT', body: file.slice(sent, sent + CHUNK) });
-    const d = await r.json().catch(() => ({}));
-    if (r.status === 409 && d.received != null) { sent = d.received; continue; } // resume where the server is
-    if (!r.ok) throw new Error(d.error || `Upload failed (HTTP ${r.status})`);
+    const r = await fetch(`api/documents/chunked/${start.upload_id}?offset=${sent}`, { method: 'PUT', body: file.slice(sent, sent + CHUNK) }).catch(() => null);
+    const d = r ? await r.json().catch(() => ({})) : {};
+    if (r && r.status === 409 && d.received != null) { sent = d.received; continue; } // resume where the server is
+    if (!r || !r.ok) {
+      // a dropped connection or a failed piece: send it again a moment later (the 409 above finds where the server got to)
+      if (++tries > 3) throw new Error(r ? failMessage(r, d) : OFFLINE);
+      await new Promise((res) => setTimeout(res, 1000 * tries));
+      continue;
+    }
+    tries = 0;
     sent = d.received;
-    onProgress(Math.floor((100 * sent) / file.size));
+    onProgress(`Uploading ${file.name}… ${Math.floor((100 * sent) / file.size)}%`);
   }
-  return api(`/documents/chunked/${start.upload_id}/finish`, { method: 'POST', json: {} });
+  return start.upload_id;
 }
 
-// Generic modal form. onSubmit(formData, form) may throw to keep the dialog open.
+// A file that fits in one piece goes in the request as `field`; a bigger one goes up in pieces and the request names it.
+async function attachFile(fd, field, file, purpose, onProgress, sent) {
+  if (file.size <= CHUNK) return fd.append(field, file);
+  // `sent` remembers a file a refused save already uploaded, so trying again doesn't send it a second time
+  const id = (sent && sent.get(file)) || await uploadChunked(file, { purpose }, onProgress);
+  if (sent) sent.set(file, id);
+  fd.append('upload', id);
+}
+
+// Generic modal form. onSubmit(formData, form, okText) may throw to keep the dialog open; okText(t) relabels its OK button.
+let dlgSeq = 0;  // counts openDialog calls: Cancel stays live while saving, so a save must leave a dialog opened after it alone
 function openDialog(title, html, onSubmit, { ok = 'Save', wide = false } = {}) {
   const dlg = $('#dlg');
+  const seq = ++dlgSeq, mine = () => seq === dlgSeq;
   $('#dlgTitle').textContent = title;
   $('#dlgBody').innerHTML = html;
   const okBtn = $('#dlgOk'), errLine = $('#dlgErr');
@@ -73,12 +108,14 @@ function openDialog(title, html, onSubmit, { ok = 'Save', wide = false } = {}) {
     if (busy) return;  // a second tap while saving would save twice
     busy = true; okBtn.disabled = true; okBtn.textContent = 'Saving…'; errLine.textContent = '';
     try {
-      await onSubmit(Object.fromEntries(new FormData(form)), form);
-      dlg.close();
+      await onSubmit(Object.fromEntries(new FormData(form)), form, (t) => { if (mine()) okBtn.textContent = t; });
+      if (mine()) dlg.close();
     } catch (err) {
-      errLine.textContent = err.message;  // shown next to the buttons, inside the dialog
+      if (mine() && dlg.open) errLine.textContent = err.message;  // shown next to the buttons, inside the dialog
+      else toast(err.message, true);
     } finally {
-      busy = false; okBtn.disabled = false; okBtn.textContent = ok;
+      busy = false;
+      if (mine()) { okBtn.disabled = false; okBtn.textContent = ok; }
     }
   };
   $('#dlgCancel').onclick = $('#dlgX').onclick = () => dlg.close();
@@ -86,6 +123,22 @@ function openDialog(title, html, onSubmit, { ok = 'Save', wide = false } = {}) {
   const first = $('input:not([type=hidden]),select,textarea', $('#dlgBody'));
   if (first) first.focus();
   return form;
+}
+
+// A dialog's Delete button: the dialog closes once the delete is done, unless another one was opened meanwhile.
+async function deleteInDialog(path) {
+  const seq = dlgSeq;
+  await api(path, { method: 'DELETE' });
+  if (seq === dlgSeq) $('#dlg').close();
+}
+
+// A form outside a dialog: its button is off (and reads busyText) while the request runs, so a double tap can't send it twice.
+async function submitting(form, work, busyText) {
+  const btn = $('button:not([type=button])', form), idle = btn.textContent;
+  if (btn.disabled) return;
+  btn.disabled = true;
+  if (busyText) btn.textContent = busyText;
+  try { await work(); } finally { btn.disabled = false; btn.textContent = idle; }
 }
 
 const options = (list, sel, blank) => (blank !== undefined ? `<option value="">${esc(blank)}</option>` : '') +
@@ -102,12 +155,24 @@ const routes = [
 ];
 
 async function router() {
+  const mine = ++navSeq;
+  view.setAttribute('aria-busy', 'true');
+  try { await route(); } finally { if (mine === navSeq) { drawn = mine; view.removeAttribute('aria-busy'); } }
+}
+
+async function route() {
   const hash = location.hash.slice(1) || '/';
   const [path, qs] = hash.split('?');
   const params = new URLSearchParams(qs || '');
   const key = path.split('/')[1] || 'home';
   $$('.nav a').forEach((a) => a.classList.toggle('active', a.dataset.nav === (['car', 'add-car'].includes(key) ? 'home' : key)));
-  if (!REF) REF = await api('/refdata');
+  if (!REF) {
+    try { REF = await api('/refdata'); } catch (e) {
+      view.innerHTML = `<div class="panel empty">${esc(e.message)} <button class="link" id="retry">Retry</button></div>`;
+      $('#retry').onclick = () => router();
+      return;
+    }
+  }
   applyFeatures();
   for (const [re, fn] of routes) {
     const m = path.match(re);
@@ -127,7 +192,8 @@ window.addEventListener('hashchange', () => { router(); window.scrollTo(0, 0); }
 // anything that fails without its own handler (a status change, a delete, a toggle) still says so
 window.addEventListener('unhandledrejection', (e) => {
   const m = (e.reason && e.reason.message) || String(e.reason || 'Something went wrong');
-  toast(m === 'Failed to fetch' ? "Couldn't reach the app. Check your connection and try again." : m, true);
+  // a fetch() of our own that never got an answer, in Chrome's, Safari's and Firefox's words
+  toast(/^(Failed to fetch|Load failed|NetworkError when attempting to fetch resource\.?)$/.test(m) ? OFFLINE : m, true);
 });
 $('#searchForm').addEventListener('submit', (e) => {
   e.preventDefault();
@@ -228,8 +294,6 @@ function sortable(root, itemSel, handleSel, onDone) {
   });
 }
 
-const datePlus = (days) => { const d = new Date(); d.setDate(d.getDate() + days); return d.toISOString().slice(0, 10); };
-
 // "Dismiss for now": the schedule stops counting as due soon / overdue until a date.
 function snoozeDialog(u) {
   const form = openDialog('Dismiss for now', `
@@ -250,7 +314,9 @@ async function usableParts(car, keep = () => false) {
   return own.concat(loose).filter((p) => p.status !== 'Installed' || keep(p));
 }
 
-const partSub = (p) => [p.brand, p.part_number, p.location, p.car_id ? '' : 'not assigned'].filter(Boolean).join(' · ');
+// `projectId`: the project being edited, whose own parts need no "for" mark
+const partSub = (p, projectId) => [p.brand, p.part_number, p.location, p.car_id ? '' : 'not assigned',
+  p.project_title && p.project_id !== projectId ? 'for ' + p.project_title : ''].filter(Boolean).join(' · ');
 
 async function updateMileage(car, value) {
   const m = parseInt(String(value).replace(/\D/g, ''), 10);
@@ -321,11 +387,11 @@ async function home() {
   const saveOrder = async () => {
     const ids = $$('#carGrid [data-car]').map((el) => +el.dataset.car);
     await api('/cars/order', { json: { ids } });
-    home();
+    rerender();
   };
   $$('[data-car]').forEach((card) => {
     const car = cars.find((c) => c.id === +card.dataset.car);
-    if ($('.mileage-form', card)) $('.mileage-form', card).onsubmit = (e) => { e.preventDefault(); updateMileage(car, e.target.m.value); };
+    if ($('.mileage-form', card)) $('.mileage-form', card).onsubmit = (e) => { e.preventDefault(); submitting(e.target, () => updateMileage(car, e.target.m.value)); };
     const logFor = async (ids) => {
       const full = await api('/cars/' + car.id);
       serviceDialog(full, full.upcoming, null, ids);
@@ -360,7 +426,7 @@ async function home() {
   $('#cardOpts').onclick = cardOptionsDialog;
   $$('button.unhide').forEach((b) => (b.onclick = async () => {
     await api('/cars/' + b.dataset.id, { method: 'PUT', json: { archived: false } });
-    toast('Back in the garage'); home();
+    toast('Back in the garage'); rerender();
   }));
 }
 
@@ -388,7 +454,7 @@ function cardOptionsDialog() {
 
 // ---------- car ----------
 
-async function carPage(id, tab = 'services') {
+async function carPage(id, tab = 'services', params) {
   const car = await api('/cars/' + id);
   const tabs = [['services', 'Services'], ['projects', 'Projects'], ['parts', 'Parts'], ['documents', 'Manuals & files'], ['details', 'Details']];
   view.innerHTML = `
@@ -403,11 +469,11 @@ async function carPage(id, tab = 'services') {
     <div class="panel car-notes" id="carNotes"></div>
     <div class="tabs">${tabs.map(([k, l]) => `<a href="#/car/${id}${k === 'services' ? '' : '/' + k}" class="${k === tab ? 'active' : ''}">${l}</a>`).join('')}</div>
     <div id="tab"></div>`;
-  $('#mileForm').onsubmit = (e) => { e.preventDefault(); updateMileage(car, e.target.m.value); };
+  $('#mileForm').onsubmit = (e) => { e.preventDefault(); submitting(e.target, () => updateMileage(car, e.target.m.value)); };
   carNotes($('#carNotes'), car);
   const el = $('#tab');
   if (tab === 'projects') return projectsTab(el, car);
-  if (tab === 'parts') return partsSection(el, { car });
+  if (tab === 'parts') return partsSection(el, { car, params });
   if (tab === 'documents') return documentsTab(el, car);
   if (tab === 'details') return carDetails(el, car);
   return servicesTab(el, car);
@@ -427,11 +493,13 @@ function carNotes(el, car) {
     const f = $('#notesForm', el);
     f.elements.notes.focus();
     $('#cancelNotes', el).onclick = show;
-    f.onsubmit = async (e) => {
+    f.onsubmit = (e) => {
       e.preventDefault();
-      const notes = f.elements.notes.value.trim();
-      await api('/cars/' + car.id, { method: 'PUT', json: { notes } });
-      car.notes = notes; toast('Notes saved'); show();
+      submitting(f, async () => {
+        const notes = f.elements.notes.value.trim();
+        await api('/cars/' + car.id, { method: 'PUT', json: { notes } });
+        car.notes = notes; toast('Notes saved'); show();
+      });
     };
   };
   show();
@@ -446,26 +514,26 @@ async function servicesTab(el, car) {
     <div class="spread"><h2 style="margin-top:0">Upcoming services</h2>
       <div class="row"><button id="addPresets">＋ Common services</button><button id="addSched">＋ Custom schedule</button><button class="primary" id="logSvc">Log a service</button></div></div>
     ${car.archived ? '<div class="callout-box" style="margin-bottom:12px">This vehicle is hidden from the garage and Home Assistant. <a href="#/car/' + car.id + '/details">Show it again</a> under Details.</div>' : ''}
-    <div class="panel table-wrap" style="padding:0">${up.length ? `<table><thead><tr><th></th><th>Service</th><th>Interval</th><th>Last done</th><th>Due</th><th></th><th>Manual</th><th></th></tr></thead><tbody>
+    <div class="panel table-wrap" style="padding:0">${up.length ? `<table><thead><tr><th></th><th>Service</th><th class="hide-sm">Interval</th><th class="hide-sm">Last done</th><th>Due</th><th class="hide-sm"></th><th class="hide-sm">Manual</th><th></th></tr></thead><tbody>
       ${up.map((u) => `<tr class="upcoming-row" data-sid="${u.id}">
         <td style="width:1%"><span class="svc-ico ${u.state}${up.length > 1 ? ' grip" title="Drag to reorder' : ''}">${svcIcon(u.title)}</span></td>
         <td><b>${esc(u.title)}</b>${u.notes ? `<div class="small muted">${esc(u.notes)}</div>` : ''}</td>
-        <td class="small">${esc(intervalText(u))}</td>
-        <td class="small">${u.last_date || u.last_mileage != null ? `${esc(u.last_date || '')}${u.last_mileage != null ? ' @ ' + miles(u.last_mileage) : ''}` : '<span class="muted">never logged</span>'}</td>
+        <td class="small hide-sm">${esc(intervalText(u))}</td>
+        <td class="small hide-sm">${u.last_date || u.last_mileage != null ? `${esc(u.last_date || '')}${u.last_mileage != null ? ' @ ' + miles(u.last_mileage) : ''}` : '<span class="muted">never logged</span>'}</td>
         <td class="small">${[u.due_mileage != null ? miles(u.due_mileage) : '', esc(u.due_date || '')].filter(Boolean).join(' / ')}<div class="muted">${esc(dueText(u))}</div></td>
-        <td>${stateChip(u)}${u.state === 'snoozed' ? `<div class="small muted">until ${esc(u.snoozed_until)}</div>` : ''}</td>
-        <td class="small">${u.doc_id ? `<a href="${fileUrl({ id: u.doc_id, original_name: u.doc_title + '.pdf' }, u.doc_page)}" target="_blank">${esc(u.doc_title)}${u.doc_page ? ' p.' + u.doc_page : ''}</a>` : ''}</td>
-        <td class="num" style="white-space:nowrap"><button class="done">✓ Done</button>
+        <td class="hide-sm">${stateChip(u)}${u.state === 'snoozed' ? `<div class="small muted">until ${esc(u.snoozed_until)}</div>` : ''}</td>
+        <td class="small hide-sm">${u.doc_id ? `<a href="${fileUrl({ id: u.doc_id, original_name: u.doc_title + '.pdf' }, u.doc_page)}" target="_blank">${esc(u.doc_title)}${u.doc_page ? ' p.' + u.doc_page : ''}</a>` : ''}</td>
+        <td class="num up-act"><button class="done">✓ Done</button>
           ${['overdue', 'soon'].includes(u.state) ? '<button class="link snooze">Dismiss</button>' : ''}${u.state === 'snoozed' ? '<button class="link unsnooze">Bring back</button>' : ''}
           <button class="link edit">Edit</button></td></tr>`).join('')}
     </tbody></table>${up.some((u) => u.sort_order != null) ? '<div class="small muted" style="padding:8px 10px">In your own order. <button class="link" id="autoOrder">Back to most urgent first</button></div>' : ''}` : `<div class="empty">No schedules yet. Click <b>＋ Common services</b> to pick oil changes, filters, fluids and so on.</div>`}</div>
 
     <div class="spread" style="align-items:center"><h2>Service history</h2>${services.length ? `<a class="btn" href="api/cars/${car.id}/export/services.csv">⬇ Export CSV</a>` : ''}</div>
-    <div class="panel table-wrap" style="padding:0">${services.length ? `<table><thead><tr><th>Date</th><th class="num">Mileage</th><th>Work</th><th>Parts used</th><th class="num">Cost</th><th>By</th><th></th></tr></thead><tbody>
+    <div class="panel table-wrap" style="padding:0">${services.length ? `<table><thead><tr><th>Date</th><th class="num">Mileage</th><th>Work</th><th class="hide-sm">Parts used</th><th class="num">Cost</th><th class="hide-sm">By</th><th></th></tr></thead><tbody>
       ${services.map((s) => `<tr data-svc="${s.id}"><td style="white-space:nowrap">${esc(s.date)}</td><td class="num">${num(s.mileage)}</td>
         <td><b>${esc(s.title)}</b>${s.notes ? `<div class="small muted" style="white-space:pre-wrap">${esc(s.notes)}</div>` : ''}</td>
-        <td class="small">${s.parts.map((p) => (p.qty > 1 ? p.qty + '× ' : '') + esc(p.name) + (p.part_number ? ` <span class="muted mono">${esc(p.part_number)}</span>` : '')).join('<br>')}</td>
-        <td class="num">${money(s.cost)}</td><td class="small">${esc(s.done_by)}</td>
+        <td class="small hide-sm">${s.parts.map((p) => (p.qty > 1 ? p.qty + '× ' : '') + esc(p.name) + (p.part_number ? ` <span class="muted mono">${esc(p.part_number)}</span>` : '')).join('<br>')}</td>
+        <td class="num">${money(s.cost)}</td><td class="small hide-sm">${esc(s.done_by)}</td>
         <td class="num"><button class="link edit">Edit</button></td></tr>`).join('')}
     </tbody></table>` : '<div class="empty">Nothing logged yet.</div>'}</div>`;
 
@@ -520,31 +588,36 @@ async function serviceDialog(car, schedules, svc, checked, pre = {}) {
     ${svc ? '<div style="margin-top:14px"><button type="button" class="danger" id="delSvc">Delete this service</button></div>' : ''}`,
   async (data, f) => {
     const usedParts = $$('.use-row', f).filter((r) => $('input[name=part]', r).checked)
-      .map((r) => ({ id: +$('input[name=part]', r).value, qty: $('.useq', r) ? parseInt($('.useq', r).value, 10) || null : null }));
+      .map((r) => {
+        const n = $('.useq', r) ? parseInt($('.useq', r).value, 10) : NaN;
+        return { id: +$('input[name=part]', r).value, qty: Number.isNaN(n) ? null : n };
+      });
     const payload = { ...data, schedule_ids: $$('input[name=sched]:checked', f).map((i) => +i.value), parts: usedParts };
     delete payload.part;
     if (svc) await api('/services/' + svc.id, { method: 'PUT', json: payload });
     else await api(`/cars/${car.id}/services`, { json: payload });
-    if (pre.onSaved) await pre.onSaved();
     toast('Service saved');
+    // the service is in: if what follows fails, the dialog still closes, or Save would post it a second time
+    if (pre.onSaved) { try { await pre.onSaved(); } catch (e) { toast(e.message, true); } }
     rerender();
   });
   $$('input[name=sched]', form).forEach((cb) => (cb.onchange = () => {
     checked = $$('input[name=sched]:checked', form).map((i) => +i.value);
     if (!svc && !pre.title) form.elements.title.value = [titleFrom(), ...$$('.quick-list .on[data-q]', form).map((b) => b.dataset.q)].filter(Boolean).join(', ');
   }));
-  // quick picks add to (or take out of) "What was done"
-  // (matched as whole text, not by splitting on commas: some job names contain one)
+  // quick picks add to (or take out of) "What was done", only as a whole entry between commas
+  // (the name is matched whole, not by splitting the title on commas: some job names contain one)
   const tidy = (t) => t.replace(/\s*,\s*(,\s*)+/g, ', ').replace(/^\s*,\s*|\s*,\s*$/g, '').trim();
+  const entry = (q) => new RegExp(`(^|,)\\s*${q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*(?=,|$)`, 'g');
   if ($('.quick-edit-link', form)) $('.quick-edit-link', form).onclick = () => $('#dlg').close();
   const quickToggle = (b) => {
     const t = form.elements.title.value, q = b.dataset.q;
     const on = b.classList.contains('on');
-    form.elements.title.value = on ? tidy(t.split(q).join(',')) : tidy(t ? `${t}, ${q}` : q);
+    form.elements.title.value = on ? tidy(t.replace(entry(q), '$1')) : tidy(t ? `${t}, ${q}` : q);
     b.classList.toggle('on', !on);
   };
   $$('.quick-list button[data-q]', form).forEach((b) => {
-    b.classList.toggle('on', form.elements.title.value.includes(b.dataset.q));
+    b.classList.toggle('on', entry(b.dataset.q).test(form.elements.title.value));
     b.onclick = () => quickToggle(b);
   });
   const at = () => {
@@ -554,15 +627,22 @@ async function serviceDialog(car, schedules, svc, checked, pre = {}) {
   };
   form.elements.mileage.oninput = form.elements.date.oninput = at;
   at();
-  $$('.useq', form).forEach((i) => (i.onclick = (e) => e.preventDefault()));  // typing a quantity shouldn't toggle the tick
+  $$('.useq', form).forEach((i) => {
+    i.onclick = (e) => e.preventDefault();  // clicking into the box shouldn't toggle the tick
+    i.oninput = () => { $('input[name=part]', i.closest('.use-row')).checked = true; };
+    i.onblur = () => {  // 1 up to the row's quantity, which the box starts at
+      const n = parseInt(i.value, 10), max = +i.defaultValue;
+      i.value = Number.isNaN(n) ? max : Math.min(max, Math.max(1, n));
+    };
+  });
   if ($('#partFilter', form)) $('#partFilter', form).oninput = (e) => {
     const q = e.target.value.trim().toLowerCase();
     $$('.use-row', form).forEach((r) => { r.hidden = !!q && !r.dataset.text.includes(q) && !$('input[name=part]', r).checked; });
   };
   if (svc) $('#delSvc').onclick = async () => {
     if (!confirm('Delete this service record?')) return;
-    await api('/services/' + svc.id, { method: 'DELETE' });
-    $('#dlg').close(); rerender();
+    await deleteInDialog('/services/' + svc.id);
+    rerender();
   };
 }
 
@@ -602,7 +682,7 @@ async function projectsTab(el, car) {
       const done = p.tasks.filter((t) => t.done).map((t) => '- ' + t.title);
       serviceDialog(car, car.upcoming, null, [], { title: p.title, notes: [done.join('\n'), p.notes].filter(Boolean).join('\n\n'),
         partIds: p.parts.filter((x) => x.status === 'On hand').map((x) => x.id),
-        onSaved: () => put(p, { status: 'Done' }) });
+        onSaved: () => put(p, { status: 'Done' }).catch((e) => { throw new Error(`Service saved, but the project isn't marked done (${e.message}). Use Edit to set it to Done.`); }) });
     };
     $$('[data-tid]', box).forEach((cb) => (cb.onchange = async () => {
       await api('/project-tasks/' + cb.dataset.tid, { method: 'PUT', json: { done: cb.checked } });
@@ -618,37 +698,54 @@ async function projectsTab(el, car) {
 async function projectDialog(car, p) {
   const mine = new Set(p ? p.parts.map((x) => x.id) : []);
   const parts = await usableParts(car, (x) => mine.has(x.id));
+  // each step is its own box carrying its id, so retyping a step keeps its tick
+  const stepRow = (t) => `<div class="row" style="gap:6px"><input class="step" aria-label="Step" data-id="${t.id || ''}" value="${esc(t.title || '')}" placeholder="${esc(t.hint || '')}" style="flex:1">
+    <button type="button" class="link" title="Remove this step" aria-label="Remove this step">✕</button></div>`;
   const form = openDialog(p ? 'Edit project' : 'New project', `
     <div class="form">
       <label class="wide">Project<input name="title" required value="${esc(p ? p.title : '')}" placeholder="e.g. Suspension refresh"></label>
       <label>Status<select name="status">${options(REF.project_statuses, p ? p.status : 'Planned')}</select></label>
       <label>Target date<input type="date" name="target_date" value="${esc(p ? p.target_date || '' : '')}"></label>
-      <label class="wide">Steps (one per line)<textarea name="steps" rows="6" placeholder="Order parts&#10;Replace front control arms&#10;Get an alignment">${esc(p ? p.tasks.map((t) => t.title).join('\n') : '')}</textarea></label>
+      <label class="wide">Steps<div id="steps" style="display:grid;gap:6px">${(p && p.tasks.length ? p.tasks : [{ hint: 'e.g. Order parts' }]).map(stepRow).join('')}</div>
+        <button type="button" class="link" id="addStep" style="align-self:flex-start;color:var(--accent)">＋ Add a step</button></label>
       <label class="wide">Notes<textarea name="notes" placeholder="Plan, torque specs, things to order…">${esc(p ? p.notes : '')}</textarea></label>
     </div>
     ${parts.length ? `<h3>Parts for this project</h3>
       ${parts.length > 8 ? '<input id="partFilter" type="search" placeholder="Filter parts…" style="width:100%;margin-bottom:6px">' : ''}
       <div class="use-list">${parts.map((x) => `<label class="use-row" data-text="${esc([x.name, x.brand, x.part_number, x.location, x.category].join(' ').toLowerCase())}">
         <input type="checkbox" name="part" value="${x.id}" ${mine.has(x.id) ? 'checked' : ''}>
-        <span class="use-main"><b>${esc(x.name)}</b><span class="muted small">${esc(partSub(x))}</span></span>
+        <span class="use-main"><b>${esc(x.name)}</b><span class="muted small">${esc(partSub(x, p && p.id))}</span></span>
         <span class="small ${sCls(x.status)}">${esc(x.status)}</span></label>`).join('')}</div>` : ''}
     ${p ? '<div style="margin-top:14px"><button type="button" class="danger" id="delProj">Delete project</button></div>' : ''}`,
   async (data, f) => {
     const payload = { title: data.title, status: data.status, target_date: data.target_date, notes: data.notes,
-      tasks: data.steps.split('\n').map((x) => x.trim()).filter(Boolean), part_ids: $$('input[name=part]:checked', f).map((i) => +i.value) };
+      tasks: $$('.step', f).map((i) => ({ id: +i.dataset.id || undefined, title: i.value.trim() })).filter((t) => t.title),
+      part_ids: $$('input[name=part]:checked', f).map((i) => +i.value) };
     if (p) await api('/projects/' + p.id, { method: 'PUT', json: payload });
     else await api(`/cars/${car.id}/projects`, { json: payload });
     toast('Project saved');
     rerender();
   });
+  const steps = $('#steps', form);
+  const addStep = (row) => {
+    if (row) row.insertAdjacentHTML('afterend', stepRow({})); else steps.insertAdjacentHTML('beforeend', stepRow({}));
+    $('.step', row ? row.nextElementSibling : steps.lastElementChild).focus();
+  };
+  $('#addStep', form).onclick = () => addStep();
+  steps.onkeydown = (e) => {
+    if (e.key !== 'Enter' || !e.target.classList.contains('step')) return;
+    e.preventDefault();  // Enter adds a step after this one instead of saving the project
+    addStep(e.target.parentNode);
+  };
+  steps.onclick = (e) => { if (e.target.matches('button')) e.target.parentNode.remove(); };
   if ($('#partFilter', form)) $('#partFilter', form).oninput = (e) => {
     const q = e.target.value.trim().toLowerCase();
     $$('.use-row', form).forEach((r) => { r.hidden = !!q && !r.dataset.text.includes(q) && !$('input[name=part]', r).checked; });
   };
   if (p) $('#delProj', form).onclick = async () => {
     if (!confirm(`Delete the project “${p.title}”? Its parts stay in your parts list.`)) return;
-    await api('/projects/' + p.id, { method: 'DELETE' });
-    $('#dlg').close(); rerender();
+    await deleteInDialog('/projects/' + p.id);
+    rerender();
   };
 }
 
@@ -674,20 +771,20 @@ function scheduleDialog(car, docs, s) {
   });
   if (s) $('#delSched', form).onclick = async () => {
     if (!confirm(`Delete the “${s.title}” schedule? Service history stays.`)) return;
-    await api('/schedules/' + s.id, { method: 'DELETE' });
-    $('#dlg').close(); rerender();
+    await deleteInDialog('/schedules/' + s.id);
+    rerender();
   };
 }
 
 function presetsDialog(car, existing) {
   const have = new Set(existing.map((u) => u.title.toLowerCase()));
   const list = REF.presets.filter((p) => !have.has(p.title.toLowerCase()));
-  openDialog('Add common services', `
+  const form = openDialog('Add common services', `
     <p class="muted small">These are repeating services. For a one-off job (brake job, battery…) use <b>Log a service</b>; for anything not listed, <b>＋ Custom schedule</b>.</p>
     <p class="muted small">Tick what applies to this vehicle. Change intervals to match your manual. If you know when each was last done, fill it in so “upcoming” is accurate (you can also do that later).</p>
     <div class="table-wrap"><table class="items-table"><thead><tr><th></th><th>Service</th><th>Miles</th><th>Months</th><th>Last done date</th><th>Last done mi</th></tr></thead><tbody>
       ${list.map((p, i) => `${i === 0 || list[i - 1].group !== p.group ? `<tr class="group-row"><td colspan="6">${esc(p.group)}</td></tr>` : ''}<tr data-i="${i}"><td><input type="checkbox" class="pick"></td><td>${esc(p.title)}</td>
-        <td><input class="im" value="${p.interval_miles ?? ''}" style="width:80px"></td><td><input class="imo" value="${p.interval_months ?? ''}" style="width:60px"></td>
+        <td><input class="im" inputmode="numeric" value="${p.interval_miles ?? ''}" style="width:80px"></td><td><input class="imo" inputmode="numeric" value="${p.interval_months ?? ''}" style="width:60px"></td>
         <td><input type="date" class="ld"></td><td><input class="lm" inputmode="numeric" style="width:90px"></td></tr>`).join('')}
     </tbody></table></div>`,
   async (_, f) => {
@@ -700,6 +797,11 @@ function presetsDialog(car, existing) {
     toast(`Added ${items.length} schedules`);
     rerender();
   }, { ok: 'Add selected', wide: true });
+  // filling in a row picks it, so what was typed isn't dropped
+  $('.items-table', form).oninput = (e) => {
+    const tr = e.target.closest('tr[data-i]');
+    if (tr && !e.target.classList.contains('pick')) $('.pick', tr).checked = true;
+  };
 }
 
 // ----- parts (per car or all) -----
@@ -716,6 +818,15 @@ async function partsSection(el, { car = null, params = new URLSearchParams() } =
   if (groups[filter]) qs.push('status=' + encodeURIComponent(groups[filter]));
   const parts = await api('/parts?' + qs.join('&'));
   const total = parts.filter((p) => ['Needed', 'Check', 'Ordered'].includes(p.status)).reduce((n, p) => n + (p.price || 0) * (p.qty || 1), 0);
+  const filtered = !!groups[filter] || (!car && !!carFilter);
+  const carName = (cars.find((c) => String(c.id) === carFilter) || {}).name || 'this vehicle';
+  const none = !filtered && !q ? 'No parts here yet.' : [
+    `No ${!car && carFilter === 'none' ? 'unassigned ' : ''}parts`,
+    { get: ' to get', onhand: ' on hand', installed: ' installed' }[filter] || '',
+    !car && carFilter && carFilter !== 'none' ? ' for ' + esc(carName) : '',
+    q ? ` matching “${esc(q)}”.` : '.',
+    filtered ? ' <button class="link" id="showAll">Show all</button>' : '',
+  ].join('');
   el.innerHTML = `
     <div class="spread" style="margin-bottom:12px">
       <div class="row">
@@ -723,26 +834,34 @@ async function partsSection(el, { car = null, params = new URLSearchParams() } =
         ${!car ? `<select id="carF">${options([['', 'All vehicles'], ['none', 'Not assigned'], ...cars.map((c) => [c.id, c.name])], carFilter)}</select>` : ''}
         ${q ? `<span class="muted">matching “${esc(q)}” <a href="#/parts">clear</a></span>` : ''}
       </div>
-      <div class="row"><a class="btn" href="api/export/parts.csv${carFilter && carFilter !== 'none' ? '?car_id=' + carFilter : ''}" title="Download as a spreadsheet">⬇ CSV</a><button id="addPart">＋ Add part</button><button class="primary" id="addPurchase">＋ Add purchase / receipt</button></div>
+      <div class="row"><a class="btn" href="api/export/parts.csv${qs.length ? '?' + qs.join('&') : ''}" title="Download as a spreadsheet">⬇ CSV</a><button id="addPart">＋ Add part</button><button class="primary" id="addPurchase">＋ Add purchase / receipt</button></div>
     </div>
     ${total ? `<p class="muted small">To get: <b>${money(total)}</b> at listed prices.</p>` : ''}
     <div class="panel table-wrap" style="padding:0">${parts.length ? `<table id="partsTable"><thead><tr>
-      <th title="Installed">✓</th><th>Part</th>${car ? '' : '<th>Vehicle</th>'}<th class="num">Qty</th><th>Status</th><th>Installed at</th><th>Installed on</th><th>Location</th><th>Bought</th><th></th></tr></thead><tbody>
+      <th title="Installed">✓</th><th>Part</th>${car ? '' : '<th class="hide-sm">Vehicle</th>'}<th class="num">Qty</th><th>Status</th><th class="hide-sm">Installed at</th><th class="hide-sm">Installed on</th><th class="hide-sm">Location</th><th class="hide-sm">Bought</th><th></th></tr></thead><tbody>
       ${parts.map((p) => `<tr data-pid="${p.id}" class="${p.status === 'Installed' ? 'installed' : ''}">
         <td><input type="checkbox" class="inst" ${p.status === 'Installed' ? 'checked' : ''} title="Installed"></td>
-        <td><b>${esc(p.name)}</b><div class="small muted">${esc([p.category, p.brand, p.part_number].filter(Boolean).join(' · '))}</div>${p.notes ? `<div class="small muted" title="${esc(p.notes)}">${esc(p.notes.length > 90 ? p.notes.slice(0, 90) + '…' : p.notes)}</div>` : ''}</td>
-        ${car ? '' : `<td class="small">${esc(p.car || '—')}</td>`}
+        <td><b>${esc(p.name)}</b><div class="small muted">${[esc(p.category), esc(p.brand), REF.features.catalog && /^\w+$/.test(normPn(p.part_number)) ? `<a href="#/catalog/part/${normPn(p.part_number)}">${esc(p.part_number)}</a>` : esc(p.part_number), p.project_title ? esc('for ' + p.project_title) : ''].filter(Boolean).join(' · ')}</div>${p.notes ? `<div class="small muted" title="${esc(p.notes)}">${esc(p.notes.length > 90 ? p.notes.slice(0, 90) + '…' : p.notes)}</div>` : ''}</td>
+        ${car ? '' : `<td class="small hide-sm">${esc(p.car || '—')}</td>`}
         <td class="num"><input class="inline qty" inputmode="numeric" value="${p.qty ?? 1}" style="width:52px;text-align:right"></td>
         <td><select class="status ${sCls(p.status)}">${options(REF.statuses, p.status)}</select></td>
-        <td><input class="inline mi" inputmode="numeric" value="${p.installed_mileage ?? ''}" placeholder="miles"></td>
-        <td><input class="inline idate" type="date" value="${esc(p.installed_date || '')}" style="width:140px"></td>
-        <td><input class="inline loc" value="${esc(p.location)}" placeholder="Garage > Shelf A"></td>
-        <td class="small">${[esc(p.supplier), money(p.price), esc(p.purchased_date || '')].filter(Boolean).join(' · ')}${p.url ? ` <a href="${esc(p.url)}" target="_blank" rel="noopener">↗</a>` : ''}${p.document_id ? `<div><a href="${fileUrl({ id: p.document_id, original_name: p.document_file })}" target="_blank">receipt</a></div>` : ''}</td>
+        <td class="hide-sm"><input class="inline mi" inputmode="numeric" value="${p.installed_mileage ?? ''}" placeholder="miles"></td>
+        <td class="hide-sm"><input class="inline idate" type="date" value="${esc(p.installed_date || '')}" style="width:140px"></td>
+        <td class="hide-sm"><input class="inline loc" value="${esc(p.location)}" placeholder="Garage > Shelf A"></td>
+        <td class="small hide-sm">${[esc(p.supplier), money(p.price), esc(p.purchased_date || '')].filter(Boolean).join(' · ')}${p.url ? ` <a href="${esc(p.url)}" target="_blank" rel="noopener">↗</a>` : ''}${p.document_id ? `<div><a href="${fileUrl({ id: p.document_id, original_name: p.document_file })}" target="_blank">receipt</a></div>` : ''}</td>
         <td class="num"><button class="link edit">Edit</button></td></tr>`).join('')}
-    </tbody></table>` : '<div class="empty">No parts here yet.</div>'}</div>`;
+    </tbody></table>` : `<div class="empty">${none}</div>`}</div>
+    ${carFilter === 'none' ? '<h2>Unassigned files</h2><div id="looseFiles"></div>' : ''}`;
 
-  $$('[data-f]', el).forEach((b) => (b.onclick = () => { localStorage.setItem('partsFilter', b.dataset.f); partsSection(el, { car, params: withParam(params, 'status', b.dataset.f) }); }));
-  if (!car) $('#carF').onchange = (e) => partsSection(el, { params: withParam(params, 'car', e.target.value) });
+  // filters go into the address, replaced rather than added so Back still leaves the page; the router draws it, so the last tap wins
+  const refilter = (next) => {
+    history.replaceState(null, '', `#${car ? '/car/' + car.id : ''}/parts${String(next) ? '?' + next : ''}`);
+    rerender();
+  };
+  const pick = (f) => { localStorage.setItem('partsFilter', f); return withParam(params, 'status', f); };
+  $$('[data-f]', el).forEach((b) => (b.onclick = () => refilter(pick(b.dataset.f))));
+  if (!car) $('#carF').onchange = (e) => refilter(withParam(params, 'car', e.target.value));
+  if ($('#showAll', el)) $('#showAll', el).onclick = () => refilter(withParam(pick('all'), 'car', ''));
   $('#addPart').onclick = () => partDialog(null, cars, car);
   $('#addPurchase').onclick = () => purchaseDialog(cars, car);
   const reload = () => partsSection(el, { car, params });
@@ -754,6 +873,9 @@ async function partsSection(el, { car = null, params = new URLSearchParams() } =
         const carMi = (cars.find((c) => c.id === p.car_id) || {}).mileage;
         await save({ status: 'Installed', installed_mileage: p.installed_mileage ?? carMi ?? null, installed_date: p.installed_date || today() }, 'Marked installed');
       } else {
+        const mi = $('.mi', tr).value.trim(), on = $('.idate', tr).value;
+        const lost = [mi && `mileage (${mi})`, on && `date (${on})`].filter(Boolean).join(' and ');
+        if (lost && !confirm(`Move ${p.name} back to on hand? Its install ${lost} will be cleared.`)) { e.target.checked = true; return; }
         await save({ status: 'On hand', installed_mileage: null, installed_date: null }, 'Back to on hand');
       }
       reload();
@@ -765,6 +887,7 @@ async function partsSection(el, { car = null, params = new URLSearchParams() } =
     $('.loc', tr).onchange = (e) => save({ location: e.target.value }, 'Location saved');
     $('.edit', tr).onclick = () => partDialog(p, cars, car);
   });
+  if (carFilter === 'none') await documentsTab($('#looseFiles', el), null);
 }
 
 function withParam(params, k, v) {
@@ -803,14 +926,15 @@ function partDialog(p, cars, car) {
   });
   if (p) $('#delPart', form).onclick = async () => {
     if (!confirm(`Delete ${p.name}?`)) return;
-    await api('/parts/' + p.id, { method: 'DELETE' });
-    $('#dlg').close(); rerender();
+    await deleteInDialog('/parts/' + p.id);
+    rerender();
   };
 }
 
 function purchaseDialog(cars, car) {
   const row = () => `<tr><td><input class="n" placeholder="Name"></td><td><input class="pn" placeholder="Part #"></td><td><input class="b" placeholder="Brand"></td>
-    <td><input class="q" value="1" style="width:50px"></td><td><input class="pr" placeholder="0.00" style="width:80px"></td></tr>`;
+    <td><input class="q" inputmode="numeric" value="1" style="width:50px"></td><td><input class="pr" inputmode="decimal" placeholder="0.00" style="width:80px"></td></tr>`;
+  const sentReceipts = new Map();
   const form = openDialog('Add a purchase', `
     <div class="form">
       <label>Vehicle<select name="car_id">${options(cars.map((c) => [c.id, c.name]), car && car.id, 'Not assigned')}</select></label>
@@ -823,16 +947,16 @@ function purchaseDialog(cars, car) {
     <h3>Items</h3>
     <div class="table-wrap"><table class="items-table"><thead><tr><th>Name</th><th>Part #</th><th>Brand</th><th>Qty</th><th>Price each</th></tr></thead><tbody id="items">${row()}${row()}${row()}</tbody></table></div>
     <button type="button" class="link" id="moreRows">＋ more rows</button>`,
-  async (data, f) => {
+  async (data, f, okText) => {
     const items = $$('#items tr', f).map((tr) => ({ name: $('.n', tr).value.trim(), part_number: $('.pn', tr).value.trim(), brand: $('.b', tr).value.trim(), qty: $('.q', tr).value, price: $('.pr', tr).value }))
       .filter((i) => i.name || i.part_number);
     if (!items.length) throw new Error('Add at least one item');
     const fd = new FormData();
     const { receipt, ...rest } = data;
     fd.append('data', JSON.stringify({ ...rest, items }));
-    if (f.elements.receipt.files[0]) fd.append('receipt', f.elements.receipt.files[0]);
-    const r = await fetch('api/purchases', { method: 'POST', body: fd });
-    if (!r.ok) throw new Error((await r.json()).error || 'Failed');
+    if (f.elements.receipt.files[0]) await attachFile(fd, 'receipt', f.elements.receipt.files[0], 'receipt', okText, sentReceipts);
+    okText('Saving…');
+    await api('/purchases', { method: 'POST', body: fd });
     toast(`Added ${items.length} parts`);
     rerender();
   }, { ok: 'Add parts', wide: true });
@@ -848,50 +972,53 @@ async function allPartsPage(params) {
 // ----- documents -----
 
 let docFilter = '';  // file type shown in "Manuals & files" ('' = all); kept while moving between vehicles
+// the upload types, then any type uploads no longer offer that these files still have (Photo, from older versions)
+const docKinds = (have) => [...REF.doc_kinds, ...have.filter((k) => !REF.doc_kinds.includes(k))];
 
+// car = null lists the files that have no vehicle (All parts › Not assigned)
 async function documentsTab(el, car) {
-  const all = await api(`/documents?car_id=${car.id}`);
+  const all = await api(`/documents?car_id=${car ? car.id : 'none'}`);
   const counts = {};
   all.forEach((d) => (counts[d.kind] = (counts[d.kind] || 0) + 1));
   if (docFilter && !counts[docFilter]) docFilter = '';
   const docs = docFilter ? all.filter((d) => d.kind === docFilter) : all;
-  const kinds = REF.doc_kinds.filter((k) => counts[k]);
+  const kinds = docKinds(Object.keys(counts)).filter((k) => counts[k]);
   const linked = (d) => !d.parts ? '' : `<div class="small muted">${d.parts} linked part${d.parts === 1 ? '' : 's'}${d.kind === 'Receipt' ? ' from this receipt' : ''}</div>`;
   el.innerHTML = `
     <div class="doc-head">
       <div class="doc-filter">${kinds.length > 1 ? `
         <button type="button" class="${docFilter ? '' : 'active'}" data-kind="">All <span class="muted">${all.length}</span></button>
         ${kinds.map((k) => `<button type="button" class="${k === docFilter ? 'active' : ''}" data-kind="${esc(k)}">${esc(k)} <span class="muted">${counts[k]}</span></button>`).join('')}` : ''}</div>
-      <button type="button" class="primary" id="upBtn">＋ Upload</button>
+      ${car ? '<button type="button" class="primary" id="upBtn">＋ Upload</button>' : ''}
     </div>
     <div class="panel table-wrap" style="padding:0">${docs.length ? `<table class="doc-table"><thead><tr><th>Title</th><th>Type</th><th>File</th><th class="num">Size</th><th>Added</th><th></th></tr></thead><tbody>
       ${docs.map((d) => `<tr data-did="${d.id}"><td><a href="${fileUrl(d)}" target="_blank"><b>${esc(d.title)}</b></a>${d.notes ? `<div class="small muted">${esc(d.notes)}</div>` : ''}${linked(d)}</td>
         <td>${esc(d.kind)}</td><td class="small muted">${esc(d.original_name)}</td><td class="num small">${fmtSize(d.size || 0)}</td><td class="small muted">${esc((d.uploaded_at || '').slice(0, 10))}</td>
         <td class="num" style="white-space:nowrap"><a class="btn" href="${fileUrl(d)}?download=1">⬇</a> <button class="link edit">Edit</button></td></tr>`).join('')}
-    </tbody></table>` : '<div class="empty">No manuals or files yet.</div>'}</div>`;
-  $('#upBtn', el).onclick = () => {
+    </tbody></table>` : `<div class="empty">${car ? 'No manuals or files yet.' : 'No files without a vehicle.'}</div>`}</div>`;
+  if (car) $('#upBtn', el).onclick = () => {
+    const stored = new Set();  // files this dialog already stored: a retry after a failure partway skips them
     const form = openDialog('Upload files', `<div class="form">
         <label class="wide">Files<input type="file" name="file" multiple required></label>
         <label>Type<select name="kind">${options(REF.doc_kinds, docFilter || 'Manual')}</select></label>
         <label>Title <span class="muted small">(one file only)</span><input name="title" placeholder="Service manual"></label></div>`,
-    async (data, f) => {
+    async (data, f, okText) => {
       const files = Array.from(f.elements.file.files);
-      const btn = $('#dlgOk'); btn.disabled = true; btn.textContent = 'Uploading…';
-      try {
-        const small = files.filter((x) => x.size <= CHUNK);
-        if (small.length) {
+      const title = files.length === 1 ? data.title : '';
+      for (const x of files) {  // one file per request: small ones together could go over Ingress's limit
+        if (stored.has(x)) continue;
+        if (x.size <= CHUNK) {
+          okText(`Uploading ${x.name}…`);
           const fd = new FormData();
-          small.forEach((x) => fd.append('file', x));
-          fd.append('car_id', car.id); fd.append('kind', data.kind);
-          if (files.length === 1) fd.append('title', data.title);
-          const r = await fetch('api/documents', { method: 'POST', body: fd });
-          if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || 'Upload failed');
+          fd.append('file', x); fd.append('car_id', car.id); fd.append('kind', data.kind);
+          if (title) fd.append('title', title);
+          await api('/documents', { method: 'POST', body: fd });
+        } else {
+          const id = await uploadChunked(x, { car_id: car.id, kind: data.kind, title }, okText);
+          await api(`/documents/chunked/${id}/finish`, { method: 'POST', json: {} });
         }
-        for (const x of files.filter((y) => y.size > CHUNK)) {
-          await uploadChunked(x, { car_id: car.id, kind: data.kind, title: files.length === 1 ? data.title : '' },
-            (pct) => (btn.textContent = `Uploading ${x.name}… ${pct}%`));
-        }
-      } finally { btn.disabled = false; }
+        stored.add(x);
+      }
       toast(files.length === 1 ? 'Uploaded' : `Uploaded ${files.length} files`);
       docFilter = data.kind;  // show what was just added
       documentsTab(el, car);
@@ -901,17 +1028,19 @@ async function documentsTab(el, car) {
   $$('.doc-filter button', el).forEach((b) => (b.onclick = () => { docFilter = b.dataset.kind; documentsTab(el, car); }));
   $$('tr[data-did]', el).forEach((tr) => {
     const d = docs.find((x) => x.id === +tr.dataset.did);
-    $('.edit', tr).onclick = () => {
+    $('.edit', tr).onclick = async () => {
+      const cars = await api('/cars');
       const f = openDialog('Edit file', `<div class="form">
           <label class="wide">Title<input name="title" value="${esc(d.title)}" required></label>
-          <label>Type<select name="kind">${options(REF.doc_kinds, d.kind)}</select></label>
+          <label>Type<select name="kind">${options(docKinds([d.kind]), d.kind)}</select></label>
+          <label>Vehicle<select name="car_id">${options(cars.map((c) => [c.id, c.name]), d.car_id, 'Not assigned')}</select></label>
           <label class="wide">Notes<textarea name="notes">${esc(d.notes)}</textarea></label></div>
           <button type="button" class="danger" id="delDoc">Delete file</button>`,
       async (data) => { await api('/documents/' + d.id, { method: 'PUT', json: data }); documentsTab(el, car); });
       $('#delDoc', f).onclick = async () => {
         if (!confirm(`Delete ${d.title}? The file is removed from the app (backups keep a copy).`)) return;
-        await api('/documents/' + d.id, { method: 'DELETE' });
-        $('#dlg').close(); documentsTab(el, car);
+        await deleteInDialog('/documents/' + d.id);
+        documentsTab(el, car);
       };
     };
   });
@@ -930,6 +1059,7 @@ function carFormHtml(c) {
     <label>Transmission<input name="transmission" value="${esc(c.transmission || '')}"></label>
     <label>VIN<input name="vin" value="${esc(c.vin || '')}"></label>
     <label>Plate<input name="plate" value="${esc(c.plate || '')}"></label>
+    ${c.id ? `<label>Sensor id (sensor.garage_&lt;this&gt;_odometer)<input name="ha_slug" value="${esc(c.ha_slug || '')}" placeholder="from the name"></label>` : ''}
     <label class="wide">Notes<textarea name="notes">${esc(c.notes || '')}</textarea></label>`;
 }
 
@@ -945,29 +1075,44 @@ function carDetails(el, car) {
         ${car.photo_id ? '<button type="button" class="link danger" id="delPhoto">Remove</button>' : ''}</form>
     </div>
     <h2>Mileage history</h2>
-    <div class="panel">${car.mileage_log.length ? `<table class="small"><tbody>${car.mileage_log.map((m) => `<tr><td>${esc(m.date)}</td><td class="num">${num(m.mileage)}</td><td class="muted">${esc(m.source)}</td></tr>`).join('')}</tbody></table>` : '<p class="muted">No readings yet.</p>'}</div>`;
-  $('#carForm').onsubmit = async (e) => {
+    <div class="panel">${car.mileage_log.length ? `<table class="small"><tbody>${car.mileage_log.map((m) => `<tr data-mid="${m.id}"><td>${esc(m.date)}</td><td class="num">${num(m.mileage)}</td><td class="muted">${esc(m.source)}</td>
+      <td class="num"><button class="link" title="Delete this reading" aria-label="Delete this reading">✕</button></td></tr>`).join('')}</tbody></table>` : '<p class="muted">No readings yet.</p>'}</div>`;
+  $('#carForm').onsubmit = (e) => {
     e.preventDefault();
-    await api('/cars/' + car.id, { method: 'PUT', json: Object.fromEntries(new FormData(e.target)) });
-    toast('Saved'); rerender();
+    submitting(e.target, async () => {
+      await api('/cars/' + car.id, { method: 'PUT', json: Object.fromEntries(new FormData(e.target)) });
+      toast('Saved'); rerender();
+    });
   };
   $('#hideCar').onclick = async () => {
     await api('/cars/' + car.id, { method: 'PUT', json: { archived: !car.archived } });
     toast(car.archived ? 'Back in the garage' : 'Hidden. Find it under "Hidden vehicles" on the garage page.');
     location.hash = '#/';
   };
-  $('#photoForm').onsubmit = async (e) => {
+  $('#photoForm').onsubmit = (e) => {
     e.preventDefault();
-    const btn = $('button', e.target); btn.disabled = true; btn.textContent = 'Uploading…';
-    const r = await fetch(`api/cars/${car.id}/photo`, { method: 'POST', body: new FormData(e.target) });
-    if (!r.ok) { toast((await r.json().catch(() => ({}))).error || 'Upload failed', true); btn.disabled = false; return; }
-    toast('Photo saved'); rerender();
+    const btn = $('button:not([type=button])', e.target);
+    submitting(e.target, async () => {
+      const fd = new FormData();
+      await attachFile(fd, 'photo', e.target.photo.files[0], 'photo', (t) => { btn.textContent = t; });
+      await api(`/cars/${car.id}/photo`, { method: 'POST', body: fd });
+      toast('Photo saved'); rerender();
+    }, 'Uploading…');
   };
   if ($('#delPhoto')) $('#delPhoto').onclick = async () => {
+    if (!confirm(`Remove the photo of ${car.name}? The file is deleted.`)) return;
     await api(`/cars/${car.id}/photo`, { method: 'DELETE' }); toast('Photo removed'); rerender();
   };
+  $$('tr[data-mid]', el).forEach((tr) => {
+    const m = car.mileage_log.find((x) => x.id === +tr.dataset.mid);
+    $('button', tr).onclick = async () => {
+      if (!confirm(`Delete the ${num(m.mileage)} mi reading of ${m.date}?`)) return;
+      await api(`/cars/${car.id}/mileage/${m.id}`, { method: 'DELETE' });
+      toast('Reading deleted'); rerender();
+    };
+  });
   $('#delCar').onclick = async () => {
-    if (!confirm(`Delete ${car.name} with its services and schedules? Its parts and files are kept, unassigned.`)) return;
+    if (!confirm(`Delete ${car.name} with its service history, schedules, projects, odometer history and photo? Its parts and files are kept: find them under All parts › Not assigned.`)) return;
     await api('/cars/' + car.id, { method: 'DELETE' });
     location.hash = '#/';
   };
@@ -978,12 +1123,14 @@ function addCarPage() {
     <form class="panel form" id="newCar">${carFormHtml({})}
       <label>Current mileage<input name="mileage" inputmode="numeric"></label>
       <div class="wide"><button class="primary">Add vehicle</button></div></form>`;
-  $('#newCar').onsubmit = async (e) => {
+  $('#newCar').onsubmit = (e) => {
     e.preventDefault();
-    try {
-      const r = await api('/cars', { json: Object.fromEntries(new FormData(e.target)) });
-      location.hash = '#/car/' + r.id;
-    } catch (err) { toast(err.message, true); }
+    submitting(e.target, async () => {
+      try {
+        const r = await api('/cars', { json: Object.fromEntries(new FormData(e.target)) });
+        location.hash = '#/car/' + r.id;
+      } catch (err) { toast(err.message, true); }
+    });
   };
 }
 
@@ -1142,24 +1289,53 @@ async function settingsPage() {
       <div id="restoreMsg" class="small"></div>
     </form>
     ${s.addon ? `<h2>Home Assistant dashboard</h2>
-    <div class="panel stack small">
-      <p>The add-on keeps these sensors up to date in Home Assistant (turn off with the <b>publish_sensors</b> option):
+    <div class="panel stack small">${s.publish_sensors ? `
+      <p>The add-on keeps these sensors up to date in Home Assistant (turn off with the <b>Publish sensors</b> option):
         <code>sensor.garage_overdue</code>, <code>sensor.garage_due_soon</code>, <code>sensor.garage_parts_to_get</code>, and per vehicle
         <code>sensor.garage_&lt;vehicle&gt;_odometer</code> / <code>_status</code> / <code>_next_service</code> / <code>_next_service_due</code> / <code>_parts_to_get</code>.</p>
       <p>To add a <b>Garage</b> tab: open your dashboard, <b>Edit dashboard › ⋮ › Raw configuration editor</b>, and paste this under <code>views:</code>.</p>
       <pre class="code" id="dashYaml">Loading…</pre>
-      <div><button type="button" id="copyDash">Copy</button></div>
+      <div><button type="button" id="copyDash">Copy</button></div>`
+      : '<p>Sensors are off (the <b>Publish sensors</b> option in the add-on\'s Configuration tab), so there is no dashboard to add.</p>'}
+    </div>
+    <h2>Update the odometer from Home Assistant</h2>
+    <div class="panel stack small">
+      <p>If a sensor in Home Assistant knows a vehicle's odometer (from the car's own integration, for example), Home Assistant can send it here whenever it changes. The sensor must report miles, the unit the garage uses. Vehicle ids: ${cars.map((c) => `<b>${c.id}</b> = ${esc(c.name)}`).join(', ')}.</p>
+      <p>Add this to <code>configuration.yaml</code> and restart Home Assistant:</p>
+      <pre class="code">rest_command:
+  garage_odometer:
+    url: "http://${esc(s.hostname || 'ADD-ON-HOSTNAME')}:8765/api/cars/{{ car_id }}/mileage"
+    method: post
+    content_type: "application/json"
+    payload: '{"mileage": {{ mileage }}, "source": "home assistant"}'</pre>
+      <p>Then an automation for each vehicle (paste it in the automation editor's YAML mode), with your sensor and the vehicle's id:</p>
+      <pre class="code">alias: Garage odometer
+triggers:
+  - trigger: state
+    entity_id: sensor.YOUR_ODOMETER
+    to: null
+conditions:
+  - condition: template
+    value_template: "{{ trigger.to_state.state | is_number }}"
+actions:
+  - action: rest_command.garage_odometer
+    data:
+      car_id: ${cars.length ? cars[0].id : 'VEHICLE_ID'}
+      mileage: "{{ trigger.to_state.state | int }}"</pre>
     </div>` : `<h2>Home Assistant</h2>
     <div class="panel stack small">
       <p>Ready for later. Home Assistant needs phone access turned on (so it can reach this PC). Vehicle ids: ${cars.map((c) => `<b>${c.id}</b> = ${esc(c.name)}`).join(', ')}.</p>
       <p><b>Summary</b> (mileage, overdue / due-soon counts, next service, parts needed): <code>GET http://${esc(host)}:${port}/api/ha/summary</code></p>
       <p><b>Update mileage</b>: <code>POST http://${esc(host)}:${port}/api/cars/&lt;id&gt;/mileage</code> with <code>{"mileage": 123456}</code></p>
     </div>`}`;
-  const waitForRestart = async () => {
+  // true once the app answers again; when it doesn't, msg says so and the page is left as it is
+  const waitForRestart = async (msg) => {
     await new Promise((res) => setTimeout(res, 1500));
     for (let i = 0; i < 60; i++) {
-      try { await api('/ping'); return; } catch (err) { await new Promise((res) => setTimeout(res, 500)); }
+      try { await api('/ping'); return true; } catch (err) { await new Promise((res) => setTimeout(res, 500)); }
     }
+    msg.textContent = 'Still restarting. Reload this page in a moment.';
+    return false;
   };
   if ($('#dashYaml')) {
     fetch('api/ha/dashboard').then((r) => r.text()).then((t) => { $('#dashYaml').textContent = t; });
@@ -1180,11 +1356,11 @@ async function settingsPage() {
   if (location.hash.includes('?')) { const id = new URLSearchParams(location.hash.split('?')[1]).get('go'); if (id && $('#' + id)) $('#' + id).scrollIntoView(); }
   $('#newKey').onclick = async () => {
     if (s.settings.agent_key && !confirm('Make a new key? Agents using the old key will stop working until you give them the new one.')) return;
-    await api('/settings', { method: 'PUT', json: { agent_key: 'new' } }); settingsPage();
+    await api('/settings', { method: 'PUT', json: { agent_key: 'new' } }); rerender();
   };
   if ($('#offKey')) $('#offKey').onclick = async () => {
     if (!confirm('Turn off agent access? The key stops working.')) return;
-    await api('/settings', { method: 'PUT', json: { agent_key: null } }); settingsPage();
+    await api('/settings', { method: 'PUT', json: { agent_key: null } }); rerender();
   };
   if ($('#showKey')) $('#showKey').onclick = () => { const k = $('#agentKey'); k.textContent = k.dataset.key; };
   if ($('#copyKey')) $('#copyKey').onclick = async () => {
@@ -1194,8 +1370,7 @@ async function settingsPage() {
     const r = await api('/settings', { method: 'PUT', json: { lan: e.target.checked } });
     if (r.restarting) {
       $('#lanMsg').textContent = 'Restarting the server…';
-      await waitForRestart();
-      settingsPage();
+      if (await waitForRestart($('#lanMsg'))) rerender();
     }
   };
   $('#restoreForm').onsubmit = async (e) => {
@@ -1203,13 +1378,14 @@ async function settingsPage() {
     const file = e.target.backup.files[0];
     if (!file || !confirm(`Replace ALL data here with ${file.name}? The current data is saved as a before-restore zip first.`)) return;
     const btn = $('button', e.target); btn.disabled = true;
-    $('#restoreMsg').textContent = 'Uploading and checking the backup…';
     try {
-      const r = await fetch('api/restore', { method: 'POST', body: new FormData(e.target) });
-      const data = await r.json().catch(() => ({}));
-      if (!r.ok) throw new Error(data.error || 'Restore failed');
+      const fd = new FormData();
+      fd.append('upload', await uploadChunked(file, { purpose: 'restore' }, (t) => { $('#restoreMsg').textContent = t; }));
+      $('#restoreMsg').textContent = 'Checking the backup…';
+      await api('/restore', { method: 'POST', body: fd });
       $('#restoreMsg').textContent = 'Restoring and restarting…';
-      await waitForRestart();
+      if (!(await waitForRestart($('#restoreMsg')))) return;
+      REF = null;  // the backup brought its own settings: route() fetches them again
       toast('Backup restored');
       location.hash = '#/';
       router();

@@ -1,17 +1,24 @@
 """Offline catalog: importers, queries, validation, API. Run with the other tests:
-.venv\\Scripts\\python -m unittest discover tests"""
+cd parts_catalog && python -m unittest discover tests"""
 import io
 import json
 import os
+import runpy
 import shutil
+import sqlite3
+import subprocess
+import sys
 import tempfile
 import unittest
+import zipfile
+from unittest import mock
 
 os.environ.setdefault("PARTS_CATALOG_DATA", tempfile.mkdtemp())
 
 from app import db, epc, epc_api, epc_import  # noqa: E402
 from app.server import app  # noqa: E402
 
+TOOL = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tools", "epc_import.py")
 PAGE = """<html><head><title>Test page: water pump</title></head><body>
 <img src="page_files/logo.png"><img src="page_files/diagram.png" usemap="#m">
 <map name="m"><area shape="rect" coords="10,20,50,60" alt="1"><area shape="circle" coords="200,150,20" alt="2">
@@ -30,6 +37,13 @@ def make_png(path, size=(400, 300)):
     from PIL import Image
     os.makedirs(os.path.dirname(path), exist_ok=True)
     Image.new("RGB", size, "white").save(path)
+
+
+def png_bytes(size=(400, 300)):
+    from PIL import Image
+    b = io.BytesIO()
+    Image.new("RGB", size, "white").save(b, "PNG")
+    return b.getvalue()
 
 
 class CatalogTest(unittest.TestCase):
@@ -101,6 +115,23 @@ class CatalogTest(unittest.TestCase):
         self.assertTrue(any(r["description"] == "SAMPLE bolt" for r in epc.search("sample BOLT")))
         self.assertEqual(epc.search(""), [])
 
+    def test_search_words_with_digits(self):
+        epc_import.import_bundle({"source": {"name": "Search words"}, "diagrams": [
+            {"code": "11_0050", "title": "Cooling system", "items": [
+                {"callout": "1", "part_number": "11 51 9 990 001", "description": "Water pump", "supplement": "M30B35, circuit 2"},
+                {"callout": "2", "part_number": "11 51 9 990 002", "description": "Thermostat", "supplement": "E34"},
+                {"callout": "3", "part_number": "11 51 9 990 003", "description": "Hex bolt", "supplement": "M6x20"},
+                {"callout": "4", "part_number": "M6X20-STUD", "description": "Stud"}]},
+            {"code": "11-0050", "title": "Other"}]})
+        found = lambda q: [(r["diagram_code"], r["callout"]) for r in epc.search(q) if r["diagram_code"] in ("11_0050", "11-0050")]  # noqa: E731
+        self.assertEqual(found("11 51 9 990 001"), [("11_0050", "1")])
+        self.assertEqual(found("water pump 2"), [("11_0050", "1")])
+        self.assertEqual(found("M30B35"), [("11_0050", "1")])
+        self.assertEqual(found("e34 thermostat"), [("11_0050", "2")])
+        self.assertEqual(found("M6x20"), [("11_0050", "4"), ("11_0050", "3")])  # the part number first, then the words
+        self.assertEqual(found("11_0050"), [("11_0050", None)])  # the diagram once, and "_" is not a wildcard
+        self.assertEqual(found("cooling"), [("11_0050", None)])
+
     def test_validation_sample(self):
         c = self.checks()
         for k in ("missing_diagram", "missing_image", "missing_part_record", "missing_quantity"):
@@ -139,6 +170,26 @@ class CatalogTest(unittest.TestCase):
         self.assertEqual(len(epc.diagram_detail(dg["id"])["items"]), 4)
         self.assertEqual(epc.row("SELECT COUNT(*) AS n FROM source_files WHERE source_id=(SELECT id FROM sources WHERE name='Test HTML')")["n"], 2)
 
+    def html_page(self, code, tables):
+        p = os.path.join(tempfile.mkdtemp(dir=self.tmp), code + ".html")
+        with open(p, "w", encoding="utf-8") as f:
+            f.write("<html><body>" + "".join("<table>" + "".join("<tr>" + "".join(f"<td>{c}</td>" for c in r) + "</tr>" for r in t) + "</table>"
+                                             for t in tables) + "</body></html>")
+        return p
+
+    def html_items(self, code, tables):
+        epc_import.import_html(self.html_page(code, tables), "Test HTML tables", code)
+        return [(i["callout"], i["part_number"], i["description"]) for i in epc.diagram_detail(self.diag(code)["id"])["items"]]
+
+    def test_html_tables_without_spaced_numbers(self):
+        recent = [["Part number", "Description"], ["11 51 1 234 999", "Thermostat"]]
+        dashed = [["No.", "Description", "Qty", "Part Number"], ["1", "Water pump", "1", "11-51-1-234-567"], ["2", "Gasket", "1", "11.51.1.234.568"]]
+        self.assertEqual(self.html_items("97_0001", [recent, dashed]), [("1", "11511234567", "Water pump"), ("2", "11511234568", "Gasket")])
+        other_make = [["Ref", "Part No.", "Description"], ["1", "16100-39466", "Water pump"], ["2", "90915-YZZD1", "Oil filter"]]
+        self.assertEqual(self.html_items("97_0002", [other_make]), [("1", "1610039466", "Water pump"), ("2", "90915YZZD1", "Oil filter")])
+        no_numbers = [["No.", "Description", "Part Number"], ["1", "Water pump", ""], ["2", "Gasket", ""]]
+        self.assertEqual(self.html_items("97_0003", [no_numbers]), [("1", "", "Water pump"), ("2", "", "Gasket")])
+
     def test_csv_import_and_duplicates(self):
         d = tempfile.mkdtemp(dir=self.tmp)
         p = os.path.join(d, "items.csv")
@@ -165,6 +216,45 @@ class CatalogTest(unittest.TestCase):
         self.assertIn("duplicate_item", self.checks())
         epc.delete_source(epc.row("SELECT id FROM sources WHERE name='Another CSV'")["id"])
         self.assertNotIn("duplicate_item", self.checks())
+
+    def write_csv(self, name, text, **kw):
+        p = os.path.join(tempfile.mkdtemp(dir=self.tmp), name)
+        with open(p, "wb") as f:
+            f.write(text if isinstance(text, bytes) else text.encode("utf-8"))
+        return epc_import.import_csv(p, "Test headers", **kw)
+
+    def test_csv_header_names(self):
+        self.write_csv("cats.csv", "code,name,parent\n95,Test group,\n95.1,Test subgroup,95\n")
+        self.assertEqual(epc.row("SELECT name FROM categories WHERE code='95.1'")["name"], "Test subgroup")
+        self.write_csv("diagrams.csv", "diagram,title,category\n95_0001,Test diagram,95\n")
+        self.assertEqual(self.diag("95_0001")["title"], "Test diagram")
+        rep = self.write_csv("items.csv", "diagram,title,callout,part number,description,qty,colour\n95_0002,Pump group,1,95111234567,Pump,1,red\n")
+        self.assertEqual(self.diag("95_0002")["title"], "Pump group")
+        self.assertEqual(epc.row("SELECT description FROM diagram_items WHERE part_number='95111234567'")["description"], "Pump")
+        self.assertIn("Columns used: diagram, title, callout, part number (part_number), description, qty; ignored: colour", rep.problems)
+        # "Name" still means the description in an items file
+        rep = self.write_csv("spaced.csv", "Diagram code,Ref,Part number,Name\n95_0003,1,95111234568,Hose\n")
+        self.assertEqual(rep.counts.get("kind_items"), 1)
+        self.assertEqual(epc.row("SELECT description FROM diagram_items WHERE part_number='95111234568'")["description"], "Hose")
+
+    def test_dates_and_encodings(self):
+        for v in ("1990-08-01", "1990/08/01", "13/8/1990", "8/13/1990", "8/8/1990", "Aug 1990", "1-Aug-90", "1990-8"):
+            self.assertEqual(epc_import.yyyymm(v), "199008", v)
+        for v in ("8/1/1990", "1990-13", "13/1990", "Augx 1990"):
+            self.assertIsNone(epc_import.yyyymm(v), v)
+        rep = self.write_csv("dates.csv", "diagram,callout,part number,description,to\n96_0001,1,96111234567,Sch\xf8n pump,8/1/1990\n".encode("cp1252"))
+        self.assertIn("Diagram 96_0001 callout 1, to: can't read date '8/1/1990' (day and month could be either way round), left empty", rep.problems)
+        self.assertIn("Not valid UTF-8: read as Windows-1252", rep.problems)
+        self.assertEqual(epc.row("SELECT description FROM diagram_items WHERE part_number='96111234567'")["description"], "Schøn pump")
+        d = tempfile.mkdtemp(dir=self.tmp)
+        with open(os.path.join(d, "page.html"), "wb") as f:
+            f.write('<html><head><meta charset="windows-1252"></head><body><table><tr><th>No.</th><th>Description</th><th>Part Number</th></tr>'
+                    '<tr><td>1</td><td>Sch\xf8n hose</td><td>96 11 1 234 568</td></tr></table></body></html>'.encode("cp1252"))
+        epc_import.import_html(os.path.join(d, "page.html"), "Test HTML charset", "96_0002")
+        self.assertEqual(epc.row("SELECT description FROM diagram_items WHERE part_number='96111234568'")["description"], "Schøn hose")
+        # the newest replacement wins however its date was written
+        self.write_csv("sup.csv", "old,new,date\n96111230001,96111230002,1992-01\n96111230001,96111230003,02/1992\n")
+        self.assertEqual(epc.supersession_chain("96111230001")[0][0]["new_pn"], "96111230003")
 
     def test_images_import(self):
         d = tempfile.mkdtemp(dir=self.tmp)
@@ -209,10 +299,188 @@ class CatalogTest(unittest.TestCase):
         self.assertEqual(next(i for i in d["items"] if i["callout"] == "1")["garage"][0]["status"], "On hand")
         # upload
         csv_bytes = b"diagram,callout,part number,description,qty\n12_0001,1,12311234567,Alternator,1\n"
-        r = self.c.post("/api/epc/import", data={"file": (io.BytesIO(csv_bytes), "alt.csv"), "vehicle": "DEMO-SEDAN", "category": "12"},
-                        content_type="multipart/form-data")
-        self.assertEqual(r.get_json()["reports"][0]["counts"]["items_added"], 1)
+        reports = self.post_import(("alt.csv", csv_bytes), vehicle="DEMO-SEDAN", category="12")
+        self.assertEqual(reports[0]["counts"]["items_added"], 1)
         self.assertEqual(self.c.get(f"/api/epc/diagrams?vehicle={epc.row('SELECT id FROM vehicles WHERE code=?', ('DEMO-SEDAN',))['id']}&category={epc.row('SELECT id FROM categories WHERE code=?', ('12',))['id']}").get_json()[0]["code"], "12_0001")
+
+    def test_garage_number_typed_with_dots(self):
+        self.c.post("/api/parts", json={"name": "Sample bolt", "part_number": "99.99.9.999.003"})
+        self.assertEqual([g["name"] for g in self.c.get("/api/epc/parts/99999999003").get_json()["garage"]], ["Sample bolt"])
+
+    def test_superseded_row_shows_part_under_new_number(self):
+        self.c.post("/api/parts", json={"name": "Sample gasket, new", "part_number": "99 99 9 999 012"})
+        d = self.c.get(f"/api/epc/diagrams/{self.diag('SAMPLE-11-01')['id']}").get_json()
+        old = next(i for i in d["items"] if i["part_number"] == "99999999002")
+        self.assertEqual([g["name"] for g in old["garage"]], ["Sample gasket, new"])
+
+    def post_import(self, *files, **form):
+        uploads = []
+        for n, b, *path in files:  # each file its own upload, as the UI sends them (with its path in a chosen folder); the import names them together
+            uid = self.c.post("/api/documents/chunked", json={"filename": n, "size": len(b), "purpose": "catalog", "path": "".join(path)}).get_json()["upload_id"]
+            self.c.put(f"/api/documents/chunked/{uid}?offset=0", data=b, content_type="application/octet-stream")
+            uploads.append(uid)
+        r = self.c.post("/api/epc/import", data={**form, "upload": uploads})
+        return r.get_json()["reports"]
+
+    def test_import_takes_an_upload_once_and_tells_an_old_page_to_reload(self):
+        csv_bytes = b"code,name\n97,Twice group\n"
+        uid = self.c.post("/api/documents/chunked", json={"filename": "twice.csv", "size": len(csv_bytes), "purpose": "catalog"}).get_json()["upload_id"]
+        self.c.put(f"/api/documents/chunked/{uid}?offset=0", data=csv_bytes, content_type="application/octet-stream")
+        r = self.c.post("/api/epc/import", data={"upload": [uid, uid]})
+        self.assertEqual((r.status_code, [rep["source"] for rep in r.get_json()["reports"]]), (200, ["twice.csv"]))
+        r = self.c.post("/api/epc/import", data={"file": (io.BytesIO(csv_bytes), "old-page.csv")}, content_type="multipart/form-data")
+        self.assertEqual(r.status_code, 400)
+        self.assertIn("Reload", r.get_json()["error"])
+
+    def assert_not_locked(self):
+        other = sqlite3.connect(epc.EPC_DB, timeout=0.2)
+        try:
+            other.execute("BEGIN IMMEDIATE")  # "database is locked" while another connection holds a write transaction
+            other.rollback()
+        finally:
+            other.close()
+
+    def test_failed_import_leaves_catalog_unlocked(self):
+        broken = {"source": {"name": "Broken bundle"}, "vehicles": [{"code": "BROKEN-1"}], "diagrams": [{"code": "98_0001", "image": 5}]}
+        good = b"diagram,callout,part number,description\n98_0003,1,98111234567,Pump\n"
+        reports = self.post_import(("broken.json", json.dumps(broken).encode()), ("good.csv", good))
+        self.assertIn("error", reports[0])
+        self.assertIsNone(epc.row("SELECT 1 FROM sources WHERE name='Broken bundle'"))  # the next file's commit didn't keep it
+
+        def half_written(*a, **kw):
+            epc.connect().execute("INSERT INTO sources (name) VALUES ('Half-written images')")
+            raise RuntimeError("disk full")
+        with mock.patch.object(epc_import, "import_images", half_written), mock.patch.dict(app.config, PROPAGATE_EXCEPTIONS=True):
+            with self.assertRaises(RuntimeError):
+                self.post_import(("98_0001.png", b"not really a png"))
+        self.assert_not_locked()
+
+    def test_bundle_shape_errors(self):
+        self.assertEqual(self.post_import(("strings.json", b'{"vehicles": ["E34-535i"]}'))[0]["error"], "vehicles[0] must be an object")
+        nested = {"diagrams": [{"code": "98_0002", "items": ["1 pump"]}]}
+        self.assertEqual(self.post_import(("nested.json", json.dumps(nested).encode()))[0]["error"], "diagrams[0].items[0] must be an object")
+
+    def test_upload_finds_referenced_images_by_name(self):
+        reports = self.post_import(("98_0020.html", PAGE.encode()), ("diagram.png", png_bytes()), ("logo.png", png_bytes((20, 20))))
+        self.assertEqual(epc.diagram_detail(self.diag("98_0020")["id"])["image_name"], "diagram.png")
+        self.assertEqual(len(reports), 1)  # both images belong to the page, neither goes on to name matching
+        bundle = {"source": {"name": "Upload bundle"}, "diagrams": [{"code": "98_0021", "image": "images/front.png"}]}
+        reports = self.post_import(("b.json", json.dumps(bundle).encode()), ("front.png", png_bytes()), ("loose.png", png_bytes((30, 30))))
+        self.assertIsNotNone(self.diag("98_0021")["image_file_id"])
+        self.assertEqual(reports[1]["counts"], {"images_unmatched": 1})
+
+    def test_image_for_a_vehicle_finds_the_only_diagram_with_its_code(self):
+        self.write_csv("vehicle_images.csv", "diagram,callout,part number,description\n86_0001,1,86111234567,Pump\n")
+        d = tempfile.mkdtemp(dir=self.tmp)
+        make_png(os.path.join(d, "86_0001.png"))
+        rep = epc_import.import_images([d], "Test vehicle images", create=True, vehicle="DEMO-SEDAN")
+        self.assertEqual(rep.counts, {"images_attached": 1})
+        self.assertEqual([r["image_file_id"] is not None for r in epc.rows("SELECT image_file_id FROM diagrams WHERE code='86_0001'")], [True])
+
+    def test_upload_paths_keep_same_named_files_apart(self):
+        page = lambda code: PAGE.replace("page_files", code + "_files").encode()  # noqa: E731
+        self.post_import(("86_0010.html", page("86_0010"), "pages/86_0010.html"), ("diagram.png", png_bytes((800, 600)), "pages/86_0010_files/diagram.png"),
+                         ("86_0020.html", page("86_0020"), "pages/86_0020.html"), ("diagram.png", png_bytes((640, 480)), "pages/86_0020_files/diagram.png"))
+        self.assertEqual([(self.diag(c)["image_w"], self.diag(c)["image_h"]) for c in ("86_0010", "86_0020")], [(800, 600), (640, 480)])
+        # sent without paths, same-named files are all kept, and a page naming one of them gets none
+        reports = self.post_import(("86_0030.html", PAGE.encode()), ("diagram.png", png_bytes((800, 600))), ("diagram.png", png_bytes((640, 480))),
+                                   ("items.csv", b"diagram,callout,part number\n86_0031,1,86111230031\n"),
+                                   ("items.csv", b"diagram,callout,part number\n86_0032,1,86111230032\n"))
+        self.assertIsNone(self.diag("86_0030")["image_file_id"])
+        self.assertIn("page_files/diagram.png: 2 uploaded files have that name; none used", reports[0]["problems"])
+        self.assertTrue(self.diag("86_0031") and self.diag("86_0032"))
+        self.assertEqual([r["source"] for r in reports], ["Saved HTML pages", "items.csv", "items.csv", "Uploaded files"])  # nor goes on to name matching
+        self.assertEqual(reports[-1]["problems"], ["2 files named diagram.png, each kept", "2 files named items.csv, each kept"])
+
+    def test_upload_path_stays_in_the_import_folder(self):
+        self.write_csv("escape.csv", "diagram,callout,part number\n86_0040,1,86111230040\n")
+        base = tempfile.mkdtemp(dir=self.tmp)
+        inner = os.path.join(base, "a", "b")
+        with mock.patch("tempfile.mkdtemp", lambda *a, **k: os.makedirs(inner) or inner):
+            self.post_import(("86_0040.png", png_bytes(), "../../86_0040.png"))
+        self.assertFalse(os.path.exists(os.path.join(base, "86_0040.png")))
+        self.assertIsNotNone(self.diag("86_0040")["image_file_id"])
+
+    def test_search_spaced_number_with_letters(self):
+        items = [{"callout": str(n), "part_number": pn} for n, pn in enumerate(("1K0 615 301 AA", "5K0 301 615", "3C0 615 301", "A 000 420 12 20", "A 000 421 12 12"))]
+        epc_import.import_bundle({"source": {"name": "Search spaced"}, "diagrams": [{"code": "86_0050", "title": "Front brakes", "items": items}]})
+        self.assertEqual([r["part_number"] for r in epc.search("1K0 615 301 AA")], ["1K0615301AA"])
+        self.assertEqual([r["part_number"] for r in epc.search("A 000 420 12 20")], ["A0004201220"])
+
+    def test_html_page_with_two_parts_tables(self):
+        recent = [["Part number", "Description"], ["04465-33471", "Brake pads"], ["90915-YZZD1", "Oil filter"], ["17801-0H050", "Air filter"], ["87139-YZZ08", "Cabin filter"]]
+        parts = [["Ref", "Part No.", "Description", "Qty"], ["1", "16100-39466", "Water pump", "1"], ["2", "16271-0H010", "Gasket", "1"]]
+        rep = epc_import.import_html(self.html_page("86_0060", [recent, parts]), "Test HTML tables", "86_0060")
+        self.assertEqual([i["part_number"] for i in epc.diagram_detail(self.diag("86_0060")["id"])["items"]], ["1610039466", "162710H010"])
+        self.assertIn("86_0060.html: 2 tables look like a parts list; used the one headed Ref, Part No., Description, Qty (2 rows)", rep.problems)
+
+    def test_migration_reads_stored_supersession_dates(self):
+        path = os.path.join(tempfile.mkdtemp(dir=self.tmp), "epc.db")
+        old = sqlite3.connect(path)
+        old.executescript(epc.SCHEMA)
+        old.execute("INSERT INTO meta (key, value) VALUES ('schema_version', '2')")
+        old.executemany("INSERT INTO supersessions (old_pn, new_pn, date) VALUES ('86111230070', ?, ?)",
+                        [("86111230071", "1990-09"), ("86111230072", "02/1991"), ("86111230073", "soon"), ("86111230074", None)])
+        old.commit()
+        old.close()
+        epc.close()
+        try:
+            with mock.patch.object(epc, "EPC_DB", path):
+                epc.init()
+                dates = [r["date"] for r in epc.rows("SELECT date FROM supersessions ORDER BY new_pn")]
+        finally:
+            epc.close()
+        self.assertEqual(dates, ["199009", "199102", "soon", None])
+
+    def test_bundle_nulls_and_odd_hotspots(self):
+        epc_import.import_bundle({"source": {"name": "Odd shapes"}, "diagrams": None})
+        rep = epc_import.import_bundle({"source": {"name": "Odd shapes"}, "vehicles": None, "categories": None, "parts": None,
+                                        "supersessions": None, "expected_diagrams": None, "diagrams": [
+            {"code": "86_0080", "hotspots": None, "items": None},
+            {"code": "86_0081", "hotspots": {}, "items": [{"callout": "1", "part_number": "86111230081"}]},
+            {"code": "86_0082", "items": [{"callout": "1", "part_number": "86111230082"}],
+             "hotspots": [{"callout": "1", "x": 0.1, "y": 0.1, "w": 0.1, "h": 0.1}, [0.2, 0.2, 0.1, 0.1]]}]})
+        self.assertEqual((rep.counts["diagrams_added"], rep.counts["hotspots_added"]), (3, 1))
+        self.assertEqual(rep.problems, ["Hotspot with bad coordinates skipped: [0.2, 0.2, 0.1, 0.1]"])
+
+    def test_export_is_sent_from_disk_and_removed_once_sent(self):
+        made, real = [], tempfile.mkdtemp
+
+        def mkdtemp(*a, **k):
+            made.append(real(*a, **k))
+            return made[-1]
+        with mock.patch("tempfile.mkdtemp", mkdtemp):
+            r = self.c.get("/api/epc/export?samples=1")
+        with open(os.path.join(made[0], "catalog-export.zip"), "ab") as f:
+            f.write(b"read from disk")  # only a response reading the file as it sends sees this
+        self.assertTrue(r.data.endswith(b"read from disk"))
+        r.close()
+        self.assertFalse(os.path.exists(made[0]))
+        with self.c.get("/api/epc/export?samples=1") as r, zipfile.ZipFile(io.BytesIO(r.data)) as z:
+            self.assertEqual({i.compress_type for i in z.infolist() if i.filename.startswith("images/")}, {zipfile.ZIP_STORED})
+
+    def test_tool_folder_skips_a_readme(self):
+        d, data = tempfile.mkdtemp(dir=self.tmp), tempfile.mkdtemp(dir=self.tmp)
+        for n, text in {"README.txt": "Saved from the dealer's catalog, 2024.\n", "items.csv": "diagram,callout,part number\n86_0090,1,86111230090\n"}.items():
+            with open(os.path.join(d, n), "w", encoding="utf-8") as f:
+                f.write(text)
+        tool = lambda p: subprocess.run([sys.executable, TOOL, p], env=dict(os.environ, PARTS_CATALOG_DATA=data), stdin=subprocess.DEVNULL,  # noqa: E731
+                                        capture_output=True, text=True, timeout=60)
+        r = tool(d)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn('"skipped": "Can\'t tell what this CSV holds from its headers', r.stdout)
+        self.assertNotEqual(tool(os.path.join(d, "README.txt")).returncode, 0)  # named on its own it is meant as data
+
+    def test_failed_import_leaves_no_stored_files(self):
+        bundle = json.dumps({"source": {"name": "Half stored"}, "diagrams": [{"code": "86_0100", "image": "front.png"}, {"code": "86_0101", "sort": {"x": 1}}]})
+        self.assertIn("error", self.post_import(("half.json", bundle.encode()), ("front.png", png_bytes()))[0])
+        self.assertEqual(os.listdir(epc.file_path(os.path.join("files", "Half-stored"))), [])
+        d, data = tempfile.mkdtemp(dir=self.tmp), tempfile.mkdtemp(dir=self.tmp)
+        with open(os.path.join(d, "half.json"), "w", encoding="utf-8") as f:
+            f.write(bundle)
+        make_png(os.path.join(d, "front.png"))
+        subprocess.run([sys.executable, TOOL, d], env=dict(os.environ, PARTS_CATALOG_DATA=data), stdin=subprocess.DEVNULL, capture_output=True, timeout=60)
+        self.assertEqual(os.listdir(os.path.join(data, "epc", "files", "Half-stored")), [])
 
     def test_same_code_on_two_vehicles(self):
         def bundle(source, vehicle, title, pn):
@@ -229,6 +497,60 @@ class CatalogTest(unittest.TestCase):
         rep = epc_import.import_bundle(bundle("Shared code B", "VEH-B", "Coolant B2", "83 19 0 000 003"))
         self.assertEqual(rep.counts.get("diagrams_updated"), 1)
         self.assertEqual([d["title"] for d in epc.rows("SELECT title FROM diagrams WHERE code='83_0647' ORDER BY id")], ["Coolant A", "Coolant B2"])
+
+    def same_code_diagrams(self):
+        for v in ("IMG-A", "IMG-B"):
+            epc_import.import_bundle({"source": {"name": "Same code " + v}, "vehicles": [{"code": v}],
+                                      "diagrams": [{"code": "84_0001", "vehicles": [v], "items": [{"callout": "1", "part_number": "84111234567"}]}]})
+        return [d["id"] for d in epc.rows("SELECT id FROM diagrams WHERE code='84_0001' ORDER BY id")]
+
+    def test_same_code_images_and_vehicles(self):
+        a, b = self.same_code_diagrams()
+        d = tempfile.mkdtemp(dir=self.tmp)
+        make_png(os.path.join(d, "84_0001.png"))
+        rep = epc_import.import_images([d], "Test same-code images")
+        self.assertIn("84_0001.png: 2 diagrams have code 84_0001; choose the vehicle it belongs to", rep.problems)
+        epc_import.import_images([d], "Test same-code images", vehicle="IMG-A")
+        image = lambda did: epc.row("SELECT image_file_id FROM diagrams WHERE id=?", (did,))["image_file_id"]  # noqa: E731
+        self.assertIsNotNone(image(a))
+        self.assertIsNone(image(b))
+        self.assertEqual([r["vehicles"] for r in self.c.get("/api/epc/diagrams").get_json() if r["code"] == "84_0001"], [["IMG-A"], ["IMG-B"]])
+        self.assertEqual(sorted(r["vehicles"] for r in self.c.get("/api/epc/search?q=84111234567").get_json()), [["IMG-A"], ["IMG-B"]])
+        self.assertEqual(sorted(r["vehicles"] for r in self.c.get("/api/epc/parts/84111234567").get_json()["used_in"]), [["IMG-A"], ["IMG-B"]])
+
+    def test_export_same_codes_and_samples(self):
+        a, b = self.same_code_diagrams()
+        d = tempfile.mkdtemp(dir=self.tmp)
+        for did, size in ((a, (400, 300)), (b, (410, 300))):
+            make_png(os.path.join(d, f"{did}.png"), size)
+            epc_import.attach_image(did, epc_import.store_file(epc_import.get_source("Test export images"), os.path.join(d, f"{did}.png"), "image"))
+        out = tempfile.mkdtemp(dir=self.tmp)
+        with open(epc_import.export_bundle(out, include_samples=True), encoding="utf-8") as f:
+            bundle = json.load(f)
+        self.assertIn("images/SAMPLE-11-01.svg", [x.get("image") for x in bundle["diagrams"]])  # a code used once keeps its plain name
+        same = [x["image"] for x in bundle["diagrams"] if x["code"] == "84_0001"]
+        self.assertEqual(len(set(same)), 2)
+        self.assertTrue(all(os.path.exists(os.path.join(out, i)) for i in same))
+        with open(epc_import.export_bundle(tempfile.mkdtemp(dir=self.tmp)), encoding="utf-8") as f:
+            real_only = json.load(f)
+        self.assertNotIn("99999999002", [s["old"] for s in real_only["supersessions"]])
+        self.assertNotIn("SAMPLE-CAR", [e["vehicle"] for e in real_only["expected_diagrams"]])
+
+    def test_source_counts_other_sources_rows(self):
+        epc_import.import_bundle({"source": {"name": "Shared A"}, "diagrams": [{"code": "93_0001", "items": [{"callout": "1", "part_number": "93111234561"}]}]})
+        epc_import.import_bundle({"source": {"name": "Shared B"}, "diagrams": [{"code": "93_0001", "items": [
+            {"callout": "2", "part_number": "93111234562"}, {"callout": "3", "part_number": "93111234563"}]}]})
+        shared = {s["name"]: s["shared_items"] for s in self.c.get("/api/epc/overview").get_json()["sources"]}
+        self.assertEqual((shared["Shared A"], shared["Shared B"]), (2, 0))
+
+    def test_vehicle_without_make(self):
+        bundle = {"source": {"name": "No make"}, "vehicles": [{"code": "NOMAKE-1"}],
+                  "diagrams": [{"code": "94_0001", "vehicles": ["NOMAKE-1"], "items": [{"callout": "1", "part_number": "16100-39466"}]}]}
+        epc_import.import_bundle(bundle)
+        self.assertNotIn("Part number 1610039466 is not 11 digits", [r["message"] for r in epc.validate()])
+        epc_import.import_bundle({"source": {"name": "No make"}, "vehicles": [{"code": "NOMAKE-1", "make": "Toyota"}]})
+        epc_import.import_bundle(bundle)
+        self.assertEqual(epc.row("SELECT make FROM vehicles WHERE code='NOMAKE-1'")["make"], "Toyota")  # a stored make stays
 
     def test_delete_vehicle_keeps_other_diagrams(self):
         epc_import.import_bundle({"source": {"name": "Del A"}, "vehicles": [{"code": "DEL-A"}, {"code": "DEL-B"}],
@@ -260,6 +582,38 @@ class CatalogTest(unittest.TestCase):
         self.assertEqual(old.execute("SELECT COUNT(*) FROM diagram_items WHERE diagram_id=7").fetchone()[0], 1)
         self.assertIn("diagram_items", [r[0] for r in old.execute("SELECT name FROM sqlite_master WHERE type='table'")])
         old.close()
+
+    def test_tool_uses_addon_data_folder(self):
+        real_exists = os.path.exists
+        with mock.patch.dict(os.environ), mock.patch("os.path.exists", lambda p: p == "/data/options.json" or real_exists(p)):
+            os.environ.pop("PARTS_CATALOG_DATA", None)
+            runpy.run_path(TOOL)
+            self.assertEqual(os.environ.get("PARTS_CATALOG_DATA"), "/data")
+
+    def test_tool_folder_goes_on_after_a_bad_file(self):
+        d, data = tempfile.mkdtemp(dir=self.tmp), tempfile.mkdtemp(dir=self.tmp)
+        files = {"a_broken.json": json.dumps({"source": {"name": "Broken CLI"}, "vehicles": [{"code": "BROKEN-CLI"}],
+                                              "diagrams": [{"code": "99_0009", "image": 5}]}),
+                 "b_items.tsv": "diagram\tcallout\tpart number\tdescription\n99_0001\t1\t99111234567\tPump\n",
+                 "c_items.txt": "diagram,callout,part number,description\n99_0002,1,99111234568,Hose\n"}
+        for n, text in files.items():
+            with open(os.path.join(d, n), "w", encoding="utf-8") as f:
+                f.write(text)
+        r = subprocess.run([sys.executable, TOOL, d], env=dict(os.environ, PARTS_CATALOG_DATA=data), stdin=subprocess.DEVNULL,
+                           capture_output=True, text=True, timeout=60)
+        self.assertNotEqual(r.returncode, 0)
+        con = sqlite3.connect(os.path.join(data, "epc", "epc.db"))
+        names = {n for (n,) in con.execute("SELECT name FROM sources")}
+        con.close()
+        self.assertEqual(names & {"Broken CLI", "b_items.tsv", "c_items.txt"}, {"b_items.tsv", "c_items.txt"})
+
+    def test_api_export(self):
+        with self.c.get("/api/epc/export") as r, zipfile.ZipFile(io.BytesIO(r.data)) as z:
+            self.assertIn("filename=catalog-export.zip", r.headers["Content-Disposition"])
+            self.assertNotIn("SAMPLE-11-01", [x["code"] for x in json.loads(z.read("catalog.json"))["diagrams"]])
+        with self.c.get("/api/epc/export?samples=1") as r, zipfile.ZipFile(io.BytesIO(r.data)) as z:
+            sample = next(x for x in json.loads(z.read("catalog.json"))["diagrams"] if x["code"] == "SAMPLE-11-01")
+            self.assertIn(sample["image"], z.namelist())
 
     def test_zz_remove_sample(self):
         sid = epc.row("SELECT id FROM sources WHERE is_sample=1 AND name='SAMPLE DATA (not real)'")["id"]

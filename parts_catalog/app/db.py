@@ -11,7 +11,7 @@ DOC_DIR = os.path.join(DATA_DIR, "documents")
 
 STATUSES = ["Needed", "Check", "Ordered", "On hand", "Installed"]
 KINDS = ["Car", "Truck", "Motorcycle", "Other"]
-DOC_KINDS = ["Manual", "Receipt", "Part photo", "Photo", "Other"]  # "Photo" = a vehicle's own picture (hidden from file lists)
+DOC_KINDS = ["Manual", "Receipt", "Part photo", "Photo", "Other"]  # "Photo" = what a vehicle's own picture is saved as
 UPLOAD_DOC_KINDS = [k for k in DOC_KINDS if k != "Photo"]
 PROJECT_STATUSES = ["Planned", "In progress", "Done"]
 
@@ -138,21 +138,35 @@ def connect():
 def apply_pending_restore():
     """Swap in data/restore-pending/ (written by /api/restore) before any database is opened."""
     import shutil
+    shutil.rmtree(os.path.join(DATA_DIR, "restore-staging"), ignore_errors=True)  # a restore upload cut short
     pending = os.path.join(DATA_DIR, "restore-pending")
     if not os.path.exists(os.path.join(pending, "garage.db")):
         return False
-    epc = os.path.join(DATA_DIR, "epc")
-    for p in (DB_PATH, DB_PATH + "-wal", DB_PATH + "-shm", DOC_DIR, os.path.join(epc, "epc.db"),
-              os.path.join(epc, "epc.db-wal"), os.path.join(epc, "epc.db-shm"), os.path.join(epc, "files")):
-        if os.path.isdir(p):
-            shutil.rmtree(p)
-        elif os.path.exists(p):
-            os.remove(p)
-    for name in ("garage.db", "documents", os.path.join("epc", "epc.db"), os.path.join("epc", "files")):
+    theirs = os.path.join(pending, "settings.json")
+    if os.path.exists(theirs):  # the backup's card layout, quick services and catalog switch, over this install's settings
+        ours = os.path.join(DATA_DIR, "settings.json")
+        try:
+            with open(ours, encoding="utf-8") as f:
+                s = json.load(f)
+        except (OSError, ValueError):
+            s = {}
+        with open(theirs, encoding="utf-8") as f:
+            s.update(json.load(f))
+        with open(ours + ".part", "w", encoding="utf-8") as f:  # replaced whole, so a start cut short never leaves half
+            json.dump(s, f, indent=2)
+        os.replace(ours + ".part", ours)
+    # garage.db goes last: while it is still pending, the next start finishes a swap that was cut short
+    for name, live in (("documents", [DOC_DIR]), ("epc", [os.path.join(DATA_DIR, "epc")]),
+                       ("garage.db", [DB_PATH, DB_PATH + "-wal", DB_PATH + "-shm"])):
         src = os.path.join(pending, name)
-        if os.path.exists(src):
-            os.makedirs(os.path.dirname(os.path.join(DATA_DIR, name)), exist_ok=True)
-            shutil.move(src, os.path.join(DATA_DIR, name))
+        if not os.path.exists(src):
+            continue  # moved in by the start that was cut short
+        for p in live:
+            if os.path.isdir(p):
+                shutil.rmtree(p)
+            elif os.path.exists(p):
+                os.remove(p)
+        shutil.move(src, os.path.join(DATA_DIR, name))
     shutil.rmtree(pending, ignore_errors=True)
     return True
 
@@ -172,13 +186,15 @@ def add_missing_columns(conn):
         conn.execute("ALTER TABLE parts ADD COLUMN category TEXT DEFAULT ''")
     if "project_id" not in have:
         conn.execute("ALTER TABLE parts ADD COLUMN project_id INTEGER REFERENCES projects(id) ON DELETE SET NULL")
+    if "split_from" not in have:  # the row a partly used part was taken from
+        conn.execute("ALTER TABLE parts ADD COLUMN split_from INTEGER REFERENCES parts(id) ON DELETE SET NULL")
     have = {r[1] for r in conn.execute("PRAGMA table_info(schedules)")}
     for col, ddl in (("sort_order", "INTEGER"), ("snoozed_until", "TEXT")):  # manual order; "dismissed until" date
         if col not in have:
             conn.execute(f"ALTER TABLE schedules ADD COLUMN {col} {ddl}")
     have = {r[1] for r in conn.execute("PRAGMA table_info(cars)")}
     for col, ddl in (("sort_order", "INTEGER"), ("archived", "INTEGER DEFAULT 0"),
-                     ("photo_id", "INTEGER REFERENCES documents(id) ON DELETE SET NULL")):
+                     ("photo_id", "INTEGER REFERENCES documents(id) ON DELETE SET NULL"), ("ha_slug", "TEXT")):
         if col not in have:
             conn.execute(f"ALTER TABLE cars ADD COLUMN {col} {ddl}")
 

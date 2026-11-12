@@ -37,6 +37,8 @@ code { font-family: ui-monospace, Consolas, monospace; background: var(--accent-
 .nav a { padding: 6px 10px; border-radius: 8px; color: var(--muted); font-weight: 500; }
 .nav a.active, .nav a:hover { background: var(--accent-soft); color: var(--accent); text-decoration: none; }
 main { padding: 20px; max-width: 1500px; margin: 0 auto; }
+/* a page loading: #view is aria-busy until the new page is drawn, and dims only when that takes a moment */
+#view[aria-busy="true"] { opacity: .55; transition: opacity .2s .3s; }
 
 input, select, textarea, button { font: inherit; color: inherit; }
 input[type=text], input[type=search], input[type=number], input[type=url], input:not([type]), select, textarea {
@@ -215,10 +217,15 @@ tr.nofit td { opacity: .5; }
 .epc-pane-foot { padding: 7px 12px; border-top: 1px solid var(--line); color: var(--muted); }
 .epc-note { padding: 6px 12px; border-bottom: 1px solid var(--line); }
 .epc-viewer .pic-inner { border: none; }
+.epc-formats { margin: 0 0 12px; }
+.epc-formats summary { cursor: pointer; color: var(--muted); }
+.epc-formats ul { margin: 4px 0; padding-left: 20px; }
 @media (max-width: 900px) {
   .epc-viewer, .epc-viewer.big { grid-template-columns: 1fr; height: auto; }
   .epc-pane + .epc-pane { border-left: none; border-top: 1px solid var(--line); }
   .epc-pane-body { overflow: visible; }
+  .epc-pane-body.epc-table { overflow-x: auto; }
+  #enlarge { display: none; }  /* one column here, so .big changes nothing */
 }
 
 /* ---- cards: upcoming list, projects, logging ---- */
@@ -391,3 +398,19 @@ tr.group-row td { background: none; color: var(--muted); font-size: 11.5px; text
 .car-notes { margin: 0 0 4px; padding: 12px 16px; }
 .car-notes .note-text { white-space: pre-wrap; overflow-wrap: anywhere; }
 .car-notes textarea { width: 100%; min-height: 110px; }
+
+/* touch screens: finger-sized link buttons, reorder arrows and card ✓ ✕, with room between neighbours */
+@media (pointer: coarse) {
+  button.link { min-width: 40px; min-height: 40px; justify-content: center; }
+  td button.link { margin-top: -10px; margin-bottom: -10px; }  /* reach into the cell padding instead of making the row taller */
+  td button + button.link, td .btn + button.link, dd button + button.link { margin-left: 5px; }  /* with the space between them, at least 8 px apart */
+  .order-btns { display: inline-flex; gap: 8px; }
+  .up-actions { gap: 8px; }
+}
+
+/* phones: the Parts and Upcoming tables fit the screen, row actions included */
+@media (max-width: 640px) {
+  #partsTable td:nth-child(2), #partsTable td input.inline { min-width: 0; }
+  td.up-act { white-space: normal; }
+  td.up-act button.link { margin-top: 8px; margin-bottom: 0; }  /* they wrap here: each keeps its own height, 8 px below a button above it */
+}

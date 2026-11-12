@@ -29,7 +29,7 @@ from . import db
 EPC_DIR = os.path.join(db.DATA_DIR, "epc")
 EPC_DB = os.path.join(EPC_DIR, "epc.db")
 FILES_DIR = os.path.join(EPC_DIR, "files")
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 # Diagram codes (e.g. "11_0123") repeat between vehicles, so they aren't unique on their own (schema v2).
 DIAGRAMS_COLS = """
@@ -182,6 +182,9 @@ def init():
     conn.executescript(SCHEMA)
     drop_unique_diagram_code(conn)
     conn.executescript(SCHEMA)  # recreates indexes dropped with the old table
+    stored = conn.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()
+    if not stored or int(stored[0]) < 3:
+        read_supersession_dates(conn)
     conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', ?)", (str(SCHEMA_VERSION),))
     conn.commit()
 
@@ -211,6 +214,15 @@ def drop_unique_diagram_code(conn):
         conn.execute("PRAGMA foreign_keys = ON")
 
 
+def read_supersession_dates(conn):
+    """v2 -> v3: supersession dates stored as typed become YYYYMM, as imports now store them; an unreadable one stays."""
+    from .epc_import import yyyymm
+    for old, new, date in conn.execute("SELECT old_pn, new_pn, date FROM supersessions WHERE date IS NOT NULL").fetchall():
+        read = yyyymm(date)
+        if read and read != date:
+            conn.execute("UPDATE supersessions SET date=? WHERE old_pn=? AND new_pn=?", (read, old, new))
+
+
 def rows(sql, args=()):
     return [dict(r) for r in connect().execute(sql, args).fetchall()]
 
@@ -232,6 +244,12 @@ PN_RE = re.compile(r"^\d{11}$")
 def norm_pn(v):
     """'11 53 1 740 996' / '11-53-1-740-996' -> '11531740996'. Non-BMW numbers keep letters, lose separators."""
     return re.sub(r"[\s\-./]", "", str(v or "")).upper()
+
+
+def looks_like_pn(v):
+    """Normalised, 3+ letters/digits with at least one digit."""
+    pn = norm_pn(v)
+    return bool(re.match(r"^[0-9A-Z]{3,}$", pn)) and any(ch.isdigit() for ch in pn)
 
 
 def fmt_pn(pn):
@@ -256,6 +274,11 @@ def supersession_chain(pn):
 
 
 # ---------- queries for the UI ----------
+
+def vehicle_codes(diagram_id):
+    return [r["code"] for r in rows("""SELECT v.code FROM vehicles v JOIN diagram_vehicles dv ON dv.vehicle_id=v.id
+                                       WHERE dv.diagram_id=? ORDER BY v.code""", (diagram_id,))]
+
 
 def vehicles():
     return rows("""SELECT v.*, s.name AS source_name, s.is_sample,
@@ -293,7 +316,10 @@ def diagrams_in(category_id=None, vehicle_id=None):
     if vehicle_id:
         sql += " AND d.id IN (SELECT diagram_id FROM diagram_vehicles WHERE vehicle_id=?)"
         args.append(vehicle_id)
-    return rows(sql + " ORDER BY d.sort, d.code", args)
+    out = rows(sql + " ORDER BY d.sort, d.code", args)
+    for r in out:
+        r["vehicles"] = vehicle_codes(r["id"])
+    return out
 
 
 def item_fits(item, vehicle):
@@ -343,34 +369,54 @@ def diagram_detail(diagram_id, vehicle_id=None):
     return d
 
 
+def like(w):
+    """A LIKE pattern (ESCAPE '\\') that finds w anywhere, its own % and _ taken literally."""
+    return "%" + re.sub(r"([\\%_])", r"\\\1", w) + "%"
+
+
 def search(q, vehicle_id=None, limit=200):
-    """Part number (any formatting, prefix or contains, incl. superseded numbers) or description words."""
+    """Part numbers (any formatting, incl. superseded ones) first, then diagrams whose title or code holds every word (item fields None), then items."""
     q = (q or "").strip()
     if not q:
         return []
-    pn = norm_pn(q)
-    args, where = [], []
-    if pn and re.match(r"^[0-9A-Z]{3,}$", pn) and any(ch.isdigit() for ch in pn):
+    # a number typed with spaces ("11 53 1 740 996", or "1K0 615 301 AA" when the catalog has it) is one token
+    known = f"%{norm_pn(q)}%"
+    whole = re.match(r"^[\d\s\-./]+$", q) or looks_like_pn(q) and row(
+        "SELECT 1 FROM diagram_items WHERE part_number LIKE ? UNION ALL SELECT 1 FROM supersessions WHERE old_pn LIKE ? OR new_pn LIKE ?",
+        (known, known, known))
+    tokens = [q] if whole else q.split()
+    in_vehicle, vargs = (" AND d.id IN (SELECT diagram_id FROM diagram_vehicles WHERE vehicle_id=?)", [vehicle_id]) if vehicle_id else ("", [])
+    items = """SELECT i.id, i.callout, i.part_number, i.description, i.supplement, i.qty, i.from_date, i.to_date,
+               d.id AS diagram_id, d.code AS diagram_code, d.title AS diagram_title, c.code AS category_code, s.is_sample
+               FROM diagram_items i JOIN diagrams d ON d.id=i.diagram_id LEFT JOIN categories c ON c.id=d.category_id
+               LEFT JOIN parts p ON p.part_number=i.part_number LEFT JOIN sources s ON s.id=i.source_id WHERE """
+    out = []
+    where, args = [], []
+    for pn in (norm_pn(t) for t in tokens if looks_like_pn(t)):
         alt = [r["old_pn"] for r in rows("SELECT old_pn FROM supersessions WHERE new_pn LIKE ?", (f"%{pn}%",))]
         alt += [r["new_pn"] for r in rows("SELECT new_pn FROM supersessions WHERE old_pn LIKE ?", (f"%{pn}%",))]
-        where.append("(i.part_number LIKE ?" + "".join(" OR i.part_number=?" for _ in alt) + ")")
+        where.append("i.part_number LIKE ?" + "".join(" OR i.part_number=?" for _ in alt))
         args += [f"%{pn}%"] + alt
-    else:
-        words = q.split()
-        where.append(" AND ".join("(i.description LIKE ? OR i.supplement LIKE ? OR p.description LIKE ? OR d.title LIKE ?)" for _ in words))
-        for w in words:
-            args += [f"%{w}%"] * 4
-    sql = f"""SELECT i.id, i.callout, i.part_number, i.description, i.supplement, i.qty, i.from_date, i.to_date,
-              d.id AS diagram_id, d.code AS diagram_code, d.title AS diagram_title, c.code AS category_code, s.is_sample
-              FROM diagram_items i JOIN diagrams d ON d.id=i.diagram_id LEFT JOIN categories c ON c.id=d.category_id
-              LEFT JOIN parts p ON p.part_number=i.part_number LEFT JOIN sources s ON s.id=i.source_id
-              WHERE {' AND '.join(where)}"""
-    if vehicle_id:
-        sql += " AND d.id IN (SELECT diagram_id FROM diagram_vehicles WHERE vehicle_id=?)"
-        args.append(vehicle_id)
-    out = rows(sql + " ORDER BY i.part_number, d.code LIMIT ?", args + [limit])
+    if where:
+        out += rows(items + f"({' OR '.join(where)}){in_vehicle} ORDER BY i.part_number, d.code LIMIT ?", args + vargs + [limit])
+    item = "(i.description LIKE ? ESCAPE '\\' OR i.supplement LIKE ? ESCAPE '\\' OR p.description LIKE ? ESCAPE '\\')"
+    diagram = "(d.title LIKE ? ESCAPE '\\' OR d.code LIKE ? ESCAPE '\\')"
+    pats = [like(t) for t in tokens]
+    out += rows(f"""SELECT NULL AS id, NULL AS callout, NULL AS part_number, NULL AS description, NULL AS supplement, NULL AS qty,
+                    NULL AS from_date, NULL AS to_date, d.id AS diagram_id, d.code AS diagram_code, d.title AS diagram_title,
+                    c.code AS category_code, s.is_sample FROM diagrams d LEFT JOIN categories c ON c.id=d.category_id
+                    LEFT JOIN sources s ON s.id=d.source_id WHERE {' AND '.join([diagram] * len(pats))}{in_vehicle} ORDER BY d.code LIMIT ?""",
+                [a for w in pats for a in [w] * 2] + vargs + [limit])
+    # every word somewhere in the row, at least one in the item itself: a word only in the title already gave the diagram's row
+    seen = {r["id"] for r in out}
+    out += [r for r in rows(items + " AND ".join([f"({item} OR {diagram})"] * len(pats)) + f" AND ({' OR '.join([item] * len(pats))})"
+                            + f"{in_vehicle} ORDER BY i.part_number, d.code LIMIT ?",
+                            [a for w in pats for a in [w] * 5] + [a for w in pats for a in [w] * 3] + vargs + [limit])
+            if r["id"] not in seen]
+    out = out[:limit]
     for r in out:
         r["part_number_fmt"] = fmt_pn(r["part_number"])
+        r["vehicles"] = vehicle_codes(r["diagram_id"])
     return out
 
 
@@ -380,6 +426,8 @@ def part_detail(pn):
     used = rows("""SELECT i.callout, i.description, i.supplement, i.qty, i.from_date, i.to_date, d.id AS diagram_id,
                    d.code AS diagram_code, d.title AS diagram_title FROM diagram_items i JOIN diagrams d ON d.id=i.diagram_id
                    WHERE i.part_number=? ORDER BY d.code""", (pn,))
+    for r in used:
+        r["vehicles"] = vehicle_codes(r["diagram_id"])
     newer, older = supersession_chain(pn)
     for r in newer:
         r["new_pn_fmt"] = fmt_pn(r["new_pn"])
@@ -411,6 +459,7 @@ def sources():
     return rows("""SELECT s.*,
         (SELECT COUNT(*) FROM diagrams WHERE source_id=s.id) AS diagrams,
         (SELECT COUNT(*) FROM diagram_items WHERE source_id=s.id) AS items,
+        (SELECT COUNT(*) FROM diagram_items i JOIN diagrams d ON d.id=i.diagram_id WHERE d.source_id=s.id AND i.source_id IS NOT s.id) AS shared_items,
         (SELECT COUNT(*) FROM source_files WHERE source_id=s.id) AS files
         FROM sources s ORDER BY s.imported_at, s.id""")
 

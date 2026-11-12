@@ -1,17 +1,29 @@
 /* Offline parts catalog UI: vehicles, main groups, diagrams with clickable callouts, part search, import & validation.
-   Uses the helpers from app.js ($, esc, api, toast, openDialog, options, view, routes). */
+   Uses the helpers from app.js ($, esc, api, toast, openDialog, options, uploadChunked, view, routes). */
 'use strict';
 
+// Choices remembered on this device (null when never made).
+const saved = {
+  get: (k) => { try { return localStorage.getItem(k); } catch (e) { return null; } },
+  set: (k, v) => { try { localStorage.setItem(k, v || ''); } catch (e) { /* storage blocked */ } },
+};
 const EPC = {
-  get vehicle() { try { return localStorage.getItem('epcVehicle') || ''; } catch (e) { return ''; } },
-  set vehicle(v) { try { localStorage.setItem('epcVehicle', v || ''); } catch (e) { /* storage blocked */ } },
+  get vehicle() { return saved.get('epcVehicle') || ''; },
+  set vehicle(v) { saved.set('epcVehicle', v); },
 };
 const vq = () => (EPC.vehicle ? `vehicle=${EPC.vehicle}` : '');
+// the same rule as norm_pn in app/epc.py; app.js uses it to link garage parts to the catalog
+const normPn = (v) => String(v || '').replace(/[\s\-./]/g, '').toUpperCase();
 const missing = (label = 'missing') => `<span class="miss">${esc(label)}</span>`;
 const sampleTag = (on) => (on ? ' <span class="sample-tag">SAMPLE</span>' : '');
 const ym = (v) => (v ? `${v.slice(4, 6)}/${v.slice(0, 4)}` : '');
 const range = (i) => (i.from_date || i.to_date ? `${i.from_date ? 'from ' + ym(i.from_date) : ''}${i.from_date && i.to_date ? ' ' : ''}${i.to_date ? 'to ' + ym(i.to_date) : ''}` : '');
 const garageChip = (g) => (g && g.length ? g.map((p) => `<span class="badge ${sCls(p.status)}" title="${esc(p.car || 'Unassigned')}: ${esc(p.name)}">${esc(p.status)}</span>`).join(' ') : '');
+// "Mine" cell and add button of a diagram or search row; addToGarage fills the cells of the number it adds
+const mineCell = (i) => `<td class="mine" data-pn="${esc(i.part_number)}">${garageChip(i.garage)}</td>`;
+const addBtn = (i) => (i.part_number ? `<button class="link add" data-id="${i.id}" title="Add to my parts list">＋</button>` : '');
+// a diagram's vehicles, while all vehicles are listed: codes like 11_0050 repeat between vehicles
+const vehicleLine = (r) => (!EPC.vehicle && r.vehicles && r.vehicles.length ? `<div class="small muted">${r.vehicles.map(esc).join(', ')}</div>` : '');
 
 // When the catalog is switched off (Settings > Features), its pages say so instead of showing an empty catalog.
 const catalogGuard = (fn) => async (...args) => {
@@ -30,10 +42,10 @@ routes.push(
   [/^\/catalog\/data$/, catalogGuard(catalogData)],
 );
 
-async function catalogHeader(vehicles, title, crumbs = '') {
+async function catalogHeader(vehicles, title, crumbs = '', sub = '') {
   const vs = vehicles || await api('/epc/vehicles');
   if (EPC.vehicle && !vs.some((v) => String(v.id) === EPC.vehicle)) EPC.vehicle = '';
-  return `<div class="spread"><div>${crumbs ? `<div class="small muted">${crumbs}</div>` : ''}<h1>${title}</h1></div>
+  return `<div class="spread"><div>${crumbs ? `<div class="small muted">${crumbs}</div>` : ''}<h1>${title}</h1>${sub ? `<div class="small muted">${sub}</div>` : ''}</div>
     <div class="row">
       <label class="small muted">Vehicle <select id="epcVehicle">${options(vs.map((v) => [v.id, `${v.code}${v.is_sample ? ' (SAMPLE)' : ''} · ${v.diagrams} diagrams`]), EPC.vehicle, 'All vehicles')}</select></label>
       <form id="epcSearch" class="row"><input type="search" name="q" placeholder="Part number or description" style="min-width:240px"><button>Search</button></form>
@@ -90,7 +102,7 @@ async function catalogGroup(id) {
     ${list.length ? `<div class="thumbs">${list.map((d) => `<a class="thumb" href="#/catalog/diagram/${d.id}">
         <div class="thumb-img">${thumbUrl(d) ? `<img src="${esc(thumbUrl(d))}" alt="" loading="lazy">` : '<span class="muted small">no image</span>'}</div>
         <div class="thumb-title">${esc(d.title) || missing('no title')}${sampleTag(d.is_sample)}</div>
-        <div class="thumb-code mono">${esc(d.code)}${d.items ? '' : ' · ' + missing('no parts list')}</div></a>`).join('')}</div>`
+        <div class="thumb-code mono">${esc(d.code)}${d.items ? '' : ' · ' + missing('no parts list')}</div>${vehicleLine(d)}</a>`).join('')}</div>`
       : '<div class="panel empty">No diagrams in this group' + (EPC.vehicle ? ' for this vehicle' : '') + ' yet.</div>'}`;
   wireHeader();
   wireGroupSelect();
@@ -111,7 +123,8 @@ async function catalogDiagram(id, params) {
   const showAll = params.get('all') === '1';
   const items = d.items.filter((i) => showAll || i.fits);
   const hidden = d.items.length - items.length;
-  view.innerHTML = `${await catalogHeader(null, `${esc(d.title) || esc(d.code)}${sampleTag(d.is_sample)}`, `<a href="#/catalog">Main groups</a> › ${cat} › <span class="mono">${esc(d.code)}</span>`)}
+  const vehicleList = d.vehicles.length ? `${d.vehicles.length === 1 ? 'Vehicle' : 'Vehicles'}: ${d.vehicles.map((v) => esc(v.code)).join(', ')}` : missing('no vehicle');
+  view.innerHTML = `${await catalogHeader(null, `${esc(d.title) || esc(d.code)}${sampleTag(d.is_sample)}`, `<a href="#/catalog">Main groups</a> › ${cat} › <span class="mono">${esc(d.code)}</span>`, vehicleList)}
     <div class="spread epc-bar">
       <div class="row">
         <a class="btn ${prev ? '' : 'disabled'}" ${prev ? `href="#/catalog/diagram/${prev.id}"` : ''} title="Previous diagram (←)">←</a>
@@ -147,8 +160,8 @@ async function catalogDiagram(id, params) {
           <td class="mono nowrap">${i.part_number ? `<a href="#/catalog/part/${esc(i.part_number)}">${esc(i.part_number_fmt)}</a>` : missing(i.part_number_raw || 'none')}
             ${i.superseded_by ? `<div class="small">→ <a href="#/catalog/part/${esc(i.superseded_by)}">${esc(i.superseded_by_fmt)}</a></div>` : ''}</td>
           <td class="small">${esc(i.fitment_note)}</td>
-          <td>${garageChip(i.garage)}</td>
-          <td>${i.part_number ? `<button class="link add" data-id="${i.id}" title="Add to my parts list">＋</button>` : ''}</td></tr>`).join('')}
+          ${mineCell(i)}
+          <td>${addBtn(i)}</td></tr>`).join('')}
         </tbody></table>` : '<div class="empty">No parts list for this diagram.</div>'}
         </div>
       </section>
@@ -177,19 +190,31 @@ async function catalogDiagram(id, params) {
   if (params.get('c')) hl(params.get('c'), true);
 }
 
+// d: the diagram the row is on ({ code, category_name }), or null from the part page.
 async function addToGarage(d, item) {
-  const cars = await api('/cars');
+  const [cars, p] = await Promise.all([api('/cars'), api('/epc/parts/' + encodeURIComponent(item.part_number))]);
+  const newer = p.superseded_by[p.superseded_by.length - 1];
+  const lastCar = saved.get('epcCar');  // '' = Not assigned
+  const car = lastCar === '' || cars.some((c) => String(c.id) === lastCar) ? lastCar : cars[0] && cars[0].id;
+  const notes = [d ? `Catalog diagram ${d.code}${item.callout ? ' #' + item.callout : ''}${item.supplement ? ' · ' + item.supplement : ''}` : '',
+    newer ? `Replaces ${p.part_number_fmt}` : ''].filter(Boolean).join(' · ');
   openDialog('Add to my parts list', `<div class="form">
-      <label class="wide">Name<input name="name" value="${esc(item.description || item.part_description || 'Part')}" required></label>
-      <label>Part #<input name="part_number" value="${esc(item.part_number)}"></label>
-      <label>Vehicle<select name="car_id">${options(cars.map((c) => [c.id, c.name]), cars[0] && cars[0].id, 'Not assigned')}</select></label>
+      <label class="wide">Name<input name="name" value="${esc(item.description || (p.record && p.record.description) || 'Part')}" required></label>
+      <label>Part #<input name="part_number" value="${esc(newer ? newer.new_pn_fmt : p.part_number_fmt)}"></label>
+      <label>Vehicle<select name="car_id">${options(cars.map((c) => [c.id, c.name]), car, 'Not assigned')}</select></label>
       <label>Status<select name="status">${options(REF.statuses, 'Needed')}</select></label>
-      <label>Qty<input name="qty" value="${esc(item.qty_num || 1)}"></label>
-      <label class="wide">Notes<input name="notes" value="${esc(`Catalog diagram ${d.code}${item.callout ? ' #' + item.callout : ''}${item.supplement ? ' · ' + item.supplement : ''}`)}"></label></div>`,
+      <label>Qty<input name="qty" inputmode="numeric" value="${esc(item.qty_num || Number(item.qty) || 1)}"></label>
+      <label class="wide">Notes<input name="notes" value="${esc(notes)}"></label></div>`,
   async (data) => {
-    await api('/parts', { json: { ...data, category: d.category_name || '' } });
+    await api('/parts', { json: { ...data, category: (d && d.category_name) || '' } });
+    saved.set('epcCar', data.car_id);
     toast('Added to your parts list');
-    rerender();
+    const pn = normPn(data.part_number);
+    // saved under the number that replaces the tapped one: its rows show it too, as garage_status in app/epc_api.py does
+    const pns = [pn, p.superseded_by.length && p.superseded_by[0].new_pn === pn ? p.part_number : ''].filter(Boolean);
+    const c = cars.find((x) => String(x.id) === data.car_id);
+    const chip = garageChip([{ status: data.status, car: c ? c.name : null, name: data.name || data.part_number }]);
+    $$('.mine').filter((el) => pns.includes(el.dataset.pn)).forEach((el) => { el.innerHTML = $('.badge', el) ? el.innerHTML + ' ' + chip : chip; });
   }, { ok: 'Add' });
 }
 
@@ -199,53 +224,100 @@ async function catalogPart(pn) {
     <div class="panel stack" style="margin-top:12px">
       <div><b>${p.record ? (esc(p.record.description) || missing('no description')) : missing('no part record')}</b></div>
       ${p.record && p.record.notes ? `<div class="note">${esc(p.record.notes)}</div>` : ''}
-      ${p.superseded_by.length ? `<div>Replaced by: ${p.superseded_by.map((s) => `<a class="mono" href="#/catalog/part/${esc(s.new_pn)}">${esc(s.new_pn_fmt)}</a>${s.date ? ` <span class="small muted">(${esc(s.date)})</span>` : ''}`).join(' → ')}</div>` : ''}
+      ${p.superseded_by.length ? `<div>Replaced by: ${p.superseded_by.map((s) => `<a class="mono" href="#/catalog/part/${esc(s.new_pn)}">${esc(s.new_pn_fmt)}</a>${s.date ? ` <span class="small muted">(${esc(/^\d{6}$/.test(s.date) ? ym(s.date) : s.date)})</span>` : ''}`).join(' → ')}</div>` : ''}
       ${p.replaces.length ? `<div>Replaces: ${p.replaces.map((s) => `<a class="mono" href="#/catalog/part/${esc(s.old_pn)}">${esc(s.old_pn_fmt)}</a>`).join(', ')}</div>` : ''}
-      <div>In my parts list: ${garageChip(p.garage) || '<span class="muted">no</span>'}</div>
+      <div>In my parts list: <span class="mine" data-pn="${esc(p.part_number)}">${garageChip(p.garage) || '<span class="muted">no</span>'}</span>
+        ${p.part_number ? '<button class="link add" title="Add to my parts list">＋ Add</button>' : ''}</div>
       ${p.record ? `<div class="small muted">Record source: ${esc(p.record.source_name || '?')}</div>` : ''}
     </div>
     <h2>Used in</h2>
     <div class="panel table-wrap" style="padding:0">${p.used_in.length ? `<table><thead><tr><th>Diagram</th><th>No.</th><th>Description</th><th class="num">Qty</th><th>Fitment</th></tr></thead><tbody>
-      ${p.used_in.map((u) => `<tr><td><a href="#/catalog/diagram/${u.diagram_id}?c=${encodeURIComponent(u.callout)}"><span class="mono">${esc(u.diagram_code)}</span> ${esc(u.diagram_title)}</a></td>
+      ${p.used_in.map((u) => `<tr><td><a href="#/catalog/diagram/${u.diagram_id}?c=${encodeURIComponent(u.callout)}"><span class="mono">${esc(u.diagram_code)}</span> ${esc(u.diagram_title)}</a>${vehicleLine(u)}</td>
         <td class="mono">${esc(u.callout)}</td><td>${esc(u.description)}${u.supplement ? `<div class="small muted">${esc(u.supplement)}</div>` : ''}</td>
         <td class="num">${u.qty == null ? missing('?') : esc(u.qty)}</td><td class="small">${esc(range(u))}</td></tr>`).join('')}
     </tbody></table>` : '<div class="empty">Not on any imported diagram.</div>'}</div>`;
   wireHeader();
+  const add = $('button.add');
+  if (add) add.onclick = () => addToGarage(null, { part_number: p.part_number });
 }
 
 async function catalogSearch(params) {
   const q = params.get('q') || '';
   const res = q ? await api(`/epc/search?q=${encodeURIComponent(q)}&${vq()}`) : [];
   view.innerHTML = `${await catalogHeader(null, `Search: ${esc(q)}`, '<a href="#/catalog">Catalog</a>')}
-    <div class="panel table-wrap" style="padding:0;margin-top:12px">${res.length ? `<table><thead><tr><th>Part number</th><th>Description</th><th class="num">Qty</th><th>Diagram</th><th>Fitment</th><th>Mine</th></tr></thead><tbody>
-      ${res.map((r) => `<tr><td class="mono" style="white-space:nowrap"><a href="#/catalog/part/${esc(r.part_number)}">${esc(r.part_number_fmt) || missing('none')}</a></td>
+    <div class="panel table-wrap" style="padding:0;margin-top:12px">${res.length ? `<table><thead><tr><th>Part number</th><th>Description</th><th class="num">Qty</th><th>Diagram</th><th>Fitment</th><th>Mine</th><th></th></tr></thead><tbody>
+      ${res.map((r) => (r.id == null  // a diagram found by its title or code, not one of its rows
+        ? `<tr><td colspan="3" class="small muted">Diagram</td><td><a href="#/catalog/diagram/${r.diagram_id}"><span class="mono">${esc(r.diagram_code)}</span> ${esc(r.diagram_title)}</a>${sampleTag(r.is_sample)}${vehicleLine(r)}</td><td colspan="3"></td></tr>`
+        : `<tr><td class="mono" style="white-space:nowrap">${r.part_number ? `<a href="#/catalog/part/${esc(r.part_number)}">${esc(r.part_number_fmt)}</a>` : missing('none')}</td>
         <td>${esc(r.description) || missing('no description')}${sampleTag(r.is_sample)}${r.supplement ? `<div class="small muted">${esc(r.supplement)}</div>` : ''}</td>
         <td class="num">${r.qty == null ? missing('?') : esc(r.qty)}</td>
-        <td><a href="#/catalog/diagram/${r.diagram_id}?c=${encodeURIComponent(r.callout)}"><span class="mono">${esc(r.diagram_code)}</span> #${esc(r.callout)} ${esc(r.diagram_title)}</a></td>
-        <td class="small">${esc(range(r))}</td><td>${garageChip(r.garage)}</td></tr>`).join('')}
-    </tbody></table>${res.length >= 200 ? '<div class="small muted" style="padding:8px">Showing the first 200 matches.</div>' : ''}` : `<div class="empty">${q ? 'No matches.' : 'Type a part number (any spacing) or words from the description.'}</div>`}</div>`;
+        <td><a href="#/catalog/diagram/${r.diagram_id}?c=${encodeURIComponent(r.callout)}"><span class="mono">${esc(r.diagram_code)}</span> #${esc(r.callout)} ${esc(r.diagram_title)}</a>${vehicleLine(r)}</td>
+        <td class="small">${esc(range(r))}</td>${mineCell(r)}<td>${addBtn(r)}</td></tr>`)).join('')}
+    </tbody></table>${res.length >= 200 ? '<div class="small muted" style="padding:8px">Showing the first 200 matches.</div>' : ''}` : `<div class="empty">${q ? `No matches.${EPC.vehicle ? ' <button class="link" id="searchAll">Search all vehicles</button>' : ''}` : 'Type a part number (any spacing) or words from the description.'}</div>`}</div>`;
   wireHeader();
   $('#epcSearch').q.value = q;
+  const all = $('#searchAll');
+  if (all) all.onclick = () => { EPC.vehicle = ''; rerender(); };
+  $$('button.add').forEach((b) => (b.onclick = () => { const r = res.find((x) => String(x.id) === b.dataset.id); addToGarage({ code: r.diagram_code }, r); }));
 }
 
+const IMPORT_ACCEPT = '.json,.csv,.tsv,.txt,.html,.htm,image/*';
+// a chosen folder also holds a saved page's scripts and styles: send only what the file picker would offer
+const importable = (f) => IMPORT_ACCEPT.split(',').some((t) => (t.endsWith('/*') ? f.type.startsWith(t.slice(0, -1)) : f.name.toLowerCase().endsWith(t)));
+
 async function catalogData() {
-  const [ov, val] = await Promise.all([api('/epc/overview'), api('/epc/validation')]);
+  const [ov, val, tree, set] = await Promise.all([api('/epc/overview'), api('/epc/validation'), api('/epc/categories'), api('/settings')]);
   const sev = { error: 0, warning: 1, info: 2 };
   const summ = Object.entries(val.summary).sort((a, b) => sev[a[1].severity] - sev[b[1].severity]);
+  const sample = ov.sources.some((s) => s.is_sample);
+  // The import form starts on the header's vehicle (or the only real one); its last choices come back while the header is unchanged.
+  let last = {};
+  try { last = JSON.parse(saved.get('epcImport')) || {}; } catch (e) { /* none */ }
+  const real = ov.vehicles.filter((v) => !v.is_sample);
+  const shown = EPC.vehicle ? ov.vehicles.find((v) => String(v.id) === EPC.vehicle) : real.length === 1 ? real[0] : null;
+  const impVehicle = last.header === EPC.vehicle && (last.vehicle === '' || ov.vehicles.some((v) => v.code === last.vehicle)) ? last.vehicle : shown && shown.code;
+  const groups = tree.flatMap((c) => [c, ...c.children]).map((c) => [c.code, `${c.code} - ${c.name}`]);
   view.innerHTML = `${await catalogHeader(ov.vehicles, 'Catalog data &amp; import', '<a href="#/catalog">Catalog</a>')}
     <h2>Import local files</h2>
     <form class="panel form" id="impForm">
       <label class="wide">Files: JSON bundle, CSV, saved HTML pages (with their image), or diagram images
-        <input type="file" name="file" multiple required accept=".json,.csv,.tsv,.txt,.html,.htm,image/*"></label>
-      <label>Link to vehicle<select name="vehicle">${options(ov.vehicles.map((v) => [v.code, v.code]), ov.vehicles.find((v) => !v.is_sample)?.code, 'None')}</select></label>
-      <label>Main group for new diagrams<input name="category" placeholder="e.g. 11"></label>
+        <input type="file" name="file" multiple required accept="${IMPORT_ACCEPT}"></label>
+      <label class="wide">…or choose a folder; all of it is imported (a saved page with its files folder, a bundle with its images)
+        <input type="file" id="impFolder" webkitdirectory></label>
+      <label>Link to vehicle<select name="vehicle">${options(ov.vehicles.map((v) => [v.code, v.code]), impVehicle, 'None')}</select></label>
+      <label>Main group for new diagrams<select name="category">${options(groups, last.category, 'None')}</select></label>
       <label>Diagram code (one HTML page)<input name="diagram" placeholder="default: file name"></label>
-      <label>Source name<input name="source" placeholder="e.g. My saved pages"></label>
+      <label>Source name<input name="source" value="${esc(last.source || '')}" placeholder="e.g. My saved pages"></label>
       <label class="row" style="flex-direction:row"><input type="checkbox" name="create" value="1"> Images with no matching diagram become new diagrams</label>
       <div><button class="primary">Import</button></div>
     </form>
     <div id="impResult"></div>
-    <p class="small muted">Everything stays on this PC. Originals are kept in <code>data/epc/files/</code> so they can be re-imported. Formats: <code>docs/catalog.md</code>. Command line: <code>tools\\epc_import.py</code>.</p>
+    <p class="small muted">Everything stays on ${set.addon ? 'your Home Assistant' : 'this PC'}. Originals are kept in the data folder (<code>${esc(set.data_dir)}</code>) so they can be re-imported.${set.addon ? '' : ' Command line: <code>tools/epc_import.py</code>.'}</p>
+    <details class="epc-formats small">
+      <summary>File formats</summary>
+      <p><b>JSON bundle</b> (.json): <code>{"format": "garage-epc", "source": {"name": …}, "vehicles": […], "categories": […], "parts": […], "diagrams": […], "supersessions": […], "expected_diagrams": […]}</code>, any list left out.
+        Vehicles, categories (main groups), parts and supersessions take the CSV column names below as keys.
+        A diagram has <code>code</code>, <code>title</code>, <code>category</code>, <code>vehicles</code> (a list of codes), <code>image</code> (path from the JSON file),
+        <code>items</code> (parts-list rows with the CSV keys below, <code>vehicles</code> as a list) and <code>hotspots</code> (<code>callout</code>, <code>x</code>, <code>y</code>, <code>w</code>, <code>h</code>).
+        Expected diagrams (<code>vehicle</code>, <code>code</code>, <code>title</code>) are reported as missing until they are imported.</p>
+      <p><b>CSV</b> (.csv, .tsv, .txt; UTF-8, headers in the first row, columns split by comma, semicolon, tab or |): one kind per file, told apart by its headers.</p>
+      <ul>
+        <li>Parts-list rows: <code>diagram</code> with <code>part_number</code> or <code>callout</code>, and <code>description</code>, <code>supplement</code>, <code>qty</code>, <code>from</code>, <code>to</code>, <code>fitment_note</code>, <code>vehicles</code> (codes split by ;, limits the row to them), <code>category</code>, <code>title</code></li>
+        <li>Hotspots: <code>diagram</code>, <code>callout</code>, <code>x</code>, <code>y</code>, <code>w</code>, <code>h</code>, as fractions of the image (0 to 1) or pixels</li>
+        <li>Supersessions: <code>old</code>, <code>new</code>, <code>date</code>, <code>note</code></li>
+        <li>Vehicles: <code>code</code>, <code>series</code>, and <code>make</code>, <code>model</code>, <code>body</code>, <code>market</code>, <code>engine</code>, <code>transmission</code>, <code>steering</code>, <code>prod_from</code>, <code>prod_to</code>, <code>notes</code></li>
+        <li>Diagrams: <code>diagram</code>, <code>title</code>, <code>category</code></li>
+        <li>Parts: <code>part_number</code>, <code>description</code>, <code>notes</code></li>
+        <li>Main groups: <code>code</code>, <code>name</code>, <code>parent</code></li>
+      </ul>
+      <p>Headers ignore case, and common variants work (Part No., Ref, Pos, Quantity, Remarks). Production dates read as 1991-02, 02/1991 or 199102.</p>
+      <p><b>Saved web page</b> (.html, .htm): the parts list is the table that looks most like one: a part-number header (Part number, Part No., P/N…) over part numbers or beside a Description or No. header, or else a column of 11-digit BMW numbers. Its columns are read by their headers (No., Part number, Description, Qty, From, Up to).
+        The diagram image is the one image sent with a single page, else the largest image saved with the page; its <code>&lt;map&gt;</code> areas become clickable numbers.
+        The file name without .html is the diagram code (unless Diagram code is filled in for a single page), and the page title is the diagram title.</p>
+      <p><b>Diagram images</b>: an image named after a diagram's code is attached to it, ignoring case and anything but letters and digits (<code>11-0050.PNG</code> fits <code>11_0050</code>).
+        When several diagrams share a code, the vehicle under Link to vehicle picks among them; with none chosen, the image is reported and not attached.
+        Images with no such diagram are reported, or become new diagrams when the box above is ticked.</p>
+    </details>
     <h2>Validation report</h2>
     <div class="panel">${summ.length ? `<div class="row" style="margin-bottom:10px">${summ.map(([k, v]) => `<span class="chip ${v.severity === 'error' ? 'overdue' : v.severity === 'warning' ? 'soon' : 'unknown'}">${esc(k.replace(/_/g, ' '))}: ${v.count}</span>`).join(' ')}</div>
       <div class="table-wrap" style="max-height:420px;overflow:auto"><table><thead><tr><th>Severity</th><th>Check</th><th>Issue</th></tr></thead><tbody>
@@ -258,23 +330,35 @@ async function catalogData() {
         <td class="num">${s.diagrams}</td><td class="num">${s.items}</td><td class="num">${s.files}</td><td class="small muted">${esc((s.imported_at || '').slice(0, 10))}</td>
         <td><button class="link danger del" data-id="${s.id}" data-name="${esc(s.name)}">Remove</button></td></tr>`).join('')}
     </tbody></table></div>
-    ${ov.sources.some((s) => s.is_sample) ? '' : '<p><button id="loadSample">Load sample data</button> <span class="small muted">(made-up records, clearly marked, for trying the catalog)</span></p>'}`;
+    <p class="row"><a class="btn" href="api/epc/export">⬇ Export catalog (zip)</a>${sample ? '<a class="btn" href="api/epc/export?samples=1">⬇ With sample data</a>' : ''}</p>
+    ${sample ? '' : '<p><button id="loadSample">Load sample data</button> <span class="small muted">(made-up records, clearly marked, for trying the catalog)</span></p>'}`;
   wireHeader();
+  const folder = $('#impFolder');
+  folder.onchange = () => { $('#impForm').elements.file.required = !folder.files.length; };
   $('#impForm').onsubmit = async (e) => {
     e.preventDefault();
-    const btn = $('button.primary', e.target); btn.disabled = true; btn.textContent = 'Importing…';
+    const f = e.target.elements;
+    const files = [...f.file.files, ...[...folder.files].filter(importable)];
+    if (!files.length) return toast('Nothing to import in that folder', true);
+    saved.set('epcImport', JSON.stringify({ header: EPC.vehicle, vehicle: f.vehicle.value, category: f.category.value, source: f.source.value.trim() }));
+    const btn = $('button.primary', e.target); btn.disabled = true;
     try {
-      const r = await fetch('api/epc/import', { method: 'POST', body: new FormData(e.target) });
-      const data = await r.json();
-      if (!r.ok) throw new Error(data.error || 'Import failed');
+      // each file goes up on its own (in pieces when big), then one import takes them together: a page finds its images among them
+      const body = new FormData(e.target);
+      body.delete('file');
+      for (const x of files) body.append('upload', await uploadChunked(x, { purpose: 'catalog', path: x.webkitRelativePath || '' }, (t) => { btn.textContent = t; }));
+      btn.textContent = 'Importing…';
+      const data = await api('/epc/import', { method: 'POST', body });
       sessionStorage.setItem('epcLastImport', JSON.stringify(data.reports));
       toast('Import finished');
-      await catalogData();
-      showImportResult();
+      await rerender();
+      if ($('#impResult')) showImportResult();  // still on the import page, not one opened meanwhile
     } catch (err) { toast(err.message, true); btn.disabled = false; btn.textContent = 'Import'; }
   };
   $$('button.del').forEach((b) => (b.onclick = async () => {
-    if (!confirm(`Remove "${b.dataset.name}" and everything it imported (diagrams, rows, stored files)?`)) return;
+    const shared = ov.sources.find((s) => String(s.id) === b.dataset.id).shared_items || 0;
+    if (!confirm(`Remove "${b.dataset.name}" and everything it imported (diagrams, rows, stored files)?${shared
+      ? `\n\n${shared} ${shared === 1 ? 'row' : 'rows'} from other sources ${shared === 1 ? 'is' : 'are'} on its diagrams and will be removed with them.` : ''}`)) return;
     await api('/epc/sources/' + b.dataset.id, { method: 'DELETE' });
     toast('Source removed'); rerender();
   }));

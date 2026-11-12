@@ -3,6 +3,7 @@ import calendar
 import datetime as dt
 import io
 import json
+import math
 import os
 import re
 import shutil
@@ -24,10 +25,13 @@ STATIC = os.path.join(db.ROOT, "static")
 SETTINGS_PATH = os.path.join(db.DATA_DIR, "settings.json")
 DEFAULT_SETTINGS = {"lan": False, "port": 8765, "catalog": False, "agent_key": None}
 RESTART_CODE = 3
-# Set by the Home Assistant add-on (ha-addon/run.sh): no phone-access toggle, and optionally only
+# Set by the Home Assistant add-on (run_addon.py): no phone-access toggle, and optionally only
 # accept requests from HA's ingress proxy.
 ADDON = os.environ.get("PARTS_CATALOG_ADDON") == "1"
 ALLOWED_CLIENTS = {a.strip() for a in os.environ.get("PARTS_CATALOG_ALLOW", "").split(",") if a.strip()}
+# The add-on's name on Home Assistant's network: its slug with dashes (local-parts-catalog for a local install,
+# 1a2b3c4d-parts-catalog from a repository).
+ADDON_HOST = os.environ.get("HOSTNAME", "")
 
 app = Flask(__name__, static_folder=None)
 app.config["MAX_CONTENT_LENGTH"] = 500 * 1024 * 1024  # service manuals are big
@@ -83,7 +87,10 @@ CARD_DEFAULTS = {"photo": True, "mileage": True, "upcoming_rows": 3, "hide_ok": 
 def card_settings(s=None):
     """How garage cards look (Garage > Customize cards)."""
     c = {**CARD_DEFAULTS, **((load_settings() if s is None else s).get("card") or {})}
-    rows = to_int(c["upcoming_rows"])
+    try:
+        rows = to_int(c["upcoming_rows"])
+    except BadInput:  # read on every page: a hand-edited settings.json must not take them down
+        rows = None
     c["upcoming_rows"] = max(0, min(12, 3 if rows is None else rows))
     return {k: (c[k] if k == "upcoming_rows" else bool(c[k])) for k in CARD_DEFAULTS}
 
@@ -135,22 +142,34 @@ def err(msg, code=400):
     return jsonify(error=msg), code
 
 
-def to_int(v):
-    if v in (None, ""):
-        return None
-    try:
-        return int(float(re.sub(r"[^\d.\-]", "", str(v))))
-    except ValueError:
-        return None
+# A number as people type it: spaces around, a leading $, thousands as 1,234, a trailing " mi".
+NUMBER = re.compile(r"-?\$?(\d{1,3}(,\d{3})+|\d+)(\.\d+)?( ?mi)?", re.IGNORECASE)
 
 
-def to_money(v):
-    if v in (None, ""):
+def to_number(v, field):
+    """None for blank; else 400 naming `field` unless `v` is cleanly a number."""
+    if isinstance(v, int) or (isinstance(v, float) and math.isfinite(v)):  # JSON's Infinity, NaN, 1e400: refused as text below
+        return v
+    s = "" if v is None else str(v).strip()
+    if not s:
         return None
-    try:
-        return round(float(re.sub(r"[^\d.\-]", "", str(v))), 2)
-    except ValueError:
-        return None
+    if not NUMBER.fullmatch(s):
+        raise BadInput(f"{field} must be a number, not {str(v)[:30]!r}")
+    return float(re.sub(r"[^\d.\-]", "", s))
+
+
+def to_int(v, field="Value"):
+    n = to_number(v, field)
+    if n is not None and (n != int(n) or isinstance(v, str) and "." in v):  # "7.500" may mean 7500: don't guess
+        raise BadInput(f"{field} must be a whole number, not {str(v)[:30]!r}")
+    return None if n is None else int(n)
+
+
+def to_money(v, field="Amount"):
+    if isinstance(v, str) and re.fullmatch(r"\s*-?\$?\d+,\d\d?\s*", v):
+        v = v.replace(",", ".")  # 24,99: a decimal comma
+    n = to_number(v, field)
+    return None if n is None else round(n, 2)
 
 
 def today():
@@ -158,12 +177,16 @@ def today():
 
 
 class BadInput(ValueError):
-    """A value the API can't accept; answered as 400 with this message."""
+    """A value the API can't accept; answered with this message, as 400 unless `code` says otherwise."""
+
+    def __init__(self, msg, code=400):
+        super().__init__(msg)
+        self.code = code
 
 
 @app.errorhandler(BadInput)
 def bad_input(e):
-    return err(str(e), 400)
+    return err(str(e), e.code)
 
 
 def to_date(v, field="Date"):
@@ -171,9 +194,12 @@ def to_date(v, field="Date"):
     if v in (None, ""):
         return None
     try:
-        return dt.date.fromisoformat(str(v).strip()[:10]).isoformat()
+        d = dt.date.fromisoformat(str(v).strip()[:10])
     except ValueError:
         raise BadInput(f"{field} must be a date like 2026-11-12, not {str(v)[:30]!r}") from None
+    if not 1900 <= d.year <= 2100:
+        raise BadInput(f"{field} must be a date between 1900 and 2100, not {d.isoformat()!r}")
+    return d.isoformat()
 
 
 def parse_date(v):
@@ -235,26 +261,37 @@ def api_refdata():
 
 # ---------- cars & mileage ----------
 
-CAR_FIELDS = ["name", "kind", "year", "make", "model", "engine", "transmission", "vin", "plate", "notes"]
+CAR_FIELDS = ["name", "kind", "year", "make", "model", "engine", "transmission", "vin", "plate", "notes", "ha_slug"]
 
 
 CAR_ORDER = "COALESCE(c.sort_order, c.id), c.id"
+# a vehicle's own picture shows on its card, not among its files
+NOT_CAR_PHOTO = "NOT EXISTS (SELECT 1 FROM cars pc WHERE pc.photo_id=d.id)"
 
 
-def car_values(b):
+def car_values(b, car_id=None):
     vals = {k: (str(b[k]).strip() or None) if b.get(k) is not None else None for k in CAR_FIELDS if k in b}
     if "year" in vals:
-        vals["year"] = to_int(vals["year"])
+        vals["year"] = to_int(vals["year"], "Year")
     if "archived" in b:  # hidden from the garage and HA sensors (sold, stored...) but kept with its history
         vals["archived"] = 1 if b["archived"] in (True, 1, "1", "true", "on") else 0
+    if vals.get("ha_slug"):  # the middle of its sensors' ids, sensor.garage_<ha_slug>_odometer; blank = from the name
+        if not re.fullmatch(r"[a-z0-9]+(_[a-z0-9]+)*", vals["ha_slug"]):  # what Home Assistant takes in an entity id
+            raise BadInput("The sensor id takes lower-case letters and digits, with single _ between them, like blue_wagon, "
+                           f"not {vals['ha_slug']!r}")
+        other = db.row("SELECT name FROM cars WHERE ha_slug=? AND id IS NOT ?", (vals["ha_slug"], car_id))
+        if other:
+            raise BadInput(f"{other['name']} already has the sensor id {vals['ha_slug']}")
     return vals
 
 
 def miles_per_day(car_id):
-    """Average daily driving from the last year of odometer readings, or None without enough data."""
+    """Average daily driving between the first and the last odometer reading of the past year, or None without enough data."""
     since = (dt.date.today() - dt.timedelta(days=365)).isoformat()
-    r = db.row("""SELECT MIN(date) AS d0, MAX(date) AS d1, MIN(mileage) AS m0, MAX(mileage) AS m1
-                  FROM mileage_log WHERE car_id=? AND date >= ?""", (car_id, since))
+    r = db.row("""SELECT f.date AS d0, l.date AS d1, f.mileage AS m0, l.mileage AS m1 FROM
+                  (SELECT date, mileage FROM mileage_log WHERE car_id=? AND date >= ? ORDER BY date, id LIMIT 1) f,
+                  (SELECT date, mileage FROM mileage_log WHERE car_id=? AND date >= ? ORDER BY date DESC, id DESC LIMIT 1) l""",
+               (car_id, since, car_id, since))
     if not r or not r["d0"] or r["d0"] == r["d1"]:
         return None
     d0, d1 = parse_date(r["d0"]), parse_date(r["d1"])
@@ -266,16 +303,43 @@ def miles_per_day(car_id):
     return (r["m1"] - r["m0"]) / days
 
 
+def newest_reading(car_id, until=None):
+    """The car's newest odometer reading, or its newest dated on or before `until`."""
+    return db.row("SELECT * FROM mileage_log WHERE car_id=?" + (" AND date<=?" if until else "")
+                  + " ORDER BY date DESC, id DESC LIMIT 1", (car_id, until) if until else (car_id,))
+
+
 def record_mileage(car_id, mileage, date=None, source="manual"):
-    """Log an odometer reading; the car's current mileage only moves forward."""
-    mileage = to_int(mileage)
+    """Log an odometer reading if the log stays in mileage order by date and it isn't a repeat; the car's mileage only moves forward."""
+    mileage = to_int(mileage, "Mileage")
     if mileage is None:
         return
     date = to_date(date) or today()
+    before = newest_reading(car_id, date)
+    after = db.row("SELECT mileage FROM mileage_log WHERE car_id=? AND date>? ORDER BY date, id LIMIT 1", (car_id, date))
+    if before and (mileage < before["mileage"] or (mileage, date) == (before["mileage"], before["date"])):
+        return
+    if after and mileage > after["mileage"]:
+        return
     db.execute("INSERT INTO mileage_log (car_id, date, mileage, source) VALUES (?,?,?,?)",
                (car_id, date, mileage, source))
     db.execute("""UPDATE cars SET mileage=?, mileage_date=? WHERE id=? AND (mileage IS NULL OR mileage <= ?)""",
                (mileage, date, car_id, mileage))
+
+
+def delete_reading(car_id, log_id):
+    """False if the car has no reading `log_id`; an odometer that showed it falls back to the newest reading left."""
+    gone = db.row("SELECT * FROM mileage_log WHERE id=? AND car_id=?", (log_id, car_id))
+    if not gone:
+        return False
+    newest = newest_reading(car_id)
+    car = db.row("SELECT mileage, mileage_date FROM cars WHERE id=?", (car_id,))
+    db.execute("DELETE FROM mileage_log WHERE id=?", (log_id,))
+    # the newest reading, or the one the odometer shows (older versions logged out of order): back to the newest one left
+    if newest["id"] == log_id or (gone["mileage"], gone["date"]) == (car["mileage"], car["mileage_date"]):
+        r = newest_reading(car_id) or {}
+        db.execute("UPDATE cars SET mileage=?, mileage_date=? WHERE id=?", (r.get("mileage"), r.get("date"), car_id))
+    return True
 
 
 @app.route("/api/cars", methods=["GET", "POST"])
@@ -285,15 +349,16 @@ def api_cars():
         vals = car_values(b)
         if not vals.get("name"):
             return err("Name is required.")
+        mileage = to_int(b.get("mileage"), "Current mileage")
         cur = db.execute(f"INSERT INTO cars ({','.join(vals)}) VALUES ({','.join('?' * len(vals))})",
                          list(vals.values()))
-        if b.get("mileage"):
-            record_mileage(cur.lastrowid, b["mileage"])
+        if mileage:
+            record_mileage(cur.lastrowid, mileage)
         return jsonify(id=cur.lastrowid)
     cars = db.rows("""SELECT c.*,
         (SELECT COUNT(*) FROM parts p WHERE p.car_id=c.id AND p.status IN ('Needed','Check','Ordered')) AS parts_open,
         (SELECT COUNT(*) FROM parts p WHERE p.car_id=c.id AND p.status='On hand') AS parts_on_hand,
-        (SELECT COUNT(*) FROM documents d WHERE d.car_id=c.id AND d.kind<>'Photo') AS documents,
+        (SELECT COUNT(*) FROM documents d WHERE d.car_id=c.id AND """ + NOT_CAR_PHOTO + """) AS documents,
         (SELECT MAX(date) FROM services s WHERE s.car_id=c.id) AS last_service,
         ph.filename AS photo_file, ph.original_name AS photo_name
         FROM cars c LEFT JOIN documents ph ON ph.id=c.photo_id
@@ -327,11 +392,13 @@ def api_car_photo(car_id):
         return err("No such car", 404)
     old = car.get("photo_id")
     if request.method == "POST":
-        f = request.files.get("photo")
+        f = request.files.get("photo") or finished_upload(request.form.get("upload"), "photo")
         if not f:
             return err("Choose a photo")
         did = store_document(f, car_id, "Photo", f"{car['name']} photo")
-        shrink_photo(did)
+        if not shrink_photo(did):
+            delete_document(did)
+            return err("Couldn't read that photo. Save it as JPEG or PNG.")
         db.execute("UPDATE cars SET photo_id=? WHERE id=?", (did, car_id))
     else:
         db.execute("UPDATE cars SET photo_id=NULL WHERE id=?", (car_id,))
@@ -341,7 +408,7 @@ def api_car_photo(car_id):
 
 
 def shrink_photo(did, max_side=1600):
-    """Phone photos are large; keep vehicle photos to a sensible size (and the right way up)."""
+    """Phone photos are large; keep vehicle photos to a sensible size (and the right way up). False if Pillow can't read it."""
     d = db.row("SELECT * FROM documents WHERE id=?", (did,))
     path = os.path.join(db.DOC_DIR, d["filename"])
     try:
@@ -358,8 +425,9 @@ def shrink_photo(did, max_side=1600):
         db.execute("UPDATE documents SET filename=?, original_name=?, size=? WHERE id=?",
                    (new, os.path.splitext(d["original_name"] or "photo")[0] + ".jpg",
                     os.path.getsize(os.path.join(db.DOC_DIR, new)), did))
-    except Exception:  # noqa: BLE001 - not an image Pillow can read: keep the original file
-        pass
+    except Exception:  # noqa: BLE001 - not an image Pillow can read (HEIC from an iPhone...)
+        return False
+    return True
 
 
 def delete_document(did):
@@ -392,7 +460,8 @@ def api_export_services(car_id):
     car = db.row("SELECT * FROM cars WHERE id=?", (car_id,))
     if not car:
         return err("No such car", 404)
-    rows = db.rows("""SELECT s.*, (SELECT GROUP_CONCAT(p.name || CASE WHEN p.part_number<>'' THEN ' (' || p.part_number || ')' ELSE '' END, '; ')
+    rows = db.rows("""SELECT s.*, (SELECT GROUP_CONCAT(CASE WHEN p.qty > 1 THEN p.qty || '× ' ELSE '' END || p.name
+                                                       || CASE WHEN p.part_number<>'' THEN ' (' || p.part_number || ')' ELSE '' END, '; ')
                                   FROM parts p WHERE p.service_id=s.id) AS parts_used
                       FROM services s WHERE s.car_id=? ORDER BY s.date, s.id""", (car_id,))
     cols = [("date", "Date"), ("mileage", "Mileage"), ("title", "Work"), ("parts_used", "Parts used"),
@@ -402,16 +471,18 @@ def api_export_services(car_id):
 
 @app.route("/api/export/parts.csv")
 def api_export_parts():
-    where, args, name = "", [], "all"
-    if request.args.get("car_id"):
-        where, args = "WHERE p.car_id=?", [int(request.args["car_id"])]
-        car = db.row("SELECT name FROM cars WHERE id=?", args)
+    where, args = part_filter(request.args)
+    cid, name = request.args.get("car_id"), "all"
+    if cid == "none":
+        name = "unassigned"
+    elif cid:
+        car = db.row("SELECT name FROM cars WHERE id=?", (int(cid),))
         name = safe_name(car["name"]) if car else "parts"
-    rows = db.rows(f"""SELECT p.*, c.name AS car FROM parts p LEFT JOIN cars c ON c.id=p.car_id {where}
-                       ORDER BY c.name, p.status, p.name COLLATE NOCASE""", args)
+    rows = db.rows(PART_SELECT + where + " ORDER BY c.name, p.status, p.name COLLATE NOCASE", args)
     cols = [("car", "Vehicle"), ("name", "Part"), ("part_number", "Part number"), ("brand", "Brand"), ("category", "Category"),
             ("qty", "Qty"), ("status", "Status"), ("supplier", "Supplier"), ("price", "Price"), ("order_ref", "Order"),
-            ("purchased_date", "Purchased"), ("installed_mileage", "Installed at (mi)"), ("installed_date", "Installed on"),
+            ("url", "Link"), ("purchased_date", "Purchased"), ("installed_mileage", "Installed at (mi)"),
+            ("installed_date", "Installed on"), ("service_title", "Service"), ("service_date", "Service date"),
             ("location", "Location"), ("notes", "Notes")]
     return csv_response(rows, cols, f"{name}-parts.csv")
 
@@ -423,7 +494,9 @@ def api_car(car_id):
         return err("No such car", 404)
     if request.method == "PUT":
         b = body()
-        vals = car_values(b)
+        vals = car_values(b, car_id)
+        if "name" in vals and not vals["name"]:
+            return err("Name is required.")
         if vals:
             db.execute(f"UPDATE cars SET {','.join(k + '=?' for k in vals)} WHERE id=?",
                        list(vals.values()) + [car_id])
@@ -433,7 +506,7 @@ def api_car(car_id):
         if car.get("photo_id"):
             delete_document(car["photo_id"])
         return jsonify(ok=True)
-    car["upcoming"] = upcoming(car, manual=True)
+    car["upcoming"] = upcoming(car, manual=request.args.get("manual") != "0")
     car["mileage_log"] = db.rows("SELECT * FROM mileage_log WHERE car_id=? ORDER BY date DESC, id DESC LIMIT 20",
                                  (car_id,))
     return jsonify(car)
@@ -443,7 +516,7 @@ def api_car(car_id):
 def api_mileage(car_id):
     """Also the Home Assistant hook: POST {"mileage": 123456}."""
     b = body() or request.form
-    m = to_int(b.get("mileage"))
+    m = to_int(b.get("mileage"), "Mileage")
     if m is None:
         return err("mileage required")
     car = db.row("SELECT mileage FROM cars WHERE id=?", (car_id,))
@@ -458,7 +531,17 @@ def api_mileage(car_id):
     return jsonify(ok=True, mileage=db.row("SELECT mileage FROM cars WHERE id=?", (car_id,))["mileage"])
 
 
+@app.route("/api/cars/<int:car_id>/mileage/<int:log_id>", methods=["DELETE"])
+def api_mileage_reading(car_id, log_id):
+    if not delete_reading(car_id, log_id):
+        return err("No such reading", 404)
+    return jsonify(ok=True, mileage=db.row("SELECT mileage FROM cars WHERE id=?", (car_id,))["mileage"])
+
+
 # ---------- service schedules & upcoming ----------
+
+DUE_SOON_DAYS = 30
+
 
 def upcoming(car, manual=False):
     """Every active schedule for a car with its due point and state, most urgent first.
@@ -469,16 +552,31 @@ def upcoming(car, manual=False):
     rate = miles_per_day(car["id"])
     for s in db.rows("""SELECT s.*, d.title AS doc_title FROM schedules s LEFT JOIN documents d ON d.id=s.doc_id
                         WHERE s.car_id=? AND s.active=1""", (car["id"],)):
-        due_m = (s["last_mileage"] + s["interval_miles"]) if (s["interval_miles"] and s["last_mileage"] is not None) else None
-        due_d = add_months(s["last_date"], s["interval_months"]) if (s["interval_months"] and s["last_date"]) else None
+        try:
+            due_m = (s["last_mileage"] + s["interval_miles"]) if (s["interval_miles"] and s["last_mileage"] is not None) else None
+            due_d = add_months(s["last_date"], s["interval_months"]) if (s["interval_months"] and s["last_date"]) else None
+        except (OverflowError, TypeError, ValueError):  # stored values it can't count from (e.g. past the year 9999)
+            due_m = due_d = None
         miles_left = (due_m - car["mileage"]) if (due_m is not None and car.get("mileage") is not None) else None
         days_left = (parse_date(due_d) - today_d).days if due_d else None
-        if s["last_date"] is None and s["last_mileage"] is None:
+        # when the mileage limit comes first (or is the only one), estimate when from average driving
+        est = None
+        if rate and miles_left is not None and miles_left > 0:
+            try:
+                est_d = today_d + dt.timedelta(days=round(miles_left / rate))
+            except OverflowError:  # driven so little it lands past the year 9999: no estimate
+                est_d = None
+            if est_d and (not due_d or est_d.isoformat() < due_d):
+                est = est_d.isoformat()
+        # never done, or done with nothing its intervals can count from (only a date for a mileage interval)
+        if ((s["last_date"] is None and s["last_mileage"] is None)
+                or (due_m is None and due_d is None and (s["interval_miles"] or s["interval_months"]))):
             state = "unknown"
         elif (miles_left is not None and miles_left < 0) or (days_left is not None and days_left < 0):
             state = "overdue"
         elif ((miles_left is not None and miles_left <= max(500, (s["interval_miles"] or 0) // 10))
-              or (days_left is not None and days_left <= 30)):
+              or (days_left is not None and days_left <= DUE_SOON_DAYS)
+              or (est and (parse_date(est) - today_d).days <= DUE_SOON_DAYS)):
             state = "soon"
         else:
             state = "ok"
@@ -490,50 +588,55 @@ def upcoming(car, manual=False):
             fracs.append(miles_left / s["interval_miles"])
         if days_left is not None and s["interval_months"]:
             fracs.append(days_left / (s["interval_months"] * 30.4))
-        # when the mileage limit comes first (or is the only one), estimate when from average driving
-        est = None
-        if rate and miles_left is not None and miles_left > 0:
-            est_d = today_d + dt.timedelta(days=round(miles_left / rate))
-            if not due_d or est_d.isoformat() < due_d:
-                est = est_d.isoformat()
         out.append({**s, "due_mileage": due_m, "due_date": due_d, "miles_left": miles_left,
                     "days_left": days_left, "est_date": est, "state": state, "rank": min(fracs) if fracs else 9e9})
     order = {"overdue": 0, "soon": 1, "ok": 2, "snoozed": 3, "unknown": 4}
     out.sort(key=lambda u: (order[u["state"]], u["rank"], u["title"]))
     if manual:
         # a dragged order applies within each state, so overdue and due-soon always come first
-        lead = lambda u: 0 if u["state"] == "overdue" else 1 if u["state"] == "soon" else 2  # noqa: E731
-        out.sort(key=lambda u: (lead(u), u.get("sort_order") is None, u.get("sort_order") or 0))  # stable
+        out.sort(key=lambda u: (order[u["state"]], u.get("sort_order") is None, u.get("sort_order") or 0))  # stable
     return out
 
 
 SCHEDULE_FIELDS = ["title", "interval_miles", "interval_months", "last_date", "last_mileage", "doc_id", "doc_page",
                    "notes", "active", "snoozed_until"]
+# the schedule form's name for each of its numbers, for error messages
+SCHEDULE_NUMBERS = {"interval_miles": "Every (miles)", "interval_months": "Every (months)", "last_mileage": "Last done (mileage)",
+                    "doc_id": "Manual", "doc_page": "Page", "active": "Active"}
 
 
-def schedule_values(b):
+def schedule_values(b, cur=None):
     vals = {k: b[k] for k in SCHEDULE_FIELDS if k in b}
-    for k in ("interval_miles", "interval_months", "last_mileage", "doc_id", "doc_page", "active"):
+    for k, label in SCHEDULE_NUMBERS.items():
         if k in vals:
-            vals[k] = to_int(vals[k])
+            vals[k] = to_int(vals[k], label)
+    for k, top in (("interval_miles", 1_000_000), ("interval_months", 1200)):
+        if vals.get(k) is not None and not 0 <= vals[k] <= top:
+            raise BadInput(f"{SCHEDULE_NUMBERS[k]} must be from 0 to {top:,}")
     for k in ("last_date", "snoozed_until"):
         if k in vals:
             vals[k] = to_date(vals[k], "Last done" if k == "last_date" else "Dismiss until")
-    # what the user types as "last done" is the baseline that logged services build on
-    if "last_date" in vals:
-        vals["base_date"] = vals["last_date"]
-    if "last_mileage" in vals:
-        vals["base_mileage"] = vals["last_mileage"]
+    # what the user types as "last done" is the baseline that logged services build on; the Edit dialog sends
+    # "last done" back even when it wasn't touched, and that must not freeze what the logged services gave it
+    if cur is None or any(k in vals and vals[k] != cur[k] for k in ("last_date", "last_mileage")):
+        if "last_date" in vals:
+            vals["base_date"] = vals["last_date"]
+        if "last_mileage" in vals:
+            vals["base_mileage"] = vals["last_mileage"]
+        if cur:  # a different last done also ends a dismissal, unless this request sets one
+            vals.setdefault("snoozed_until", None)
+            # half of last done sent alone: the other half stays as the schedule shows it
+            vals.setdefault("base_date", cur["last_date"])
+            vals.setdefault("base_mileage", cur["last_mileage"])
     return vals
 
 
 @app.route("/api/cars/<int:car_id>/schedules", methods=["POST"])
 def api_schedules_add(car_id):
     b = body()
-    items = b.get("items") or [b]
+    rows = [schedule_values(it) for it in b.get("items") or [b]]  # every item checked before any is stored
     ids = []
-    for it in items:
-        vals = schedule_values(it)
+    for vals in rows:
         if not vals.get("title"):
             continue
         vals["car_id"] = car_id
@@ -561,9 +664,10 @@ def api_schedule(sid):
     if request.method == "DELETE":
         db.execute("DELETE FROM schedules WHERE id=?", (sid,))
         return jsonify(ok=True)
-    vals = schedule_values(body())
+    vals = schedule_values(body(), db.row("SELECT last_date, last_mileage FROM schedules WHERE id=?", (sid,)))
     if vals:
         db.execute(f"UPDATE schedules SET {','.join(k + '=?' for k in vals)} WHERE id=?", list(vals.values()) + [sid])
+        refresh_schedule(sid)
     return jsonify(ok=True)
 
 
@@ -591,22 +695,70 @@ def refresh_schedule(sid):
                      WHERE ss.schedule_id=? ORDER BY s.date DESC, s.mileage DESC LIMIT 1""", (sid,))
     if last and (sched["base_date"] is None or last["date"] >= sched["base_date"]):
         date, mileage = last["date"], last["mileage"]
-        if mileage is None:  # logged without mileage: keep the newest known one, or mileage intervals stop counting
-            known = db.row("""SELECT s.mileage FROM services s JOIN service_schedules ss ON ss.service_id=s.id
+        if mileage is None:  # logged without mileage: the newer of the last service with one and the baseline
+            known = db.row("""SELECT s.date, s.mileage FROM services s JOIN service_schedules ss ON ss.service_id=s.id
                               WHERE ss.schedule_id=? AND s.mileage IS NOT NULL ORDER BY s.date DESC, s.mileage DESC LIMIT 1""", (sid,))
-            mileage = known["mileage"] if known else sched["base_mileage"]
+            if known and (sched["base_date"] is None or known["date"] >= sched["base_date"]):
+                mileage = known["mileage"]
+            else:
+                mileage = sched["base_mileage"]
     else:
         date, mileage = sched["base_date"], sched["base_mileage"]
     db.execute("UPDATE schedules SET last_date=?, last_mileage=? WHERE id=?", (date, mileage, sid))
 
 
+def mergeable(r):
+    # a quantity of 0 was set by hand, and a merge counts it as 1; none at all is 1, as save_service counts it
+    return (r["status"] == "On hand" and r["service_id"] is None and r["installed_date"] is None and r["installed_mileage"] is None
+            and (r["qty"] is None or r["qty"] > 0))
+
+
+def same_part(copy, src, car_id):
+    # using it set the quantity and the install fields, and gave a part with no vehicle the service's
+    return all(copy[k] == src[k] or (k == "car_id" and src[k] is None and copy[k] == car_id)
+               for k in PART_FIELDS if k not in ("qty", "status", "installed_mileage", "installed_date", "service_id"))
+
+
+def back_on_hand(pid, car_id):
+    """A part its service on `car_id` stopped using: back onto the row it was split from if neither was edited, else On hand by itself."""
+    p = db.row("SELECT * FROM parts WHERE id=?", (pid,))
+    src = db.row("SELECT * FROM parts WHERE id=?", (p["split_from"],))
+    if src and mergeable(src) and same_part(p, src, car_id):
+        into, copies = src, [p]
+    else:  # off its service now, so a copy of it that service also used can still rejoin it
+        db.execute("""UPDATE parts SET status='On hand', installed_date=NULL, installed_mileage=NULL, service_id=NULL,
+                      updated_at=CURRENT_TIMESTAMP WHERE id=?""", (pid,))
+        into = db.row("SELECT * FROM parts WHERE id=?", (pid,))
+        # copies of it that came back while it was in use rejoin it now
+        copies = [c for c in db.rows("SELECT * FROM parts WHERE split_from=?", (pid,))
+                  if mergeable(c) and same_part(c, into, car_id)] if mergeable(into) else []
+    joining = list(copies)
+    while joining:  # a row that joins another takes its own copies already back on hand with it
+        joining = [c for j in joining for c in db.rows("SELECT * FROM parts WHERE split_from=?", (j["id"],))
+                   if mergeable(c) and same_part(c, into, car_id)]
+        copies += joining
+    if copies:
+        with db.connect() as conn:  # one write: stopped halfway, a copy would count twice or not at all
+            conn.execute("UPDATE parts SET qty=?, updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                         ((into["qty"] or 1) + sum(c["qty"] or 1 for c in copies), into["id"]))
+            # the copies left behind are split from `into` now, so they can still rejoin it when they come back
+            conn.executemany("UPDATE parts SET split_from=? WHERE split_from=?", [(into["id"], c["id"]) for c in copies])
+            conn.executemany("DELETE FROM parts WHERE id=?", [(c["id"],) for c in copies])
+
+
 def save_service(car_id, service_id, b):
     if not (b.get("title") or "").strip():
         return err("What was done? (title required)")
+    # parts used: [{"id": 7, "qty": 1}] (or the older part_ids). Using fewer than the part's quantity
+    # splits it: the rest stays as it was, the used ones become their own Installed entry.
+    uses = [{"id": to_int(u.get("id")), "qty": to_int(u.get("qty"))} for u in b.get("parts") or [] if isinstance(u, dict)]
+    uses += [{"id": int(pid), "qty": None} for pid in b.get("part_ids") or []]
+    if any(u["qty"] is not None and u["qty"] < 1 for u in uses):
+        return err("Use at least 1 of each ticked part.")
     date = to_date(b.get("date")) or today()
-    mileage = to_int(b.get("mileage"))
+    mileage = to_int(b.get("mileage"), "Mileage")
     vals = dict(date=date, mileage=mileage, title=b["title"].strip(), notes=b.get("notes") or "",
-                cost=to_money(b.get("cost")), done_by=b.get("done_by") or "DIY")
+                cost=to_money(b.get("cost"), "Cost"), done_by=b.get("done_by") or "DIY")
     if service_id:
         db.execute(f"UPDATE services SET {','.join(k + '=?' for k in vals)} WHERE id=?", list(vals.values()) + [service_id])
         old_scheds = [r["schedule_id"] for r in db.rows("SELECT schedule_id FROM service_schedules WHERE service_id=?", (service_id,))]
@@ -622,12 +774,8 @@ def save_service(car_id, service_id, b):
         db.execute("INSERT OR IGNORE INTO service_schedules (service_id, schedule_id) VALUES (?,?)", (service_id, int(sid)))
     for sid in set(old_scheds) | {int(x) for x in b.get("schedule_ids") or []}:
         refresh_schedule(sid)
-    for sid in b.get("schedule_ids") or []:  # done now, so a "dismissed until" date no longer applies
-        db.execute("UPDATE schedules SET snoozed_until=NULL WHERE id=?", (int(sid),))
-    # parts used: [{"id": 7, "qty": 1}] (or the older part_ids). Using fewer than the part's quantity
-    # splits it: the rest stays as it was, the used ones become their own Installed entry.
-    uses = [{"id": to_int(u.get("id")), "qty": to_int(u.get("qty"))} for u in b.get("parts") or [] if isinstance(u, dict)]
-    uses += [{"id": int(pid), "qty": None} for pid in b.get("part_ids") or []]
+    for sid in {int(x) for x in b.get("schedule_ids") or []} - set(old_scheds):  # newly done, so a "dismissed until" date no longer applies
+        db.execute("UPDATE schedules SET snoozed_until=NULL WHERE id=?", (sid,))
     for u in uses:
         p = db.row("SELECT * FROM parts WHERE id=?", (u["id"],))
         if not p:
@@ -636,12 +784,14 @@ def save_service(car_id, service_id, b):
         if pid not in old_parts and u["qty"] and 0 < u["qty"] < have:
             db.execute("UPDATE parts SET qty=?, updated_at=CURRENT_TIMESTAMP WHERE id=?", (have - u["qty"], pid))
             copy = {k: p[k] for k in PART_FIELDS if k in p}
-            copy["qty"] = u["qty"]
+            copy["qty"], copy["split_from"] = u["qty"], pid
             pid = db.execute(f"INSERT INTO parts ({','.join(copy)}) VALUES ({','.join('?' * len(copy))})",
                              list(copy.values())).lastrowid
         db.execute("""UPDATE parts SET service_id=?, car_id=COALESCE(car_id, ?), status='Installed', installed_date=?,
                       installed_mileage=COALESCE(?, installed_mileage), updated_at=CURRENT_TIMESTAMP WHERE id=?""",
                    (service_id, car_id, date, mileage, pid))
+    for pid in sorted(old_parts - {u["id"] for u in uses}):  # unticked while editing: not installed after all; a row before its copies
+        back_on_hand(pid, car_id)
     if mileage is not None:
         record_mileage(car_id, mileage, date, "service")
     return jsonify(id=service_id)
@@ -654,9 +804,16 @@ def api_service(service_id):
         return err("No such service", 404)
     if request.method == "DELETE":
         scheds = [r["schedule_id"] for r in db.rows("SELECT schedule_id FROM service_schedules WHERE service_id=?", (service_id,))]
+        for r in db.rows("SELECT id FROM parts WHERE service_id=? ORDER BY id", (service_id,)):  # a row before its copies
+            back_on_hand(r["id"], s["car_id"])
         db.execute("DELETE FROM services WHERE id=?", (service_id,))
         for sid in scheds:
             refresh_schedule(sid)
+        # the reading it logged (older versions logged one on every save), unless another service there stands on it too
+        for r in db.rows("""SELECT id FROM mileage_log m WHERE car_id=? AND date=? AND mileage=? AND source='service' AND NOT EXISTS
+                            (SELECT 1 FROM services s WHERE s.car_id=m.car_id AND s.date=m.date AND s.mileage=m.mileage)""",
+                         (s["car_id"], s["date"], s["mileage"])):
+            delete_reading(s["car_id"], r["id"])
         return jsonify(ok=True)
     return save_service(s["car_id"], service_id, body())
 
@@ -689,6 +846,8 @@ def save_project(car_id, pid, b):
         vals["target_date"] = to_date(b["target_date"], "Target date")
     if "title" in vals and not vals["title"]:
         return err("Give the project a name.")
+    # the steps' ids are checked before anything is written
+    tasks = [t if isinstance(t, str) else {**t, "id": to_int(t.get("id"))} for t in b.get("tasks") or []]
     if pid is None:
         if not vals.get("title"):
             return err("Give the project a name.")
@@ -697,17 +856,19 @@ def save_project(car_id, pid, b):
                          list(vals.values())).lastrowid
     elif vals:
         db.execute(f"UPDATE projects SET {','.join(k + '=?' for k in vals)} WHERE id=?", list(vals.values()) + [pid])
-    if "tasks" in b:  # the whole list, in order; a step keeps its tick when it has its id or the same text
+    if "tasks" in b:  # the whole list, in order; {id, title} keeps the tick of that step (no id: a new step),
+        # plain text keeps the tick of a step with the same text
         old = db.rows("SELECT * FROM project_tasks WHERE project_id=?", (pid,))
         by_id, by_title = {t["id"]: t for t in old}, {t["title"].lower(): t for t in old}
         db.execute("DELETE FROM project_tasks WHERE project_id=?", (pid,))
         n = 0
-        for t in b["tasks"] or []:
-            t = {"title": t} if isinstance(t, str) else t
+        for t in tasks:
+            text = isinstance(t, str)
+            t = {"title": t} if text else t
             title = (t.get("title") or "").strip()
             if not title:
                 continue
-            prev = by_id.get(to_int(t.get("id"))) or by_title.get(title.lower()) or {}
+            prev = (by_title.get(title.lower()) if text else by_id.get(t["id"])) or {}
             done = t["done"] if "done" in t else prev.get("done", 0)
             n += 1
             db.execute("INSERT INTO project_tasks (project_id, title, done, sort_order) VALUES (?,?,?,?)",
@@ -761,11 +922,12 @@ PART_FIELDS = ["car_id", "name", "category", "part_number", "brand", "qty", "sta
 
 def part_values(b):
     vals = {k: b[k] for k in PART_FIELDS if k in b}
-    for k in ("car_id", "qty", "installed_mileage", "service_id", "document_id", "project_id"):
+    for k, label in (("car_id", "Vehicle"), ("qty", "Qty"), ("installed_mileage", "Installed at (miles)"), ("service_id", "Service"),
+                     ("document_id", "File"), ("project_id", "Project")):
         if k in vals:
-            vals[k] = to_int(vals[k])
+            vals[k] = to_int(vals[k], label)
     if "price" in vals:
-        vals["price"] = to_money(vals["price"])
+        vals["price"] = to_money(vals["price"], "Price (each)")
     for k in ("purchased_date", "installed_date"):
         if k in vals:
             vals[k] = to_date(vals[k], "Purchased" if k == "purchased_date" else "Installed on")
@@ -773,7 +935,7 @@ def part_values(b):
         if k in vals:
             vals[k] = (vals[k] or "").strip()
     if "status" in vals and vals["status"] not in db.STATUSES:
-        vals["status"] = "Needed"
+        raise BadInput(f"Status must be one of {', '.join(db.STATUSES)}, not {str(vals['status'])[:30]!r}")
     return vals
 
 
@@ -790,8 +952,33 @@ def insert_part(b):
 
 
 PART_SELECT = """SELECT p.*, c.name AS car, d.title AS document_title, d.filename AS document_file,
-                 s.title AS service_title FROM parts p LEFT JOIN cars c ON c.id=p.car_id
-                 LEFT JOIN documents d ON d.id=p.document_id LEFT JOIN services s ON s.id=p.service_id"""
+                 s.title AS service_title, s.date AS service_date, pr.title AS project_title FROM parts p LEFT JOIN cars c ON c.id=p.car_id
+                 LEFT JOIN documents d ON d.id=p.document_id LEFT JOIN services s ON s.id=p.service_id
+                 LEFT JOIN projects pr ON pr.id=p.project_id"""
+
+
+def part_filter(a):
+    """The Parts list's filters, car_id (an id or "none"), status (comma-separated) and q, as (" WHERE ...", args)."""
+    where, args = [], []
+    if a.get("car_id"):
+        cid = a["car_id"]
+        if cid == "none":
+            where.append("p.car_id IS NULL")
+        else:
+            where.append("p.car_id=?")
+            args.append(int(cid))
+    if a.get("status"):
+        sts = a["status"].split(",")
+        where.append(f"p.status IN ({','.join('?' * len(sts))})")
+        args += sts
+    q = (a.get("q") or "").strip()
+    if q:
+        like = f"%{q}%"
+        digits = re.sub(r"\D", "", q)
+        where.append("(p.name LIKE ? OR p.part_number LIKE ? OR p.brand LIKE ? OR p.notes LIKE ? OR p.supplier LIKE ? OR p.category LIKE ?"
+                     + (" OR REPLACE(p.part_number,' ','') LIKE ?" if len(digits) >= 3 else "") + ")")
+        args += [like] * 6 + ([f"%{digits}%"] if len(digits) >= 3 else [])
+    return (" WHERE " + " AND ".join(where) if where else ""), args
 
 
 @app.route("/api/parts", methods=["GET", "POST"])
@@ -801,26 +988,8 @@ def api_parts():
             return jsonify(id=insert_part(body()))
         except ValueError as e:
             return err(str(e))
-    where, args = [], []
-    if request.args.get("car_id"):
-        cid = request.args["car_id"]
-        if cid == "none":
-            where.append("p.car_id IS NULL")
-        else:
-            where.append("p.car_id=?")
-            args.append(int(cid))
-    if request.args.get("status"):
-        sts = request.args["status"].split(",")
-        where.append(f"p.status IN ({','.join('?' * len(sts))})")
-        args += sts
-    q = (request.args.get("q") or "").strip()
-    if q:
-        like = f"%{q}%"
-        digits = re.sub(r"\D", "", q)
-        where.append("(p.name LIKE ? OR p.part_number LIKE ? OR p.brand LIKE ? OR p.notes LIKE ? OR p.supplier LIKE ? OR p.category LIKE ?"
-                     + (" OR REPLACE(p.part_number,' ','') LIKE ?" if len(digits) >= 3 else "") + ")")
-        args += [like] * 6 + ([f"%{digits}%"] if len(digits) >= 3 else [])
-    sql = PART_SELECT + (" WHERE " + " AND ".join(where) if where else "") + """
+    where, args = part_filter(request.args)
+    sql = PART_SELECT + where + """
         ORDER BY CASE p.status WHEN 'Needed' THEN 0 WHEN 'Check' THEN 1 WHEN 'Ordered' THEN 2
                  WHEN 'On hand' THEN 3 ELSE 4 END, p.category COLLATE NOCASE, p.name COLLATE NOCASE"""
     return jsonify(db.rows(sql, args))
@@ -848,7 +1017,7 @@ def api_part(pid):
 @app.route("/api/purchases", methods=["POST"])
 def api_purchase():
     """Add several bought parts at once, optionally with the receipt/screenshot.
-    Multipart: field "data" (JSON) + optional file "receipt". Or plain JSON.
+    Multipart: field "data" (JSON) + optional file "receipt", or "upload" naming one sent in pieces. Or plain JSON.
     data = {car_id, supplier, purchased_date, order_ref, status, items: [{name, part_number, brand, qty, price, ...}]}"""
     if request.files or request.form:
         data = json.loads(request.form.get("data") or "{}")
@@ -857,19 +1026,22 @@ def api_purchase():
     items = data.get("items") or []
     if not items:
         return err("No items")
-    doc_id = None
-    f = request.files.get("receipt")
-    if f and f.filename:
-        doc_id = store_document(f, data.get("car_id"), "Receipt",
-                                data.get("receipt_title") or f"{data.get('supplier') or 'Purchase'} {data.get('purchased_date') or today()}")
     common = {k: data.get(k) for k in ("car_id", "supplier", "purchased_date", "order_ref", "status", "location") if data.get(k)}
     common.setdefault("status", "On hand")
     common.setdefault("purchased_date", today())
+    rows = [{**common, **{k: v for k, v in it.items() if v not in (None, "")}} for it in items]
+    for r in rows:
+        part_values(r)  # a bad value answers 400 before the receipt or any part is stored
+    doc_id = None
+    f = request.files.get("receipt") or finished_upload(request.form.get("upload"), "receipt")
+    if f and f.filename:
+        doc_id = store_document(f, data.get("car_id"), "Receipt",
+                                data.get("receipt_title") or f"{data.get('supplier') or 'Purchase'} {data.get('purchased_date') or today()}")
     ids = []
-    for it in items:
+    for r in rows:
         try:
-            ids.append(insert_part({**common, **{k: v for k, v in it.items() if v not in (None, "")}, "document_id": doc_id}))
-        except ValueError:
+            ids.append(insert_part({**r, "document_id": doc_id}))
+        except ValueError:  # a blank row
             continue
     return jsonify(ids=ids, document_id=doc_id)
 
@@ -877,6 +1049,7 @@ def api_purchase():
 # ---------- documents (manuals, receipts) ----------
 
 def store_document(f, car_id, kind, title, notes=""):
+    car_id = to_int(car_id, "Vehicle")  # before the file is saved, so a bad one leaves none behind
     orig = os.path.basename(f.filename or "file")
     name = new_doc_name(orig)
     f.save(os.path.join(db.DOC_DIR, name))
@@ -891,15 +1064,18 @@ def register_document(name, orig, car_id, kind, title, notes=""):
     """Add a row for a file already saved in DOC_DIR under `name`."""
     return db.execute("""INSERT INTO documents (car_id, kind, title, filename, original_name, size, notes)
                          VALUES (?,?,?,?,?,?,?)""",
-                      (to_int(car_id), kind if kind in db.DOC_KINDS else "Other",
+                      (car_id, kind if kind in db.DOC_KINDS else "Other",
                        title or os.path.splitext(orig)[0], name, orig,
                        os.path.getsize(os.path.join(db.DOC_DIR, name)), notes or "")).lastrowid
 
 
 # ---- chunked uploads: Home Assistant Ingress rejects big request bodies (HTTP 413), so large files
-# (service manuals) go up in pieces: start -> PUT each piece at its offset -> finish.
+# (service manuals, backups, photos, receipts, catalog files) go up in pieces: start -> PUT each piece at
+# its offset -> finish (a document), or the request the file is for names the upload (finished_upload).
 
 UPLOAD_ID = re.compile(r"^[0-9a-f]{32}$")
+# what an upload is for, given at its start: a document, or the file of a photo, receipt, restore or catalog import
+UPLOAD_PURPOSES = ("document", "photo", "receipt", "restore", "catalog")
 
 
 def upload_paths(uid):
@@ -909,13 +1085,51 @@ def upload_paths(uid):
     return os.path.join(d, uid + ".json"), os.path.join(d, uid + ".part")
 
 
+class Upload:
+    """A finished upload, used like a request's file: its filename, and save() moves it to a path, using it up."""
+
+    def __init__(self, paths, meta):
+        self.meta_p, self.part_p = paths
+        self.meta = meta
+        self.filename = meta["filename"]
+
+    def save(self, dst):
+        if os.path.isdir(dst):  # shutil.move would put the file inside it
+            raise BadInput("A file can't be saved over a folder")
+        shutil.move(self.part_p, dst)
+        os.remove(self.meta_p)
+
+
+def finished_upload(uid, purpose):
+    """The complete upload `uid` if it was started for `purpose` (None for no `uid`); else 404, 409 or 400."""
+    if not uid:
+        return None
+    paths = upload_paths(uid)
+    if not paths or not os.path.exists(paths[0]):
+        raise BadInput("No such upload", 404)
+    with open(paths[0], encoding="utf-8") as f:
+        meta = json.load(f)
+    if meta.get("purpose") != purpose:
+        raise BadInput(f"That upload is for {meta.get('purpose')}, not {purpose}")
+    have = os.path.getsize(paths[1])
+    if have != meta["size"]:
+        raise BadInput(f"Upload incomplete ({have} of {meta['size']} bytes)", 409)
+    return Upload(paths, meta)
+
+
 @app.route("/api/documents/chunked", methods=["POST"])
 def api_chunked_start():
     b = body()
     orig = os.path.basename(str(b.get("filename") or "")).strip()
     size = to_int(b.get("size"))
+    car_id = to_int(b.get("car_id"), "Vehicle")
+    purpose = b.get("purpose") or "document"
     if not orig or size is None or size < 0:
         return err("filename and size are required")
+    if orig in (".", ".."):
+        return err(f"A file can't be named {orig}")
+    if purpose not in UPLOAD_PURPOSES:
+        return err(f"An upload is for one of {', '.join(UPLOAD_PURPOSES)}, not {str(purpose)[:30]!r}")
     d = os.path.join(db.DATA_DIR, "uploads")
     os.makedirs(d, exist_ok=True)
     for fn in os.listdir(d):  # forget uploads abandoned more than two days ago
@@ -928,8 +1142,8 @@ def api_chunked_start():
     uid = uuid.uuid4().hex
     meta_p, part_p = upload_paths(uid)
     with open(meta_p, "w", encoding="utf-8") as f:
-        json.dump({"filename": orig, "size": size, "car_id": b.get("car_id"), "kind": b.get("kind") or "Manual",
-                   "title": b.get("title") or "", "notes": b.get("notes") or ""}, f)
+        json.dump({"filename": orig, "size": size, "purpose": purpose, "car_id": car_id, "kind": b.get("kind") or "Manual",
+                   "title": b.get("title") or "", "notes": b.get("notes") or "", "path": str(b.get("path") or "")}, f)
     open(part_p, "wb").close()
     return jsonify(upload_id=uid, received=0)
 
@@ -956,20 +1170,9 @@ def api_chunked_piece(uid):
 
 @app.route("/api/documents/chunked/<uid>/finish", methods=["POST"])
 def api_chunked_finish(uid):
-    paths = upload_paths(uid)
-    if not paths or not os.path.exists(paths[0]):
-        return err("No such upload", 404)
-    meta_p, part_p = paths
-    with open(meta_p, encoding="utf-8") as f:
-        meta = json.load(f)
-    have = os.path.getsize(part_p)
-    if have != meta["size"]:
-        return jsonify(error=f"Upload incomplete ({have} of {meta['size']} bytes)", received=have), 409
-    name = new_doc_name(meta["filename"])
-    os.replace(part_p, os.path.join(db.DOC_DIR, name))
-    os.remove(meta_p)
-    did = register_document(name, meta["filename"], meta["car_id"], meta["kind"], meta["title"], meta["notes"])
-    return jsonify(id=did)
+    up = finished_upload(uid, "document")
+    m = up.meta
+    return jsonify(id=store_document(up, m["car_id"], m["kind"], m["title"], m["notes"]))
 
 
 @app.route("/api/documents", methods=["GET", "POST"])
@@ -984,12 +1187,15 @@ def api_documents():
             ids.append(store_document(f, request.form.get("car_id"), request.form.get("kind") or "Manual",
                                       title, request.form.get("notes") or ""))
         return jsonify(ids=ids)
-    where, args = "WHERE d.kind<>'Photo'", []
-    if request.args.get("car_id"):
-        where, args = "WHERE d.kind<>'Photo' AND d.car_id=?", [int(request.args["car_id"])]
+    where, args = [NOT_CAR_PHOTO], []
+    if request.args.get("car_id") == "none":
+        where.append("d.car_id IS NULL")
+    elif request.args.get("car_id"):
+        where.append("d.car_id=?")
+        args.append(int(request.args["car_id"]))
     return jsonify(db.rows(f"""SELECT d.*, c.name AS car,
                                (SELECT COUNT(*) FROM parts p WHERE p.document_id=d.id) AS parts
-                               FROM documents d LEFT JOIN cars c ON c.id=d.car_id {where}
+                               FROM documents d LEFT JOIN cars c ON c.id=d.car_id WHERE {' AND '.join(where)}
                                ORDER BY d.kind, d.title COLLATE NOCASE""", args))
 
 
@@ -1029,18 +1235,26 @@ def file_view(did, name):
 
 def ha_summary():
     """Compact per-car summary for Home Assistant (REST sensors, and the add-on's own sensors)."""
+    from . import ha_sensors
     out = []
+    held = {r["ha_slug"] for r in db.rows("SELECT ha_slug FROM cars WHERE ha_slug IS NOT NULL")}
     for c in db.rows("SELECT * FROM cars c WHERE IFNULL(c.archived, 0)=0 ORDER BY " + CAR_ORDER):
+        if not c["ha_slug"]:  # first publish: from the name in garage order, the ids given before they were stored
+            c["ha_slug"] = ha_sensors.slug(c["name"], held)
+            db.execute("UPDATE cars SET ha_slug=? WHERE id=?", (c["ha_slug"], c["id"]))
         up = upcoming(c)
         nxt = next((u for u in up if u["state"] not in ("unknown", "snoozed")), None)
         out.append({
-            "id": c["id"], "name": c["name"], "mileage": c["mileage"], "mileage_date": c["mileage_date"],
+            "id": c["id"], "name": c["name"], "ha_slug": c["ha_slug"], "mileage": c["mileage"], "mileage_date": c["mileage_date"],
             "overdue": sum(1 for u in up if u["state"] == "overdue"),
             "due_soon": sum(1 for u in up if u["state"] == "soon"),
             "next_service": nxt and {"title": nxt["title"], "due_mileage": nxt["due_mileage"], "due_date": nxt["due_date"],
-                                     "miles_left": nxt["miles_left"], "days_left": nxt["days_left"], "state": nxt["state"]},
+                                     "miles_left": nxt["miles_left"], "days_left": nxt["days_left"], "est_date": nxt["est_date"],
+                                     "state": nxt["state"]},
             "parts_needed": db.row("SELECT COUNT(*) AS n FROM parts WHERE car_id=? AND status IN ('Needed','Check','Ordered')",
                                    (c["id"],))["n"],
+            "snoozed": sum(1 for u in up if u["state"] == "snoozed"),
+            "schedules": len(up),
         })
     return {"cars": out}
 
@@ -1054,10 +1268,8 @@ def api_ha_summary():
 def api_ha_dashboard():
     """YAML for a Garage dashboard view using the add-on's sensors."""
     from . import ha_sensors
-    # The add-on's sidebar panel lives at /<slug>; its container hostname is the slug with dashes
-    # (local-parts-catalog for a local install, 1a2b3c4d-parts-catalog from a repository).
-    host = os.environ.get("HOSTNAME", "")
-    path = "/" + host.replace("-", "_") if ADDON and host.endswith("parts-catalog") else "/local_parts_catalog"
+    # The add-on's sidebar panel lives at /<slug>, its hostname with underscores.
+    path = "/" + ADDON_HOST.replace("-", "_") if ADDON and ADDON_HOST.endswith("parts-catalog") else "/local_parts_catalog"
     return app.response_class(ha_sensors.dashboard_yaml(ha_summary(), path), mimetype="text/plain")
 
 
@@ -1109,11 +1321,12 @@ def api_settings():
             restart = True
         save_settings(s)
         if restart:
-            # run.pyw (the supervisor) relaunches us with the new bind address.
+            # The PC launcher (not part of this repository) relaunches us with the new bind address.
             threading.Timer(0.5, lambda: os._exit(RESTART_CODE)).start()
         return jsonify(ok=True, restarting=restart, settings=s)
-    return jsonify(settings=s, lan_addresses=lan_addresses(), data_dir=db.DATA_DIR, addon=ADDON,
-                   lan_active=app.config.get("BIND_HOST") == "0.0.0.0" and not ADDON)
+    from . import ha_sensors
+    return jsonify(settings=s, lan_addresses=lan_addresses(), data_dir=db.DATA_DIR, addon=ADDON, hostname=ADDON_HOST,
+                   lan_active=app.config.get("BIND_HOST") == "0.0.0.0" and not ADDON, publish_sensors=ha_sensors.enabled())
 
 
 # ---------- car wash weather (app/wash.py) ----------
@@ -1203,23 +1416,43 @@ def api_backup():
     try:
         out = os.path.join(tmp, "backup.zip")
         write_backup(out)
-        with open(out, "rb") as f:
-            data = io.BytesIO(f.read())
-        return send_file(data, mimetype="application/zip", as_attachment=True,
+        resp = send_file(out, mimetype="application/zip", as_attachment=True,
                          download_name=time.strftime("parts-catalog-backup-%Y-%m-%d-%H%M.zip"))
-    finally:
+    except Exception:
         shutil.rmtree(tmp, ignore_errors=True)
+        raise
+    # sent from disk, so removed once it's sent; a passed-through file would skip Response.close and this with it
+    resp.direct_passthrough = False
+    resp.call_on_close(lambda: shutil.rmtree(tmp, ignore_errors=True))
+    return resp
 
 
 RESTORE_PATHS = ("garage.db", "epc/epc.db", "documents/", "epc/files/")
+# what the backup's install showed, taken from its settings.json; this install keeps its lan, port, agent_key and wash
+RESTORE_SETTINGS = ("card", "quick_list", "quick_own", "quick_services", "catalog")
+
+
+def database_ok(path, table):
+    """An SQLite file that passes its integrity check and has `table`."""
+    c = sqlite3.connect(path)
+    try:
+        ok = c.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+        c.execute(f"SELECT COUNT(*) FROM {table}").fetchone()
+        return ok
+    except sqlite3.Error:
+        return False
+    finally:
+        c.close()
 
 
 @app.route("/api/restore", methods=["POST"])
 def api_restore():
-    """Replace all data with a backup zip (e.g. moving from the PC to the Home Assistant add-on).
-    The current data is saved first as data/before-restore-<time>.zip. The zip is unpacked to
-    data/restore-pending/, swapped in at the next start (db.apply_pending_restore), and we restart."""
-    f = request.files.get("backup")
+    """Replace all data with a backup zip (e.g. moving from the PC to the Home Assistant add-on), sent first as "upload".
+    The zip is unpacked and checked, the current data is saved as data/before-restore-<time>.zip, the backup
+    becomes data/restore-pending/, swapped in at the next start (db.apply_pending_restore), and we restart."""
+    f = finished_upload(request.form.get("upload"), "restore")
+    if not f and request.files:  # sent whole, by a page loaded before uploads went up in pieces
+        return err("The add-on was updated: reload the page and try again.")
     if not f:
         return err("Choose a backup zip")
     tmp = tempfile.mkdtemp()
@@ -1243,33 +1476,45 @@ def api_restore():
                 parts = n.replace("\\", "/").split("/")
                 if n.startswith(("/", "\\")) or ".." in parts or ":" in n:
                     return err("Backup contains unsafe paths")
-            # safety copy of the current data first, so a failure below never leaves you without one
-            write_backup(os.path.join(db.DATA_DIR, time.strftime("before-restore-%Y%m%d-%H%M%S.zip")))
-            os.makedirs(staging)
+            for d in ("documents", "epc"):  # always there: the swap takes a missing folder as already moved in
+                os.makedirs(os.path.join(staging, d))
             for n in names:
                 if n.endswith("/") or not n.startswith(RESTORE_PATHS):
-                    continue  # settings.json is left alone: it belongs to this install
+                    continue  # settings.json is taken apart below
                 target = os.path.join(staging, *n.split("/"))
                 os.makedirs(os.path.dirname(target), exist_ok=True)
                 with z.open(n) as src, open(target, "wb") as dst:
                     shutil.copyfileobj(src, dst)
-        c = sqlite3.connect(os.path.join(staging, "garage.db"))
-        try:
-            ok = c.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
-            c.execute("SELECT COUNT(*) FROM cars").fetchone()
-        except sqlite3.Error:
-            ok = False
-        finally:
-            c.close()
-        if not ok:
+            # merged into this install's settings with the data (db.apply_pending_restore); one the backup never set goes unset
+            theirs = json.loads(z.read("settings.json")) if "settings.json" in names else {}
+            with open(os.path.join(staging, "settings.json"), "w", encoding="utf-8") as out:
+                json.dump({k: theirs.get(k) for k in RESTORE_SETTINGS}, out)
+        if not database_ok(os.path.join(staging, "garage.db"), "cars"):
             return err("The database in that backup is damaged")
+        epc_db = os.path.join(staging, "epc", "epc.db")
+        if os.path.exists(epc_db) and not database_ok(epc_db, "sources"):
+            return err("The catalog database in that backup is damaged")
+        safety = os.path.join(db.DATA_DIR, time.strftime("before-restore-%Y%m%d-%H%M%S.zip"))
+        try:  # under a temporary name, so a half-written copy (a full disk) never passes for a good one
+            write_backup(safety + ".part")
+            os.replace(safety + ".part", safety)
+        except Exception:
+            if os.path.exists(safety + ".part"):
+                os.remove(safety + ".part")
+            raise
         shutil.rmtree(pending, ignore_errors=True)
         os.replace(staging, pending)
-    except (zipfile.BadZipFile, OSError, EOFError) as e:
+    except Exception as e:  # noqa: BLE001 - a damaged member raises BadZipFile, zlib.error, RuntimeError...
         return err(f"Restore failed, nothing was changed: {e}")
     finally:
         shutil.rmtree(staging, ignore_errors=True)
         shutil.rmtree(tmp, ignore_errors=True)
+    for fn in os.listdir(db.DATA_DIR):  # keep only the newest safety copy
+        if fn.startswith("before-restore-") and fn.endswith((".zip", ".zip.part")) and fn != os.path.basename(safety):
+            try:
+                os.remove(os.path.join(db.DATA_DIR, fn))
+            except OSError:
+                pass
     if not app.config.get("TESTING"):
         threading.Timer(0.5, lambda: os._exit(RESTART_CODE)).start()
     return jsonify(ok=True, restarting=True)
@@ -1279,4 +1524,19 @@ def api_restore():
 def not_found(e):
     if request.path.startswith("/api/"):
         return err("Not found", 404)
+    return e
+
+
+@app.errorhandler(413)
+def too_large(e):
+    if request.path.startswith("/api/"):
+        return err(f"That's too big: an upload can be up to {app.config['MAX_CONTENT_LENGTH'] // (1024 * 1024)} MB.", 413)
+    return e
+
+
+@app.errorhandler(500)
+def server_error(e):
+    """Any unexpected exception; Flask has logged its traceback before this runs."""
+    if request.path.startswith("/api/"):
+        return err("Something went wrong on the server. The add-on log has the details.", 500)
     return e

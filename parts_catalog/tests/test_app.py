@@ -1,4 +1,4 @@
-"""Run: .venv\\Scripts\\python -m unittest discover tests"""
+"""Run: cd parts_catalog && python -m unittest discover tests"""
 import datetime as dt
 import io
 import json
@@ -93,7 +93,9 @@ class GarageTest(unittest.TestCase):
         f = self.c.get(f"/files/{up['ids'][0]}/bentley.pdf")
         self.assertEqual(f.data, b"%PDF-1.4 test")
         f.close()
-        self.assertEqual(self.c.get("/api/backup").mimetype, "application/zip")
+        b = self.c.get("/api/backup")
+        self.assertEqual(b.mimetype, "application/zip")
+        b.close()
 
     def test_chunked_document_upload(self):
         car = self.c.post("/api/cars", json={"name": "Chunk car"}).get_json()["id"]

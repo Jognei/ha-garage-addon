@@ -7,6 +7,8 @@ Values that a source doesn't give stay empty/NULL (shown as missing), never gues
 Re-importing the same diagram from the same source replaces that source's rows for the diagram, so
 imports are repeatable. Rows from a different source are kept and show up as duplicates in validation.
 """
+import codecs
+import contextlib
 import csv
 import hashlib
 import html
@@ -15,6 +17,8 @@ import json
 import os
 import re
 import shutil
+import threading
+from collections import Counter
 from html.parser import HTMLParser
 
 from . import epc
@@ -22,6 +26,8 @@ from . import epc
 BUNDLE_FORMAT = "garage-epc"
 BUNDLE_VERSION = 1
 IMAGE_EXT = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".bmp", ".tif", ".tiff"}
+CSV_EXT = (".csv", ".tsv", ".txt")
+HTML_EXT = (".html", ".htm", ".xhtml", ".mhtml")
 
 
 class Report:
@@ -54,26 +60,40 @@ def clean(v):
     return re.sub(r"\s+", " ", html.unescape(str(v))).strip()
 
 
-def opt(v):
-    v = clean(v)
-    return v or None
+MONTHS = ("january", "february", "march", "april", "may", "june", "july", "august", "september", "october", "november", "december")
 
 
-def yyyymm(v):
-    """'1991-02', '02/1991', '199102', '02.91' -> '199102'. Unparseable -> None (left missing)."""
+def yyyymm(v, rep=None, where=""):
+    """'1991-02', '02/1991', '199102', '02.91', '1991-02-15', '15/02/1991', 'Feb 1991' -> '199102'. Unreadable -> None, reported to rep."""
     v = clean(v)
     if not v:
         return None
-    m = re.match(r"^(\d{4})[-/.]?(\d{2})$", v)
-    if m:
-        return m.group(1) + m.group(2)
-    m = re.match(r"^(\d{1,2})[-/.](\d{4})$", v)
-    if m:
-        return f"{m.group(2)}{int(m.group(1)):02d}"
-    m = re.match(r"^(\d{1,2})[-/.](\d{2})$", v)
-    if m:
-        y = int(m.group(2))
-        return f"{1900 + y if y > 30 else 2000 + y}{int(m.group(1)):02d}"
+    y = mo = None
+    day, ambiguous = 1, False
+    ym = re.match(r"^(\d{4})(?:(\d{2})|[-/.](\d{1,2})(?:[-/.](\d{1,2}))?)$", v)
+    my = re.match(r"^(\d{1,2})[-/.](\d{4}|\d{2})$", v)
+    dmy = re.match(r"^(\d{1,2})[-/.](\d{1,2})[-/.](\d{4}|\d{2})$", v)
+    named = re.match(r"^(?:(\d{1,2})[\s.-]*)?([a-z]{3,})\.?[\s.-]*(?:(\d{1,2}),?\s+)?(\d{4}|\d{2})$", v.lower())
+    if ym:
+        y, mo, day = ym.group(1), int(ym.group(2) or ym.group(3)), int(ym.group(4) or 1)
+    elif my:
+        y, mo = my.group(2), int(my.group(1))
+    elif dmy:
+        a, b, y = int(dmy.group(1)), int(dmy.group(2)), dmy.group(3)
+        if a > 12 or a == b:
+            day, mo = a, b
+        elif b > 12:
+            mo, day = a, b
+        else:
+            ambiguous = True
+    elif named:
+        mo = next((i + 1 for i, n in enumerate(MONTHS) if n.startswith(named.group(2))), None)
+        y, day = named.group(4), int(named.group(1) or named.group(3) or 1)
+    if y and mo and 1 <= mo <= 12 and 1 <= day <= 31:
+        y = int(y) if len(y) == 4 else int(y) + (1900 if int(y) > 30 else 2000)
+        return f"{y}{mo:02d}"
+    if rep:
+        rep.problem(f"{where}: can't read date {v!r}{' (day and month could be either way round)' if ambiguous else ''}, left empty")
     return None
 
 
@@ -95,6 +115,27 @@ def get_source(name, kind="", is_sample=False, note=""):
                         (name, kind, 1 if is_sample else 0, note)).lastrowid
 
 
+_stored = threading.local()
+
+
+@contextlib.contextmanager
+def undo_on_failure():
+    """One import: if it fails, its rows are rolled back and the files it stored deleted, and the error goes on."""
+    _stored.paths = []
+    try:
+        yield
+    except BaseException:
+        epc.connect().rollback()
+        for rel in _stored.paths:
+            try:
+                os.remove(epc.file_path(rel))
+            except OSError:
+                pass
+        raise
+    finally:
+        _stored.paths = None
+
+
 def store_file(source_id, path, kind, data=None, name=None):
     """Copy a local file (or bytes) into data/epc/files/<source>/. Same content from the same source is stored once."""
     conn = epc.connect()
@@ -113,6 +154,8 @@ def store_file(source_id, path, kind, data=None, name=None):
     rel = os.path.join(rel_dir, base + ext)
     if os.path.exists(epc.file_path(rel)):
         rel = os.path.join(rel_dir, f"{base}-{sha[:8]}{ext}")
+    if getattr(_stored, "paths", None) is not None:
+        _stored.paths.append(rel)
     with open(epc.file_path(rel), "wb") as f:
         f.write(data)
     return conn.execute("INSERT INTO source_files (source_id, kind, original_name, stored_path, sha256, size) VALUES (?,?,?,?,?,?)",
@@ -180,7 +223,7 @@ def upsert_vehicle(v, source_id, rep):
     vals = {k: clean(v.get(k)) for k in VEHICLE_FIELDS if v.get(k) is not None}
     for k in ("prod_from", "prod_to"):
         if v.get(k) is not None:
-            vals[k] = yyyymm(v.get(k))
+            vals[k] = yyyymm(v.get(k), rep, f"Vehicle {code}, {k}")
     conn = epc.connect()
     r = conn.execute("SELECT id FROM vehicles WHERE code=?", (code,)).fetchone()
     if r:
@@ -188,6 +231,7 @@ def upsert_vehicle(v, source_id, rep):
             conn.execute(f"UPDATE vehicles SET {', '.join(k + '=?' for k in vals)} WHERE id=?", [*vals.values(), r[0]])
         rep.count("vehicles_updated")
         return r[0]
+    vals.setdefault("make", "")  # the column's default, 'BMW', stays in existing databases
     vals.update(code=code, source_id=source_id)
     rep.count("vehicles_added")
     return conn.execute(f"INSERT INTO vehicles ({','.join(vals)}) VALUES ({','.join('?' * len(vals))})", list(vals.values())).lastrowid
@@ -270,6 +314,7 @@ def replace_items(diagram_id, items, source_id, rep, source_file_id=None):
     """Replace this source's items on a diagram. Exact duplicates within the input are reported and skipped."""
     conn = epc.connect()
     conn.execute("DELETE FROM diagram_items WHERE diagram_id=? AND source_id IS ?", (diagram_id, source_id))
+    code = conn.execute("SELECT code FROM diagrams WHERE id=?", (diagram_id,)).fetchone()[0]
     seen = set()
     for n, it in enumerate(items):
         raw = clean(it.get("part_number"))
@@ -278,9 +323,12 @@ def replace_items(diagram_id, items, source_id, rep, source_file_id=None):
             pn = ""
         q = it.get("qty")
         q = None if q is None or clean(q) == "" else clean(q)
-        rec = dict(diagram_id=diagram_id, callout=clean(it.get("callout")), part_number=pn, part_number_raw=raw,
+        callout = clean(it.get("callout"))
+        where = f"Diagram {code} callout {callout or '?'}"
+        rec = dict(diagram_id=diagram_id, callout=callout, part_number=pn, part_number_raw=raw,
                    description=clean(it.get("description")), supplement=clean(it.get("supplement")), qty=q, qty_num=qty_num(q),
-                   from_date=yyyymm(it.get("from")), to_date=yyyymm(it.get("to")), fitment_note=clean(it.get("fitment_note")),
+                   from_date=yyyymm(it.get("from"), rep, where + ", from"), to_date=yyyymm(it.get("to"), rep, where + ", to"),
+                   fitment_note=clean(it.get("fitment_note")),
                    sort=it.get("sort", n), source_id=source_id, source_file_id=source_file_id)
         key = (rec["callout"], pn, rec["description"], rec["supplement"], rec["from_date"], rec["to_date"], rec["qty"], rec["fitment_note"])
         if key in seen:
@@ -332,14 +380,32 @@ def add_supersession(old, new, source_id, rep, date=None, note=""):
         rep.problem(f"Bad supersession skipped: {old} -> {new}")
         return
     epc.connect().execute("INSERT OR REPLACE INTO supersessions (old_pn, new_pn, date, note, source_id) VALUES (?,?,?,?,?)",
-                          (old, new, opt(date), clean(note), source_id))
+                          (old, new, yyyymm(date, rep, f"Supersession {old} -> {new}"), clean(note), source_id))
     rep.count("supersessions_added")
 
 
 # ---------- JSON bundle ----------
 
-def import_bundle(path_or_obj, source_name=None, base_dir=None, is_sample=None):
-    """Import the portable JSON format (see Catalog > Data & import). Image paths are relative to the JSON file."""
+# hotspots aren't checked: replace_hotspots skips a bad one and reports it
+BUNDLE_LISTS = {"vehicles": {}, "categories": {}, "parts": {}, "diagrams": {"items": {}}, "supersessions": {}, "expected_diagrams": {}}
+
+
+def check_lists(obj, lists=BUNDLE_LISTS, path=""):
+    """ValueError naming the first list or entry that isn't shaped like the bundle format; a null list is empty."""
+    for key, inner in lists.items():
+        entries = obj.get(key)
+        if entries is None:
+            continue
+        if not isinstance(entries, list):
+            raise ValueError(f"{path}{key} must be a list")
+        for i, e in enumerate(entries):
+            if not isinstance(e, dict):
+                raise ValueError(f"{path}{key}[{i}] must be an object")
+            check_lists(e, inner, f"{path}{key}[{i}].")
+
+
+def import_bundle(path_or_obj, source_name=None, base_dir=None, is_sample=None, find_upload=None):
+    """Import the portable JSON format (see Catalog > Data & import). Image paths are relative to the JSON file, or found by find_upload."""
     if isinstance(path_or_obj, dict):
         b, raw = path_or_obj, None
     else:
@@ -347,8 +413,13 @@ def import_bundle(path_or_obj, source_name=None, base_dir=None, is_sample=None):
             raw = f.read()
         b = json.loads(raw.decode("utf-8-sig"))
         base_dir = base_dir or os.path.dirname(os.path.abspath(path_or_obj))
+    if not isinstance(b, dict):
+        raise ValueError(f"Not a {BUNDLE_FORMAT} file (not a JSON object)")
     if b.get("format") not in (None, BUNDLE_FORMAT):
         raise ValueError(f"Not a {BUNDLE_FORMAT} file (format={b.get('format')!r})")
+    if not isinstance(b.get("source") or {}, dict):
+        raise ValueError("source must be an object")
+    check_lists(b)
     src = b.get("source") or {}
     name = source_name or src.get("name") or (os.path.basename(path_or_obj) if raw else "JSON import")
     sample = bool(src.get("is_sample")) if is_sample is None else is_sample
@@ -356,32 +427,35 @@ def import_bundle(path_or_obj, source_name=None, base_dir=None, is_sample=None):
     sid = get_source(name, src.get("kind") or "json", sample, src.get("note", ""))
     rep = Report(name)
     fid = store_file(sid, path_or_obj, "json", data=raw) if raw else None
-    for v in b.get("vehicles", []):
+    for v in b.get("vehicles") or []:
         upsert_vehicle(v, sid, rep)
-    for c in b.get("categories", []):
+    for c in b.get("categories") or []:
         get_category(c.get("code"), c.get("name"), c.get("parent"), c.get("sort"), sid)
         rep.count("categories")
-    for p in b.get("parts", []):
+    for p in b.get("parts") or []:
         upsert_part(p.get("part_number"), p.get("description"), p.get("notes"), sid, rep)
-    for d in b.get("diagrams", []):
+    for d in b.get("diagrams") or []:
         if not clean(d.get("code")):
             rep.problem(f"Diagram without code skipped: {d.get('title')}")
             continue
         img_fid = None
         if d.get("image"):
-            ip = d["image"] if os.path.isabs(d["image"]) else os.path.join(base_dir or ".", d["image"])
-            if os.path.exists(ip):
+            if find_upload:
+                ip = find_upload(d["image"])
+            else:
+                ip = d["image"] if os.path.isabs(d["image"]) else os.path.join(base_dir or ".", d["image"])
+            if ip and os.path.exists(ip):
                 img_fid = store_file(sid, ip, "image")
             else:
                 rep.problem(f"Diagram {d['code']}: image {d['image']} not found")
         did = upsert_diagram(d["code"], sid, rep, d.get("title"), d.get("category"), d.get("vehicles", []), d.get("notes"), img_fid, d.get("sort"))
         if "items" in d:
-            replace_items(did, d["items"], sid, rep, fid)
+            replace_items(did, d["items"] or [], sid, rep, fid)
         if d.get("hotspots"):
             replace_hotspots(did, d["hotspots"], sid, rep, d.get("hotspot_units", "auto"))
-    for s in b.get("supersessions", []):
+    for s in b.get("supersessions") or []:
         add_supersession(s.get("old"), s.get("new"), sid, rep, s.get("date"), s.get("note", ""))
-    for e in b.get("expected_diagrams", []):
+    for e in b.get("expected_diagrams") or []:
         vid = vehicle_id(e.get("vehicle"), rep)
         if vid:
             conn.execute("INSERT OR REPLACE INTO expected_diagrams (vehicle_id, code, title, source_id) VALUES (?,?,?,?)",
@@ -402,12 +476,15 @@ def export_bundle(out_dir, include_samples=False):
                                   LEFT JOIN categories p ON p.id=c.parent_id ORDER BY c.sort, c.code""")
     b["parts"] = epc.rows(f"""SELECT p.part_number, p.description, p.notes FROM parts p LEFT JOIN sources s ON s.id=p.source_id WHERE 1=1{skip}""")
     b["diagrams"] = []
-    for d in epc.rows(f"""SELECT d.*, c.code AS category, f.stored_path FROM diagrams d LEFT JOIN categories c ON c.id=d.category_id
-                          LEFT JOIN source_files f ON f.id=d.image_file_id LEFT JOIN sources s ON s.id=d.source_id WHERE 1=1{skip} ORDER BY d.code"""):
+    ds = epc.rows(f"""SELECT d.*, c.code AS category, f.stored_path FROM diagrams d LEFT JOIN categories c ON c.id=d.category_id
+                      LEFT JOIN source_files f ON f.id=d.image_file_id LEFT JOIN sources s ON s.id=d.source_id WHERE 1=1{skip} ORDER BY d.code""")
+    uses = Counter(slug(d["code"]) for d in ds)
+    for d in ds:
         out = {"code": d["code"], "title": d["title"], "category": d["category"], "notes": d["notes"], "sort": d["sort"],
-               "vehicles": [r["code"] for r in epc.rows("SELECT v.code FROM vehicles v JOIN diagram_vehicles dv ON dv.vehicle_id=v.id WHERE dv.diagram_id=?", (d["id"],))]}
+               "vehicles": epc.vehicle_codes(d["id"])}
         if d["stored_path"] and os.path.exists(epc.file_path(d["stored_path"])):
-            fn = slug(d["code"]) + os.path.splitext(d["stored_path"])[1]
+            base = slug(d["code"]) if uses[slug(d["code"])] == 1 else f"{slug(d['code'])}-{d['id']}"
+            fn = base + os.path.splitext(d["stored_path"])[1]
             shutil.copyfile(epc.file_path(d["stored_path"]), os.path.join(out_dir, "images", fn))
             out["image"] = "images/" + fn
         items = epc.rows("SELECT * FROM diagram_items WHERE diagram_id=? ORDER BY sort, id", (d["id"],))
@@ -418,8 +495,10 @@ def export_bundle(out_dir, include_samples=False):
         out["hotspots"] = epc.rows("SELECT callout, x, y, w, h FROM hotspots WHERE diagram_id=?", (d["id"],))
         out["hotspot_units"] = "fraction"
         b["diagrams"].append(out)
-    b["supersessions"] = epc.rows("SELECT old_pn AS old, new_pn AS new, date, note FROM supersessions")
-    b["expected_diagrams"] = epc.rows("SELECT v.code AS vehicle, e.code, e.title FROM expected_diagrams e JOIN vehicles v ON v.id=e.vehicle_id")
+    b["supersessions"] = epc.rows(f"""SELECT x.old_pn AS old, x.new_pn AS new, x.date, x.note FROM supersessions x
+                                      LEFT JOIN sources s ON s.id=x.source_id WHERE 1=1{skip}""")
+    b["expected_diagrams"] = epc.rows(f"""SELECT v.code AS vehicle, e.code, e.title FROM expected_diagrams e JOIN vehicles v ON v.id=e.vehicle_id
+                                          LEFT JOIN sources s ON s.id=e.source_id WHERE 1=1{skip}""")
     with open(os.path.join(out_dir, "catalog.json"), "w", encoding="utf-8") as f:
         json.dump(b, f, indent=1, ensure_ascii=False)
     return os.path.join(out_dir, "catalog.json")
@@ -428,7 +507,7 @@ def export_bundle(out_dir, include_samples=False):
 # ---------- CSV ----------
 
 ALIASES = {
-    "diagram": ["diagram", "diagram_code", "diagram id", "diagid", "illustration", "bildtafel"],
+    "diagram": ["diagram", "diagram_code", "diagram code", "diagram id", "diagid", "illustration", "bildtafel"],
     "callout": ["callout", "ref", "ref no", "no", "no.", "nr", "#", "item", "pos", "position", "key"],
     "part_number": ["part_number", "part number", "part no", "part no.", "partno", "part #", "p/n", "pn", "oem", "oem number", "number", "part"],
     "description": ["description", "desc", "name", "designation", "part name", "title"],
@@ -450,12 +529,24 @@ ALIASES = {
     "parent": ["parent", "parent_code"],
 }
 
+CSV_FIELDS = {
+    "items": ["diagram", "callout", "part_number", "description", "supplement", "qty", "from", "to", "fitment_note", "vehicles", "category", "title"],
+    "hotspots": ["diagram", "callout", "x", "y", "w", "h"],
+    "supersessions": ["old", "new", "date", "fitment_note"],
+    "parts": ["part_number", "description", "fitment_note"],
+    "vehicles": ["code", *VEHICLE_FIELDS, "prod_from", "prod_to"],
+    "categories": ["code", "name", "parent"],
+    "diagrams": ["diagram", "title", "category"],
+}
+
 
 def map_headers(headers, wanted):
-    """Header text -> canonical field, for the fields in `wanted` (first alias match wins)."""
+    """Header text -> canonical field, for the fields in `wanted`: a field's own name first, then the first alias match."""
     norm = [re.sub(r"\s+", " ", h.strip().lower()) for h in headers]
-    out = {}
+    out = {f: norm.index(f) for f in wanted if f in norm}
     for field in wanted:
+        if field in out:
+            continue
         for i, h in enumerate(norm):
             if i in out.values():
                 continue
@@ -463,6 +554,10 @@ def map_headers(headers, wanted):
                 out[field] = i
                 break
     return out
+
+
+class UnknownCsvKind(ValueError):
+    pass
 
 
 def csv_kind(headers):
@@ -490,25 +585,34 @@ def import_csv(path, source_name=None, kind=None, vehicle=None, category=None, i
     vehicles, categories, diagrams). `vehicle` links every diagram in an items/diagrams CSV to that vehicle."""
     with open(path, "rb") as f:
         raw = f.read()
-    text = raw.decode("utf-8-sig", errors="replace")
+    try:
+        text, cp1252 = raw.decode("utf-8-sig"), False
+    except UnicodeDecodeError:
+        text, cp1252 = raw.decode("cp1252", errors="replace"), True
     try:
         dialect = csv.Sniffer().sniff(text[:4000], delimiters=",;\t|")
     except csv.Error:
         dialect = "excel"
     reader = list(csv.reader(io.StringIO(text), dialect=dialect))
     if not reader:
-        raise ValueError("Empty CSV")
+        raise UnknownCsvKind("Empty CSV")
     headers, data = reader[0], [r for r in reader[1:] if any(c.strip() for c in r)]
     kind = kind or csv_kind(headers)
     if not kind:
-        raise ValueError(f"Can't tell what this CSV holds from its headers: {headers}")
+        raise UnknownCsvKind(f"Can't tell what this CSV holds from its headers: {headers}")
     name = source_name or os.path.basename(path)
     sid = get_source(name, "csv", is_sample)
     rep = Report(name)
     rep.count("kind_" + kind)
+    if cp1252:
+        rep.problem("Not valid UTF-8: read as Windows-1252")
     fid = store_file(sid, path, "csv", data=raw)
-    m = map_headers(headers, list(ALIASES))
+    m = map_headers(headers, CSV_FIELDS[kind])
     val = lambda r, k: r[m[k]] if k in m and m[k] < len(r) else None  # noqa: E731
+    col_field = {i: f for f, i in m.items()}
+    used = [h.strip() + ("" if h.strip().lower() == col_field[i] else f" ({col_field[i]})") for i, h in enumerate(headers) if i in col_field]
+    ignored = [h.strip() for i, h in enumerate(headers) if i not in col_field and h.strip()]
+    rep.problem(f"Columns used: {', '.join(used) or 'none'}; ignored: {', '.join(ignored) or 'none'}")
     conn = epc.connect()
     if kind == "items":
         by_diag = {}
@@ -543,7 +647,7 @@ def import_csv(path, source_name=None, kind=None, vehicle=None, category=None, i
             upsert_part(val(r, "part_number"), val(r, "description"), val(r, "fitment_note"), sid, rep)
     elif kind == "vehicles":
         for r in data:
-            upsert_vehicle({h.strip().lower(): r[i] for i, h in enumerate(headers) if i < len(r)}, sid, rep)
+            upsert_vehicle({k: val(r, k) for k in m}, sid, rep)
     elif kind == "categories":
         for r in data:
             get_category(val(r, "code"), val(r, "name"), clean(val(r, "parent")) or None, None, sid)
@@ -612,45 +716,61 @@ class _PageParser(HTMLParser):
             self.title += data
 
 
-PN_CELL = re.compile(r"^\d{2}\s?\d{2}\s?\d\s?\d{3}\s?\d{3}$")
-
-
-def find_parts_table(tables):
-    """The table that looks most like a parts list: a part-number header, or a column of 11-digit numbers."""
-    best, best_score = None, 0
+def find_parts_table(tables, rep=None, where=""):
+    """The table that looks most like a parts list: part-number and description or callout headers, or a column of 11-digit numbers."""
+    found = []
     for t in tables:
+        best = None
         for hi in range(min(3, len(t))):
             head, body = t[hi], t[hi + 1:]
             m = map_headers(head, ["callout", "part_number", "description", "supplement", "qty", "from", "to", "fitment_note"])
             pn_col = m.get("part_number")
+            # under a part-number header any part number counts; without one, only an 11-digit column is taken for one
+            is_pn = epc.looks_like_pn if pn_col is not None else lambda c: epc.PN_RE.match(epc.norm_pn(c))
             hits = 0
             for col in ([pn_col] if pn_col is not None else range(max((len(r) for r in body), default=0))):
-                h = sum(1 for r in body if col < len(r) and PN_CELL.match(r[col]))
+                h = sum(1 for r in body if col < len(r) and is_pn(r[col]))
                 if h > hits:
                     hits, pn_col = h, col
             score = hits * 2 + len(m)
-            if hits and score > best_score:
+            if (hits or "part_number" in m and ("description" in m or "callout" in m)) and (not best or score > best[0]):
                 m["part_number"] = pn_col
-                best, best_score = (m, body), score
-    return best
+                best = (score, m, head, body)
+        if best:
+            found.append(best)
+    if not found:
+        return None
+    # a diagram's list has callouts and quantities; a "recently viewed" list beside it usually has neither
+    _, m, head, body = max(found, key=lambda f: ("callout" in f[1] and "qty" in f[1], f[0]))
+    if len(found) > 1 and rep:
+        rep.problem(f"{where}: {len(found)} tables look like a parts list; used the one headed {', '.join(head)} ({len(body)} rows)")
+    return m, body
 
 
-def import_html(path, source_name=None, diagram=None, category=None, vehicle=None, image=None, title=None, is_sample=False):
+def import_html(path, source_name=None, diagram=None, category=None, vehicle=None, image=None, title=None, is_sample=False, find_upload=None):
     """A locally saved web page holding one diagram: parts table, diagram image, optional <map>/<area> hotspots.
     Generic: any page with a parts table works. Only local files are read; remote image URLs are ignored."""
     with open(path, "rb") as f:
         raw = f.read()
-    text = raw.decode("utf-8", errors="replace")
-    p = _PageParser()
-    p.feed(text)
     name = source_name or "Saved HTML pages"
     sid = get_source(name, "html", is_sample)
     rep = Report(name)
     fid = store_file(sid, path, "html", data=raw)
     rep.count("html_files")
+    cs = re.search(rb"""<meta[^>]+charset\s*=\s*["']?\s*([\w.:-]+)""", raw, re.I)
+    enc = cs.group(1).decode("ascii") if cs else "utf-8"
+    try:
+        enc = codecs.lookup(enc).name
+    except LookupError:
+        rep.problem(f"{os.path.basename(path)}: unknown charset {enc!r}, read as UTF-8")
+        enc = "utf-8"
+    # browsers read pages labelled Latin-1 or ASCII as Windows-1252
+    text = raw.decode("cp1252" if enc in ("iso8859-1", "ascii") else enc, errors="replace")
+    p = _PageParser()
+    p.feed(text)
     code = clean(diagram) or slug(os.path.splitext(os.path.basename(path))[0])
     page_title = clean(title) or clean(p.title)
-    found = find_parts_table(p.tables)
+    found = find_parts_table(p.tables, rep, os.path.basename(path))
     items = []
     if found:
         m, body = found
@@ -671,8 +791,11 @@ def import_html(path, source_name=None, diagram=None, category=None, vehicle=Non
             src = html.unescape(a.get("src") or "")
             if not src or re.match(r"^(https?:|data:|//)", src, re.I):
                 continue
-            fp = os.path.normpath(os.path.join(base, src.split("?")[0].replace("/", os.sep)))
-            if os.path.exists(fp) and os.path.splitext(fp)[1].lower() in IMAGE_EXT:
+            if find_upload:
+                fp = find_upload(src.split("?")[0])
+            else:
+                fp = os.path.normpath(os.path.join(base, src.split("?")[0].replace("/", os.sep)))
+            if fp and os.path.exists(fp) and os.path.splitext(fp)[1].lower() in IMAGE_EXT:
                 cands.append((os.path.getsize(fp), fp, a.get("usemap")))
         if cands:
             _, img_path, usemap = max(cands)
@@ -736,19 +859,30 @@ def import_images(paths, source_name=None, create=False, category=None, vehicle=
         else:
             files.append(p)
     conn = epc.connect()
-    codes = {_code_key(r[1]): r[0] for r in conn.execute("SELECT id, code FROM diagrams")}
+    codes = {}
+    for (code,) in conn.execute("SELECT DISTINCT code FROM diagrams"):
+        codes.setdefault(_code_key(code), set()).add(code)
+    vid = vehicle_id(vehicle, rep) if vehicle else None
     for fp in files:
         stem, ext = os.path.splitext(os.path.basename(fp))
         if ext.lower() not in IMAGE_EXT:
             continue
-        did = codes.get(_code_key(stem))
+        same = codes.get(_code_key(stem), set())
+        dids = {r[0] for c in same for r in conn.execute("SELECT id FROM diagrams WHERE code=?", (c,))}
+        if vid and len(dids) > 1:
+            dids = {find_diagram(c, sid, [vid]) for c in same} - {None}
+        if len(dids) > 1:
+            rep.problem(f"{os.path.basename(fp)}: {len(dids)} diagrams have code {stem}; choose the vehicle it belongs to")
+            rep.count("images_unmatched")
+            continue
+        did = next(iter(dids), None)
         if not did:
             if not create:
-                rep.problem(f"{os.path.basename(fp)}: no diagram with code {stem}")
+                rep.problem(f"{os.path.basename(fp)}: no diagram with code {stem}" + (f" for {vehicle}" if vid else ""))
                 rep.count("images_unmatched")
                 continue
             did = upsert_diagram(stem, sid, rep, "", category, [vehicle] if vehicle else [])
-            codes[_code_key(stem)] = did
+            codes.setdefault(_code_key(stem), set()).add(stem)
         attach_image(did, store_file(sid, fp, "image"))
         rep.count("images_attached")
     conn.commit()
@@ -759,11 +893,12 @@ def import_path(path, **kw):
     """Pick the importer from the file extension."""
     ext = os.path.splitext(path)[1].lower()
     if ext == ".json":
-        return import_bundle(path, kw.get("source_name"), is_sample=kw.get("is_sample") or None)
-    if ext in (".csv", ".tsv", ".txt"):
+        return import_bundle(path, kw.get("source_name"), is_sample=kw.get("is_sample") or None, find_upload=kw.get("find_upload"))
+    if ext in CSV_EXT:
         return import_csv(path, kw.get("source_name"), vehicle=kw.get("vehicle"), category=kw.get("category"), is_sample=kw.get("is_sample", False))
-    if ext in (".html", ".htm", ".xhtml", ".mhtml"):
-        return import_html(path, kw.get("source_name"), kw.get("diagram"), kw.get("category"), kw.get("vehicle"), kw.get("image"), kw.get("title"), kw.get("is_sample", False))
+    if ext in HTML_EXT:
+        return import_html(path, kw.get("source_name"), kw.get("diagram"), kw.get("category"), kw.get("vehicle"), kw.get("image"), kw.get("title"),
+                           kw.get("is_sample", False), kw.get("find_upload"))
     if ext in IMAGE_EXT or os.path.isdir(path):
         return import_images([path], kw.get("source_name"), kw.get("create", False), kw.get("category"), kw.get("vehicle"), kw.get("is_sample", False))
     raise ValueError(f"Don't know how to import {path}")

@@ -1,4 +1,5 @@
 """Vehicle order, hiding vehicles, photos, estimated due dates, CSV export."""
+import csv
 import datetime as dt
 import io
 import os
@@ -113,6 +114,35 @@ class QolTest(unittest.TestCase):
         text = self.c.get(f"/api/export/parts.csv?car_id={a}").data.decode("utf-8-sig")
         self.assertIn("Alpha,Pads,34116761244", text)
         self.assertIn("Pads", self.c.get("/api/export/parts.csv").data.decode("utf-8-sig"))
+
+    def test_parts_csv_follows_the_list_filters(self):
+        a = self.ids[0]
+        self.c.post("/api/parts", json={"car_id": a, "name": "Caliper", "status": "Needed"})
+        self.c.post("/api/parts", json={"car_id": a, "name": "Brake hose", "status": "On hand"})
+        self.c.post("/api/parts", json={"name": "Wiper blade", "status": "Needed", "url": "https://example.com/wiper"})
+        pid = self.c.post("/api/parts", json={"car_id": a, "name": "Brake pads front", "status": "On hand"}).get_json()["id"]
+        self.c.post(f"/api/cars/{a}/services", json={"date": "2026-02-03", "title": "Brake job", "part_ids": [pid]})
+
+        def export(query):
+            text = self.c.get("/api/export/parts.csv?" + query).data.decode("utf-8-sig")
+            return {r["Part"]: r for r in csv.DictReader(io.StringIO(text))}
+        to_get = export(f"car_id={a}&status=Needed,Check,Ordered")
+        self.assertIn("Caliper", to_get)
+        self.assertNotIn("Brake hose", to_get)
+        loose = export("car_id=none")
+        self.assertEqual((list(loose), loose["Wiper blade"]["Link"]), (["Wiper blade"], "https://example.com/wiper"))
+        self.assertEqual(list(export("q=hose")), ["Brake hose"])
+        used = export(f"car_id={a}")["Brake pads front"]
+        self.assertEqual((used["Service"], used["Service date"]), ("Brake job", "2026-02-03"))
+
+    def test_service_csv_shows_quantities(self):
+        c = self.ids[2]
+        plugs = self.c.post("/api/parts", json={"car_id": c, "name": "Spark plug", "part_number": "12120037244", "qty": 4}).get_json()["id"]
+        oil = self.c.post("/api/parts", json={"car_id": c, "name": "Oil filter", "qty": 1}).get_json()["id"]
+        self.c.post(f"/api/cars/{c}/services", json={"date": "2026-03-04", "title": "Tune-up", "part_ids": [plugs, oil]})
+        text = self.c.get(f"/api/cars/{c}/export/services.csv").data.decode("utf-8-sig")
+        used = next(r for r in csv.DictReader(io.StringIO(text)) if r["Work"] == "Tune-up")["Parts used"]
+        self.assertEqual(sorted(used.split("; ")), ["4× Spark plug (12120037244)", "Oil filter"])
 
 
 if __name__ == "__main__":

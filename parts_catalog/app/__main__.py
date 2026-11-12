@@ -1,4 +1,4 @@
-"""Start the server: python -m app  (run.pyw supervises this in the background)."""
+"""Start the server: python -m app  (run_addon.py supervises this in the add-on)."""
 import logging
 import os
 import socket
@@ -23,7 +23,8 @@ def main():
     host = os.environ.get("PARTS_CATALOG_HOST") or ("0.0.0.0" if s["lan"] else "127.0.0.1")
     app.config["BIND_HOST"] = host
     # Windows lets two servers share a port (SO_REUSEADDR), so check first rather than
-    # silently fighting another program. run.pyw retries until the port is free.
+    # silently fighting another program. The PC launcher (not part of this repository) retries
+    # until the port is free.
     try:
         socket.create_connection(("127.0.0.1", port), 1).close()
         logging.error("Port %s is already in use by another program; will retry.", port)

@@ -73,6 +73,8 @@ class McpTest(unittest.TestCase):
     def test_protocol(self):
         init = self.rpc("initialize", {"protocolVersion": "2025-06-18"}).get_json()["result"]
         self.assertEqual(init["serverInfo"]["name"], "garage")
+        unknown = self.rpc("initialize", {"protocolVersion": "1999-01-01"}).get_json()["result"]
+        self.assertEqual(unknown["protocolVersion"], "2025-06-18")  # a version it doesn't know gets the one it speaks
         self.assertIn("tools", init["capabilities"])
         self.assertEqual(self.rpc("notifications/initialized", mid=None).status_code, 202)
         names = [t["name"] for t in self.rpc("tools/list").get_json()["result"]["tools"]]
@@ -110,12 +112,120 @@ class McpTest(unittest.TestCase):
         self.assertEqual(r["notes"], "Bought used\nNew clutch")
         self.assertEqual(self.tool("get_vehicle", vehicle="wagon")[0]["notes"], "Bought used\nNew clutch")
 
+    def test_log_service_mileage_defaults_to_the_odometer_only_for_today(self):
+        cid = self.c.post("/api/cars", json={"name": "Grey Hatchback", "mileage": 42000}).get_json()["id"]
+        for date, used in ((None, 42000), (dt.date.today().isoformat(), 42000), ("2025-03-01", None)):
+            logged, err = self.tool("log_service", vehicle="hatchback", title="Wash", **({"date": date} if date else {}))
+            self.assertFalse(err, logged)
+            self.assertEqual(logged["mileage"], used, date)
+            svc = next(s for s in self.c.get(f"/api/cars/{cid}/services").get_json() if s["id"] == logged["logged"]["id"])
+            self.assertEqual(svc["mileage"], used, date)
+
     def test_tool_errors(self):
         msg, err = self.tool("get_vehicle", vehicle="nonexistent")
         self.assertTrue(err)
         self.assertIn("No vehicle matches", msg)
         msg, err = self.tool("get_vehicle")
         self.assertTrue(err)
+
+    def test_log_service_checks_before_logging(self):
+        car = self.c.post("/api/cars", json={"name": "Red Coupe", "mileage": 40000}).get_json()["id"]
+        self.c.post(f"/api/cars/{car}/schedules", json={"items": [
+            {"title": "Manual transmission fluid", "interval_miles": 60000},
+            {"title": "Automatic transmission fluid & filter", "interval_miles": 60000},
+            {"title": "Spark plugs", "interval_miles": 30000}]})
+        msg, err = self.tool("log_service", vehicle="Red Coupe", title="Fluid", schedules=["transmission fluid"])
+        self.assertTrue(err)
+        self.assertIn("Automatic transmission fluid & filter, Manual transmission fluid", msg)
+        for ids in (["abc"], [999999]):
+            msg, err = self.tool("log_service", vehicle="Red Coupe", title="Fluid", part_ids=ids)
+            self.assertTrue(err, ids)
+        self.assertEqual(self.c.get(f"/api/cars/{car}/services").get_json(), [])  # nothing logged, so a retry can't double it
+        r, _ = self.tool("log_service", vehicle="Red Coupe", title="Plugs", schedules=["spark"])
+        self.assertEqual((r["schedules_reset"], r["schedules_reset_titles"]), (1, ["Spark plugs"]))
+
+    def test_agents_see_every_schedule_by_urgency(self):
+        car = self.c.post("/api/cars", json={"name": "Grey Van", "mileage": 50000}).get_json()["id"]
+        snooze = (dt.date.today() + dt.timedelta(days=30)).isoformat()
+        ids = self.c.post(f"/api/cars/{car}/schedules", json={"items": [
+            {"title": "Wipers", "interval_months": 12},                                    # never done
+            {"title": "Coolant", "interval_miles": 30000, "last_mileage": 45000},          # ok, 25,000 of 30,000 left
+            {"title": "Tires", "interval_miles": 10000, "last_mileage": 48000},            # ok, 8,000 of 10,000 left
+            {"title": "Brakes", "interval_miles": 10000, "last_mileage": 30000, "snoozed_until": snooze},
+            {"title": "Oil", "interval_miles": 5000, "last_mileage": 40000}]}).get_json()["ids"]
+        self.c.post(f"/api/cars/{car}/schedules/order", json={"ids": [ids[1], ids[2]]})
+        try:
+            self.c.put("/api/settings", json={"card": {"upcoming_rows": 0, "hide_ok": True}})
+            vs, _ = self.tool("list_vehicles")
+            nxt = next(v["next"] for v in vs if v["id"] == car)
+            self.assertEqual([u["title"] for u in nxt], ["Oil", "Tires", "Coolant", "Brakes", "Wipers"])
+            self.assertEqual(nxt[3]["snoozed_until"], snooze)
+        finally:
+            self.c.put("/api/settings", json={"card": dict(server.CARD_DEFAULTS)})
+        due, _ = self.tool("whats_due", vehicle="Grey Van")
+        self.assertEqual(due[0]["dismissed"], [{"title": "Brakes", "snoozed_until": snooze}])
+
+    def test_hidden_vehicles(self):
+        sold = self.c.post("/api/cars", json={"name": "Sold Roadster"}).get_json()["id"]
+        kept = self.c.post("/api/cars", json={"name": "Green Roadster"}).get_json()["id"]
+        self.c.put(f"/api/cars/{sold}", json={"archived": True})
+        hidden = {v["name"]: v["hidden"] for v in self.tool("list_vehicles")[0]}
+        self.assertEqual((hidden["Sold Roadster"], hidden["Green Roadster"]), (True, False))
+        self.assertNotIn("Sold Roadster", [v["vehicle"] for v in self.tool("whats_due")[0]])
+        v, err = self.tool("get_vehicle", vehicle="roadster")
+        self.assertFalse(err, v)
+        self.assertEqual(v["id"], kept)
+
+    def test_a_service_on_the_wrong_vehicle_can_be_deleted(self):
+        car = self.c.post("/api/cars", json={"name": "Yellow Hatch", "mileage": 30000}).get_json()["id"]
+        self.c.post(f"/api/cars/{car}/schedules", json={"items": [
+            {"title": "Coolant", "interval_miles": 30000, "last_date": "2024-05-01", "last_mileage": 10000}]})
+        logged, _ = self.tool("log_service", vehicle="Yellow Hatch", title="Coolant flush", date="2026-11-01", mileage=30000,
+                              schedules=["coolant"])
+        svc = self.tool("list_services", vehicle="Yellow Hatch")[0][0]
+        self.assertEqual(svc["id"], logged["logged"]["id"])
+        r, err = self.tool("delete_service", service_id=svc["id"])
+        self.assertFalse(err, r)
+        self.assertEqual(self.tool("list_services", vehicle="Yellow Hatch")[0], [])
+        sched = self.tool("get_vehicle", vehicle="Yellow Hatch")[0]["upcoming"][0]
+        self.assertEqual((sched["last_date"], sched["last_mileage"]), ("2024-05-01", 10000))
+
+    def test_a_logged_service_can_be_corrected(self):
+        car = self.c.post("/api/cars", json={"name": "White Sedan", "mileage": 60000}).get_json()["id"]
+        sched = self.c.post(f"/api/cars/{car}/schedules", json={"title": "Brake fluid", "interval_months": 24}).get_json()["ids"][0]
+        part = self.c.post("/api/parts", json={"car_id": car, "name": "DOT 4 fluid", "status": "On hand"}).get_json()["id"]
+        logged, _ = self.tool("log_service", vehicle="White Sedan", title="Brake fluid", date="2026-11-01", mileage=60500,
+                              cost=25, notes="ATE Typ 200", schedules=["brake fluid"], part_ids=[part])
+        r, err = self.tool("update_service", service_id=logged["logged"]["id"], date="2026-10-28", mileage=60050)
+        self.assertFalse(err, r)
+        svc = self.tool("list_services", vehicle="White Sedan")[0][0]
+        self.assertEqual((svc["date"], svc["mileage"], svc["title"], svc["cost"], svc["notes"]),
+                         ("2026-10-28", 60050, "Brake fluid", 25, "ATE Typ 200"))
+        self.assertEqual((svc["schedule_ids"], [p["id"] for p in svc["parts"]]), ([sched], [part]))
+
+    def test_a_schedule_can_be_changed(self):
+        car = self.c.post("/api/cars", json={"name": "Black Pickup", "mileage": 80000}).get_json()["id"]
+        front, _ = self.c.post(f"/api/cars/{car}/schedules", json={"items": [
+            {"title": "Front differential fluid", "interval_miles": 30000, "last_mileage": 70000},
+            {"title": "Rear differential fluid", "interval_miles": 30000, "last_mileage": 70000}]}).get_json()["ids"]
+        msg, err = self.tool("update_schedule", vehicle="Black Pickup", schedule="differential", interval_miles=50000)
+        self.assertTrue(err)
+        self.assertIn("Front differential fluid, Rear differential fluid", msg)
+        self.assertTrue(self.tool("update_schedule", vehicle="Black Pickup", schedule="wipers", interval_months=12)[1])
+        r, err = self.tool("update_schedule", vehicle="Black Pickup", schedule="rear differential fluid", interval_miles=50000,
+                           notes="75W-90")
+        self.assertFalse(err, r)
+        self.assertEqual((r["title"], r["due_mileage"], r["notes"]), ("Rear differential fluid", 120000, "75W-90"))
+        r, _ = self.tool("update_schedule", vehicle="Black Pickup", schedule=str(front), title="Front diff fluid", last_mileage=75000)
+        self.assertEqual((r["title"], r["due_mileage"]), ("Front diff fluid", 105000))  # still every 30,000
+
+    def test_a_part_can_be_moved_to_another_vehicle(self):
+        self.c.post("/api/cars", json={"name": "Orange Estate"})
+        kombi = self.c.post("/api/cars", json={"name": "Purple Kombi"}).get_json()["id"]
+        pid = self.tool("add_parts", vehicle="Orange Estate", items=[{"name": "Roof rack"}])[0]["part_ids"][0]
+        part, err = self.tool("update_part", part_id=pid, vehicle="Purple Kombi")
+        self.assertFalse(err, part)
+        self.assertEqual((part["car_id"], part["car"]), (kombi, "Purple Kombi"))
 
     def test_internal_calls_pass_allowlist(self):
         try:

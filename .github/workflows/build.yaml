@@ -1,17 +1,21 @@
 name: Add-on images
-# Builds the add-on for each architecture and, on main, publishes ghcr.io/<owner>/<arch>-parts-catalog:<version>
-# (the `image:` in parts_catalog/config.yaml), so Home Assistant downloads a ready image instead of building.
+# Runs the tests (tests.yaml), then builds the add-on for each architecture and, on main, publishes
+# ghcr.io/<owner>/<arch>-parts-catalog:<version> (the `image:` in parts_catalog/config.yaml), so Home Assistant
+# downloads a ready image instead of building.
 on:
   push:
     branches: [main]
-    paths: ["parts_catalog/**", ".github/workflows/build.yaml"]
+    paths: ["parts_catalog/**", ".github/workflows/build.yaml", ".github/workflows/tests.yaml"]
   pull_request:
   workflow_dispatch:
 permissions:
   contents: read
   packages: write
 jobs:
+  test:
+    uses: ./.github/workflows/tests.yaml
   image:
+    needs: test
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -35,6 +39,20 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Refuse to overwrite a published version
+        if: github.event_name != 'pull_request'
+        env:
+          TAG: ${{ steps.v.outputs.image }}:${{ steps.v.outputs.version }}
+        run: |
+          if out=$(docker manifest inspect "$TAG" 2>&1); then
+            echo "::error::$TAG is already published. Raise version: in parts_catalog/config.yaml so this build doesn't overwrite it."
+            exit 1
+          fi
+          # only a registry that answers "no such tag" lets the build go on; a failed lookup proves nothing
+          if ! grep -qiE "no such manifest|manifest unknown" <<< "$out"; then
+            echo "::error::Couldn't check the registry for $TAG, so the build stops: $out"
+            exit 1
+          fi
       - uses: docker/build-push-action@v6
         with:
           context: parts_catalog
