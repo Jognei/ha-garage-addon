@@ -443,16 +443,18 @@ def api_export_services(car_id):
 
 @app.route("/api/export/parts.csv")
 def api_export_parts():
-    where, args, name = "", [], "all"
-    if request.args.get("car_id"):
-        where, args = "WHERE p.car_id=?", [int(request.args["car_id"])]
-        car = db.row("SELECT name FROM cars WHERE id=?", args)
+    where, args = part_filter(request.args)
+    cid, name = request.args.get("car_id"), "all"
+    if cid == "none":
+        name = "unassigned"
+    elif cid:
+        car = db.row("SELECT name FROM cars WHERE id=?", (int(cid),))
         name = safe_name(car["name"]) if car else "parts"
-    rows = db.rows(f"""SELECT p.*, c.name AS car FROM parts p LEFT JOIN cars c ON c.id=p.car_id {where}
-                       ORDER BY c.name, p.status, p.name COLLATE NOCASE""", args)
+    rows = db.rows(PART_SELECT + where + " ORDER BY c.name, p.status, p.name COLLATE NOCASE", args)
     cols = [("car", "Vehicle"), ("name", "Part"), ("part_number", "Part number"), ("brand", "Brand"), ("category", "Category"),
             ("qty", "Qty"), ("status", "Status"), ("supplier", "Supplier"), ("price", "Price"), ("order_ref", "Order"),
-            ("purchased_date", "Purchased"), ("installed_mileage", "Installed at (mi)"), ("installed_date", "Installed on"),
+            ("url", "Link"), ("purchased_date", "Purchased"), ("installed_mileage", "Installed at (mi)"),
+            ("installed_date", "Installed on"), ("service_title", "Service"), ("service_date", "Service date"),
             ("location", "Location"), ("notes", "Notes")]
     return csv_response(rows, cols, f"{name}-parts.csv")
 
@@ -872,9 +874,33 @@ def insert_part(b):
 
 
 PART_SELECT = """SELECT p.*, c.name AS car, d.title AS document_title, d.filename AS document_file,
-                 s.title AS service_title, pr.title AS project_title FROM parts p LEFT JOIN cars c ON c.id=p.car_id
+                 s.title AS service_title, s.date AS service_date, pr.title AS project_title FROM parts p LEFT JOIN cars c ON c.id=p.car_id
                  LEFT JOIN documents d ON d.id=p.document_id LEFT JOIN services s ON s.id=p.service_id
                  LEFT JOIN projects pr ON pr.id=p.project_id"""
+
+
+def part_filter(a):
+    """The Parts list's filters, car_id (an id or "none"), status (comma-separated) and q, as (" WHERE ...", args)."""
+    where, args = [], []
+    if a.get("car_id"):
+        cid = a["car_id"]
+        if cid == "none":
+            where.append("p.car_id IS NULL")
+        else:
+            where.append("p.car_id=?")
+            args.append(int(cid))
+    if a.get("status"):
+        sts = a["status"].split(",")
+        where.append(f"p.status IN ({','.join('?' * len(sts))})")
+        args += sts
+    q = (a.get("q") or "").strip()
+    if q:
+        like = f"%{q}%"
+        digits = re.sub(r"\D", "", q)
+        where.append("(p.name LIKE ? OR p.part_number LIKE ? OR p.brand LIKE ? OR p.notes LIKE ? OR p.supplier LIKE ? OR p.category LIKE ?"
+                     + (" OR REPLACE(p.part_number,' ','') LIKE ?" if len(digits) >= 3 else "") + ")")
+        args += [like] * 6 + ([f"%{digits}%"] if len(digits) >= 3 else [])
+    return (" WHERE " + " AND ".join(where) if where else ""), args
 
 
 @app.route("/api/parts", methods=["GET", "POST"])
@@ -884,26 +910,8 @@ def api_parts():
             return jsonify(id=insert_part(body()))
         except ValueError as e:
             return err(str(e))
-    where, args = [], []
-    if request.args.get("car_id"):
-        cid = request.args["car_id"]
-        if cid == "none":
-            where.append("p.car_id IS NULL")
-        else:
-            where.append("p.car_id=?")
-            args.append(int(cid))
-    if request.args.get("status"):
-        sts = request.args["status"].split(",")
-        where.append(f"p.status IN ({','.join('?' * len(sts))})")
-        args += sts
-    q = (request.args.get("q") or "").strip()
-    if q:
-        like = f"%{q}%"
-        digits = re.sub(r"\D", "", q)
-        where.append("(p.name LIKE ? OR p.part_number LIKE ? OR p.brand LIKE ? OR p.notes LIKE ? OR p.supplier LIKE ? OR p.category LIKE ?"
-                     + (" OR REPLACE(p.part_number,' ','') LIKE ?" if len(digits) >= 3 else "") + ")")
-        args += [like] * 6 + ([f"%{digits}%"] if len(digits) >= 3 else [])
-    sql = PART_SELECT + (" WHERE " + " AND ".join(where) if where else "") + """
+    where, args = part_filter(request.args)
+    sql = PART_SELECT + where + """
         ORDER BY CASE p.status WHEN 'Needed' THEN 0 WHEN 'Check' THEN 1 WHEN 'Ordered' THEN 2
                  WHEN 'On hand' THEN 3 ELSE 4 END, p.category COLLATE NOCASE, p.name COLLATE NOCASE"""
     return jsonify(db.rows(sql, args))

@@ -816,7 +816,7 @@ async function partsSection(el, { car = null, params = new URLSearchParams() } =
         ${!car ? `<select id="carF">${options([['', 'All vehicles'], ['none', 'Not assigned'], ...cars.map((c) => [c.id, c.name])], carFilter)}</select>` : ''}
         ${q ? `<span class="muted">matching “${esc(q)}” <a href="#/parts">clear</a></span>` : ''}
       </div>
-      <div class="row"><a class="btn" href="api/export/parts.csv${carFilter && carFilter !== 'none' ? '?car_id=' + carFilter : ''}" title="Download as a spreadsheet">⬇ CSV</a><button id="addPart">＋ Add part</button><button class="primary" id="addPurchase">＋ Add purchase / receipt</button></div>
+      <div class="row"><a class="btn" href="api/export/parts.csv${qs.length ? '?' + qs.join('&') : ''}" title="Download as a spreadsheet">⬇ CSV</a><button id="addPart">＋ Add part</button><button class="primary" id="addPurchase">＋ Add purchase / receipt</button></div>
     </div>
     ${total ? `<p class="muted small">To get: <b>${money(total)}</b> at listed prices.</p>` : ''}
     <div class="panel table-wrap" style="padding:0">${parts.length ? `<table id="partsTable"><thead><tr>
