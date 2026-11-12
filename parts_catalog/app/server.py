@@ -1260,11 +1260,24 @@ def api_backup():
 RESTORE_PATHS = ("garage.db", "epc/epc.db", "documents/", "epc/files/")
 
 
+def database_ok(path, table):
+    """An SQLite file that passes its integrity check and has `table`."""
+    c = sqlite3.connect(path)
+    try:
+        ok = c.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+        c.execute(f"SELECT COUNT(*) FROM {table}").fetchone()
+        return ok
+    except sqlite3.Error:
+        return False
+    finally:
+        c.close()
+
+
 @app.route("/api/restore", methods=["POST"])
 def api_restore():
     """Replace all data with a backup zip (e.g. moving from the PC to the Home Assistant add-on).
-    The current data is saved first as data/before-restore-<time>.zip. The zip is unpacked to
-    data/restore-pending/, swapped in at the next start (db.apply_pending_restore), and we restart."""
+    The zip is unpacked and checked, the current data is saved as data/before-restore-<time>.zip, the backup
+    becomes data/restore-pending/, swapped in at the next start (db.apply_pending_restore), and we restart."""
     f = request.files.get("backup")
     if not f:
         return err("Choose a backup zip")
@@ -1289,9 +1302,8 @@ def api_restore():
                 parts = n.replace("\\", "/").split("/")
                 if n.startswith(("/", "\\")) or ".." in parts or ":" in n:
                     return err("Backup contains unsafe paths")
-            # safety copy of the current data first, so a failure below never leaves you without one
-            write_backup(os.path.join(db.DATA_DIR, time.strftime("before-restore-%Y%m%d-%H%M%S.zip")))
-            os.makedirs(staging)
+            for d in ("documents", "epc"):  # always there: the swap takes a missing folder as already moved in
+                os.makedirs(os.path.join(staging, d))
             for n in names:
                 if n.endswith("/") or not n.startswith(RESTORE_PATHS):
                     continue  # settings.json is left alone: it belongs to this install
@@ -1299,19 +1311,22 @@ def api_restore():
                 os.makedirs(os.path.dirname(target), exist_ok=True)
                 with z.open(n) as src, open(target, "wb") as dst:
                     shutil.copyfileobj(src, dst)
-        c = sqlite3.connect(os.path.join(staging, "garage.db"))
-        try:
-            ok = c.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
-            c.execute("SELECT COUNT(*) FROM cars").fetchone()
-        except sqlite3.Error:
-            ok = False
-        finally:
-            c.close()
-        if not ok:
+        if not database_ok(os.path.join(staging, "garage.db"), "cars"):
             return err("The database in that backup is damaged")
+        epc_db = os.path.join(staging, "epc", "epc.db")
+        if os.path.exists(epc_db) and not database_ok(epc_db, "sources"):
+            return err("The catalog database in that backup is damaged")
+        safety = os.path.join(db.DATA_DIR, time.strftime("before-restore-%Y%m%d-%H%M%S.zip"))
+        try:  # under a temporary name, so a half-written copy (a full disk) never passes for a good one
+            write_backup(safety + ".part")
+            os.replace(safety + ".part", safety)
+        except Exception:
+            if os.path.exists(safety + ".part"):
+                os.remove(safety + ".part")
+            raise
         shutil.rmtree(pending, ignore_errors=True)
         os.replace(staging, pending)
-    except (zipfile.BadZipFile, OSError, EOFError) as e:
+    except Exception as e:  # noqa: BLE001 - a damaged member raises BadZipFile, zlib.error, RuntimeError...
         return err(f"Restore failed, nothing was changed: {e}")
     finally:
         shutil.rmtree(staging, ignore_errors=True)

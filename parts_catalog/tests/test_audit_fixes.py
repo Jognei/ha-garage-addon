@@ -8,6 +8,7 @@ import shutil
 import tempfile
 import unittest
 import zipfile
+from unittest import mock
 
 os.environ.setdefault("PARTS_CATALOG_DATA", tempfile.mkdtemp())
 
@@ -49,6 +50,19 @@ class AuditFixesTest(unittest.TestCase):
     def car(self, name, mileage=None):
         return self.c.post("/api/cars", json={"name": name, "mileage": mileage}).get_json()["id"]
 
+    def restore(self, data):
+        return self.c.post("/api/restore", data={"backup": (io.BytesIO(data), "b.zip")}, content_type="multipart/form-data")
+
+    def safety_zips(self):
+        return {f: os.stat(os.path.join(self.tmp, f)).st_mtime_ns for f in os.listdir(self.tmp) if f.startswith("before-restore-")}
+
+    def assert_restore_changed_nothing(self, r, before):
+        self.assertEqual(r.status_code, 400)
+        self.assertTrue(r.get_json()["error"].startswith("Restore failed, nothing was changed: "), r.get_json())
+        self.assertFalse(os.path.exists(os.path.join(self.tmp, "restore-pending")))
+        self.assertFalse(os.path.exists(os.path.join(self.tmp, "restore-staging")))
+        self.assertEqual(self.safety_zips(), before)
+
     def test_bad_dates_are_refused_and_old_ones_tolerated(self):
         cid = self.car("DEMO-DATES", 1000)
         for path, payload in ((f"/api/cars/{cid}/mileage", {"mileage": 1200, "date": "11/11/2026"}),
@@ -77,11 +91,105 @@ class AuditFixesTest(unittest.TestCase):
         bad = io.BytesIO()
         with zipfile.ZipFile(bad, "w") as z:
             z.writestr("garage.db", b"not a database")
+        before = self.safety_zips()
         r = self.c.post("/api/restore", data={"backup": (io.BytesIO(bad.getvalue()), "b.zip")}, content_type="multipart/form-data")
         self.assertEqual(r.status_code, 400)
         self.assertFalse(os.path.exists(os.path.join(self.tmp, "restore-pending")))
         self.assertFalse(os.path.exists(os.path.join(self.tmp, "restore-staging")))
-        self.assertTrue(any(f.startswith("before-restore-") for f in os.listdir(self.tmp)))  # safety copy came first
+        self.assertEqual(self.safety_zips(), before)
+
+    def test_restore_that_fails_to_unpack_changes_nothing(self):
+        garage = zipfile.ZipFile(io.BytesIO(self.c.get("/api/backup").data)).read("garage.db")
+        for why, method, where, value in (("bad CRC", zipfile.ZIP_STORED, "data", ord("X")),
+                                          ("corrupt deflate stream", zipfile.ZIP_DEFLATED, "data", 0xFF),
+                                          ("encrypted", zipfile.ZIP_STORED, "flags", 1),
+                                          ("unknown compression", zipfile.ZIP_STORED, "method", 99)):
+            buf = io.BytesIO()
+            with zipfile.ZipFile(buf, "w") as z:
+                z.writestr("garage.db", garage, zipfile.ZIP_DEFLATED)
+                z.writestr("documents/manual.pdf", b"%PDF-1.4 " * 200, method)
+                info = z.getinfo("documents/manual.pdf")
+            raw = bytearray(buf.getvalue())
+            central = raw.rindex(b"PK\x01\x02")
+            raw[{"data": info.header_offset + 30 + len(info.filename), "flags": central + 8, "method": central + 10}[where]] = value
+            with self.subTest(why):
+                before = self.safety_zips()
+                self.assert_restore_changed_nothing(self.restore(bytes(raw)), before)
+
+    def test_restore_that_cannot_write_its_safety_copy_changes_nothing(self):
+        def disk_full(out):
+            with open(out, "wb") as f:
+                f.write(b"PK partial")
+            raise OSError(28, "No space left on device")
+        before = self.safety_zips()
+        backup = self.c.get("/api/backup").data
+        with mock.patch.object(server, "write_backup", disk_full):
+            self.assert_restore_changed_nothing(self.restore(backup), before)
+
+    def test_restore_refuses_a_damaged_catalog(self):
+        buf = io.BytesIO()
+        with zipfile.ZipFile(io.BytesIO(self.c.get("/api/backup").data)) as src, zipfile.ZipFile(buf, "w") as z:
+            z.writestr("garage.db", src.read("garage.db"))
+            z.writestr("epc/epc.db", b"not a database")
+        r = self.restore(buf.getvalue())
+        self.assertEqual((r.status_code, r.get_json()["error"]), (400, "The catalog database in that backup is damaged"))
+        self.assertFalse(os.path.exists(os.path.join(self.tmp, "restore-pending")))
+
+    def test_interrupted_restore_finishes_at_the_next_start(self):
+        cid = self.car("DEMO-RESTORED")
+        did = self.c.post("/api/documents", data={"car_id": str(cid), "kind": "Other", "title": "Receipt",
+                                                   "file": (io.BytesIO(b"kept"), "r.txt")}, content_type="multipart/form-data").get_json()["ids"][0]
+        with open(os.path.join(epc.FILES_DIR, "diagram.svg"), "w", encoding="utf-8") as f:
+            f.write("<svg/>")
+        backup = self.c.get("/api/backup").data
+        real_move = shutil.move
+        for cut in range(3):  # documents/, epc/, garage.db
+            with self.subTest(cut_at_move=cut):
+                self.car("DEMO-AFTER-BACKUP")
+                self.assertEqual(self.restore(backup).status_code, 200)
+                db.connect().close()
+                db._local.conn = None
+                epc.close()
+                moves = []
+
+                def move(src, dst):
+                    moves.append(src)
+                    if len(moves) == cut + 1:
+                        raise OSError("power cut")
+                    return real_move(src, dst)
+                os.makedirs(os.path.join(self.tmp, "restore-staging"))  # an upload that was cut short
+                with mock.patch("shutil.move", move):
+                    self.assertRaises(OSError, db.apply_pending_restore)
+                self.assertTrue(db.apply_pending_restore())
+                self.assertFalse(os.path.exists(os.path.join(self.tmp, "restore-staging")))
+                db.init()
+                epc_api.init()
+                names = [c["name"] for c in self.c.get("/api/cars").get_json()]
+                self.assertIn("DEMO-RESTORED", names)
+                self.assertNotIn("DEMO-AFTER-BACKUP", names)
+                f = self.c.get(f"/files/{did}/r.txt")
+                self.assertEqual(f.data, b"kept")
+                f.close()
+                self.assertTrue(os.path.exists(os.path.join(epc.FILES_DIR, "diagram.svg")))
+
+    def test_restore_without_files_leaves_none_of_the_current_ones(self):
+        cid = self.car("DEMO-NO-FILES")
+        self.c.post("/api/documents", data={"car_id": str(cid), "kind": "Other", "title": "Old",
+                                            "file": (io.BytesIO(b"old"), "old.txt")}, content_type="multipart/form-data")
+        with open(os.path.join(epc.FILES_DIR, "old.svg"), "w", encoding="utf-8") as f:
+            f.write("<svg/>")
+        buf = io.BytesIO()
+        with zipfile.ZipFile(io.BytesIO(self.c.get("/api/backup").data)) as src, zipfile.ZipFile(buf, "w") as z:
+            z.writestr("garage.db", src.read("garage.db"))
+        self.assertEqual(self.restore(buf.getvalue()).status_code, 200)
+        db.connect().close()
+        db._local.conn = None
+        epc.close()
+        self.assertTrue(db.apply_pending_restore())
+        db.init()
+        epc_api.init()
+        self.assertEqual(os.listdir(db.DOC_DIR), [])
+        self.assertFalse(os.path.exists(os.path.join(epc.FILES_DIR, "old.svg")))
 
     def test_overdue_leads_even_after_a_drag(self):
         cid = self.car("DEMO-ORDER", 50000)

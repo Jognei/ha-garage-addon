@@ -138,21 +138,22 @@ def connect():
 def apply_pending_restore():
     """Swap in data/restore-pending/ (written by /api/restore) before any database is opened."""
     import shutil
+    shutil.rmtree(os.path.join(DATA_DIR, "restore-staging"), ignore_errors=True)  # a restore upload cut short
     pending = os.path.join(DATA_DIR, "restore-pending")
     if not os.path.exists(os.path.join(pending, "garage.db")):
         return False
-    epc = os.path.join(DATA_DIR, "epc")
-    for p in (DB_PATH, DB_PATH + "-wal", DB_PATH + "-shm", DOC_DIR, os.path.join(epc, "epc.db"),
-              os.path.join(epc, "epc.db-wal"), os.path.join(epc, "epc.db-shm"), os.path.join(epc, "files")):
-        if os.path.isdir(p):
-            shutil.rmtree(p)
-        elif os.path.exists(p):
-            os.remove(p)
-    for name in ("garage.db", "documents", os.path.join("epc", "epc.db"), os.path.join("epc", "files")):
+    # garage.db goes last: while it is still pending, the next start finishes a swap that was cut short
+    for name, live in (("documents", [DOC_DIR]), ("epc", [os.path.join(DATA_DIR, "epc")]),
+                       ("garage.db", [DB_PATH, DB_PATH + "-wal", DB_PATH + "-shm"])):
         src = os.path.join(pending, name)
-        if os.path.exists(src):
-            os.makedirs(os.path.dirname(os.path.join(DATA_DIR, name)), exist_ok=True)
-            shutil.move(src, os.path.join(DATA_DIR, name))
+        if not os.path.exists(src):
+            continue  # moved in by the start that was cut short
+        for p in live:
+            if os.path.isdir(p):
+                shutil.rmtree(p)
+            elif os.path.exists(p):
+                os.remove(p)
+        shutil.move(src, os.path.join(DATA_DIR, name))
     shutil.rmtree(pending, ignore_errors=True)
     return True
 
