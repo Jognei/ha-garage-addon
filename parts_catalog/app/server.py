@@ -1118,7 +1118,7 @@ def api_chunked_start():
     meta_p, part_p = upload_paths(uid)
     with open(meta_p, "w", encoding="utf-8") as f:
         json.dump({"filename": orig, "size": size, "purpose": purpose, "car_id": car_id, "kind": b.get("kind") or "Manual",
-                   "title": b.get("title") or "", "notes": b.get("notes") or ""}, f)
+                   "title": b.get("title") or "", "notes": b.get("notes") or "", "path": str(b.get("path") or "")}, f)
     open(part_p, "wb").close()
     return jsonify(upload_id=uid, received=0)
 

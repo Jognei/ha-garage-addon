@@ -1,9 +1,11 @@
 """Catalog (EPC) JSON API under /api/epc and stored files under /epc-files/."""
+import functools
 import io
 import os
 import shutil
 import tempfile
 import zipfile
+from collections import Counter
 
 from flask import Blueprint, jsonify, request, send_file, send_from_directory, abort
 
@@ -117,10 +119,16 @@ def load_sample():
     return jsonify(epc_import.load_sample().as_dict())
 
 
+def upload_dest(tmp, up):
+    """Where an upload goes in the import's folder: at the path it was sent with, if that stays inside, else at its name."""
+    dst = os.path.normpath(os.path.join(tmp, (up.meta.get("path") or "").replace("\\", "/")))
+    return dst if dst.startswith(tmp + os.sep) else os.path.join(tmp, os.path.basename(up.filename or "upload"))
+
+
 @bp.route("/api/epc/import", methods=["POST"])
 def import_files():
-    """Form: "upload" once per file (JSON / CSV / HTML / images), each sent on its own first, + optional source, vehicle,
-    category, diagram, create."""
+    """Form: "upload" once per file (JSON / CSV / HTML / images), each sent on its own first, with its path in a chosen
+    folder if any, + optional source, vehicle, category, diagram, create."""
     from .server import finished_upload
     files = [finished_upload(uid, "catalog") for uid in request.form.getlist("upload") if uid]
     if not files:
@@ -132,39 +140,57 @@ def import_files():
     tmp = tempfile.mkdtemp()
     reports = []
     try:
-        saved = []
+        sent_as = {}
         for up in files:
-            name = os.path.basename(up.filename or "upload")
-            p = os.path.join(tmp, name)
+            dst = upload_dest(tmp, up)
+            # a second file sent as the same name gets a folder of its own, so neither replaces the other
+            p = os.path.join(tempfile.mkdtemp(dir=tmp), os.path.basename(dst)) if os.path.exists(dst) else dst
+            os.makedirs(os.path.dirname(p), exist_ok=True)
             up.save(p)
-            saved.append(p)
+            sent_as[p] = dst
+        saved = list(sent_as)
         images = [p for p in saved if os.path.splitext(p)[1].lower() in epc_import.IMAGE_EXT]
         others = [p for p in saved if p not in images]
         htmls = [p for p in others if p.lower().endswith((".html", ".htm"))]
-        # uploads arrive flat, so "page_files/diagram.png" or "images/11_0050.png" is found by its base name
-        by_name = {os.path.basename(p): p for p in images}
+        # a reference finds the image at its path from the referring file, else the one image with its name
+        by_path, by_name = {}, {}
+        for p in images:
+            by_path.setdefault(sent_as[p], []).append(p)
+            by_name.setdefault(os.path.basename(p), []).append(p)
         referred = set()
 
-        def find_upload(ref):
-            p = by_name.get(os.path.basename(ref.replace("\\", "/")))
-            if p:
-                referred.add(p)
-            return p
+        def find_upload(ref, near, problems):
+            ref = ref.replace("\\", "/")
+            hits = by_path.get(os.path.normpath(os.path.join(near, ref))) or by_name.get(os.path.basename(ref), [])
+            referred.update(hits)
+            if len(hits) > 1:
+                problems.append(f"{ref}: {len(hits)} uploaded files have that name; none used")
+                return None
+            return hits[0] if hits else None
         for p in others:
             try:
-                kw = dict(opts, find_upload=find_upload)
+                problems = []
+                kw = dict(opts, find_upload=functools.partial(find_upload, near=os.path.dirname(sent_as[p]), problems=problems))
                 if p in htmls and len(htmls) > 1:
                     kw["diagram"] = None  # several pages: each uses its own file name as diagram code
                 if p in htmls and len(htmls) == 1 and len(images) == 1:
                     kw["image"] = images[0]
                     referred.add(images[0])
-                reports.append(epc_import.import_path(p, **kw).as_dict())
+                rep = epc_import.import_path(p, **kw).as_dict()
+                rep["problems"] += problems
+                reports.append(rep)
             except Exception as e:  # noqa: BLE001 - report per file
                 epc.connect().rollback()
                 reports.append({"source": os.path.basename(p), "error": str(e)})
         loose = [p for p in images if p not in referred]
         if loose:
             reports.append(epc_import.import_images(loose, opts["source_name"], opts["create"], opts["category"], opts["vehicle"]).as_dict())
+        clashes = epc_import.Report("Uploaded files")
+        for dst, n in Counter(sent_as.values()).items():
+            if n > 1:
+                clashes.problem(f"{n} files named {os.path.relpath(dst, tmp).replace(os.sep, '/')}, each kept")
+        if clashes.problems:
+            reports.append(clashes.as_dict())
     finally:
         epc.connect().rollback()
         shutil.rmtree(tmp, ignore_errors=True)

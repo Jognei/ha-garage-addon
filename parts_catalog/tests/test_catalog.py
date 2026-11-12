@@ -312,8 +312,8 @@ class CatalogTest(unittest.TestCase):
 
     def post_import(self, *files, **form):
         uploads = []
-        for n, b in files:  # each file its own upload, as the UI sends them; the import names them together
-            uid = self.c.post("/api/documents/chunked", json={"filename": n, "size": len(b), "purpose": "catalog"}).get_json()["upload_id"]
+        for n, b, *path in files:  # each file its own upload, as the UI sends them (with its path in a chosen folder); the import names them together
+            uid = self.c.post("/api/documents/chunked", json={"filename": n, "size": len(b), "purpose": "catalog", "path": "".join(path)}).get_json()["upload_id"]
             self.c.put(f"/api/documents/chunked/{uid}?offset=0", data=b, content_type="application/octet-stream")
             uploads.append(uid)
         r = self.c.post("/api/epc/import", data={**form, "upload": uploads})
@@ -363,6 +363,30 @@ class CatalogTest(unittest.TestCase):
         rep = epc_import.import_images([d], "Test vehicle images", create=True, vehicle="DEMO-SEDAN")
         self.assertEqual(rep.counts, {"images_attached": 1})
         self.assertEqual([r["image_file_id"] is not None for r in epc.rows("SELECT image_file_id FROM diagrams WHERE code='86_0001'")], [True])
+
+    def test_upload_paths_keep_same_named_files_apart(self):
+        page = lambda code: PAGE.replace("page_files", code + "_files").encode()  # noqa: E731
+        self.post_import(("86_0010.html", page("86_0010"), "pages/86_0010.html"), ("diagram.png", png_bytes((800, 600)), "pages/86_0010_files/diagram.png"),
+                         ("86_0020.html", page("86_0020"), "pages/86_0020.html"), ("diagram.png", png_bytes((640, 480)), "pages/86_0020_files/diagram.png"))
+        self.assertEqual([(self.diag(c)["image_w"], self.diag(c)["image_h"]) for c in ("86_0010", "86_0020")], [(800, 600), (640, 480)])
+        # sent without paths, same-named files are all kept, and a page naming one of them gets none
+        reports = self.post_import(("86_0030.html", PAGE.encode()), ("diagram.png", png_bytes((800, 600))), ("diagram.png", png_bytes((640, 480))),
+                                   ("items.csv", b"diagram,callout,part number\n86_0031,1,86111230031\n"),
+                                   ("items.csv", b"diagram,callout,part number\n86_0032,1,86111230032\n"))
+        self.assertIsNone(self.diag("86_0030")["image_file_id"])
+        self.assertIn("page_files/diagram.png: 2 uploaded files have that name; none used", reports[0]["problems"])
+        self.assertTrue(self.diag("86_0031") and self.diag("86_0032"))
+        self.assertEqual([r["source"] for r in reports], ["Saved HTML pages", "items.csv", "items.csv", "Uploaded files"])  # nor goes on to name matching
+        self.assertEqual(reports[-1]["problems"], ["2 files named diagram.png, each kept", "2 files named items.csv, each kept"])
+
+    def test_upload_path_stays_in_the_import_folder(self):
+        self.write_csv("escape.csv", "diagram,callout,part number\n86_0040,1,86111230040\n")
+        base = tempfile.mkdtemp(dir=self.tmp)
+        inner = os.path.join(base, "a", "b")
+        with mock.patch("tempfile.mkdtemp", lambda *a, **k: os.makedirs(inner) or inner):
+            self.post_import(("86_0040.png", png_bytes(), "../../86_0040.png"))
+        self.assertFalse(os.path.exists(os.path.join(base, "86_0040.png")))
+        self.assertIsNotNone(self.diag("86_0040")["image_file_id"])
 
     def test_same_code_on_two_vehicles(self):
         def bundle(source, vehicle, title, pn):
