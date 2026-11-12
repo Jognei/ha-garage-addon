@@ -2,16 +2,26 @@
    Uses the helpers from app.js ($, esc, api, toast, openDialog, options, view, routes). */
 'use strict';
 
+// Choices remembered on this device (null when never made).
+const saved = {
+  get: (k) => { try { return localStorage.getItem(k); } catch (e) { return null; } },
+  set: (k, v) => { try { localStorage.setItem(k, v || ''); } catch (e) { /* storage blocked */ } },
+};
 const EPC = {
-  get vehicle() { try { return localStorage.getItem('epcVehicle') || ''; } catch (e) { return ''; } },
-  set vehicle(v) { try { localStorage.setItem('epcVehicle', v || ''); } catch (e) { /* storage blocked */ } },
+  get vehicle() { return saved.get('epcVehicle') || ''; },
+  set vehicle(v) { saved.set('epcVehicle', v); },
 };
 const vq = () => (EPC.vehicle ? `vehicle=${EPC.vehicle}` : '');
+// the same rule as norm_pn in app/epc.py; app.js uses it to link garage parts to the catalog
+const normPn = (v) => String(v || '').replace(/[\s\-./]/g, '').toUpperCase();
 const missing = (label = 'missing') => `<span class="miss">${esc(label)}</span>`;
 const sampleTag = (on) => (on ? ' <span class="sample-tag">SAMPLE</span>' : '');
 const ym = (v) => (v ? `${v.slice(4, 6)}/${v.slice(0, 4)}` : '');
 const range = (i) => (i.from_date || i.to_date ? `${i.from_date ? 'from ' + ym(i.from_date) : ''}${i.from_date && i.to_date ? ' ' : ''}${i.to_date ? 'to ' + ym(i.to_date) : ''}` : '');
 const garageChip = (g) => (g && g.length ? g.map((p) => `<span class="badge ${sCls(p.status)}" title="${esc(p.car || 'Unassigned')}: ${esc(p.name)}">${esc(p.status)}</span>`).join(' ') : '');
+// "Mine" cell and add button of a diagram or search row; addToGarage fills the cells of the number it adds
+const mineCell = (i) => `<td class="mine" data-pn="${esc(i.part_number)}">${garageChip(i.garage)}</td>`;
+const addBtn = (i) => (i.part_number ? `<button class="link add" data-id="${i.id}" title="Add to my parts list">＋</button>` : '');
 
 // When the catalog is switched off (Settings > Features), its pages say so instead of showing an empty catalog.
 const catalogGuard = (fn) => async (...args) => {
@@ -147,8 +157,8 @@ async function catalogDiagram(id, params) {
           <td class="mono nowrap">${i.part_number ? `<a href="#/catalog/part/${esc(i.part_number)}">${esc(i.part_number_fmt)}</a>` : missing(i.part_number_raw || 'none')}
             ${i.superseded_by ? `<div class="small">→ <a href="#/catalog/part/${esc(i.superseded_by)}">${esc(i.superseded_by_fmt)}</a></div>` : ''}</td>
           <td class="small">${esc(i.fitment_note)}</td>
-          <td>${garageChip(i.garage)}</td>
-          <td>${i.part_number ? `<button class="link add" data-id="${i.id}" title="Add to my parts list">＋</button>` : ''}</td></tr>`).join('')}
+          ${mineCell(i)}
+          <td>${addBtn(i)}</td></tr>`).join('')}
         </tbody></table>` : '<div class="empty">No parts list for this diagram.</div>'}
         </div>
       </section>
@@ -177,19 +187,29 @@ async function catalogDiagram(id, params) {
   if (params.get('c')) hl(params.get('c'), true);
 }
 
+// d: the diagram the row is on ({ code, category_name }), or null from the part page.
 async function addToGarage(d, item) {
-  const cars = await api('/cars');
+  const [cars, p] = await Promise.all([api('/cars'), api('/epc/parts/' + encodeURIComponent(item.part_number))]);
+  const newer = p.superseded_by[p.superseded_by.length - 1];
+  const lastCar = saved.get('epcCar');  // '' = Not assigned
+  const car = lastCar === '' || cars.some((c) => String(c.id) === lastCar) ? lastCar : cars[0] && cars[0].id;
+  const notes = [d ? `Catalog diagram ${d.code}${item.callout ? ' #' + item.callout : ''}${item.supplement ? ' · ' + item.supplement : ''}` : '',
+    newer ? `Replaces ${p.part_number_fmt}` : ''].filter(Boolean).join(' · ');
   openDialog('Add to my parts list', `<div class="form">
-      <label class="wide">Name<input name="name" value="${esc(item.description || item.part_description || 'Part')}" required></label>
-      <label>Part #<input name="part_number" value="${esc(item.part_number)}"></label>
-      <label>Vehicle<select name="car_id">${options(cars.map((c) => [c.id, c.name]), cars[0] && cars[0].id, 'Not assigned')}</select></label>
+      <label class="wide">Name<input name="name" value="${esc(item.description || (p.record && p.record.description) || 'Part')}" required></label>
+      <label>Part #<input name="part_number" value="${esc(newer ? newer.new_pn_fmt : p.part_number_fmt)}"></label>
+      <label>Vehicle<select name="car_id">${options(cars.map((c) => [c.id, c.name]), car, 'Not assigned')}</select></label>
       <label>Status<select name="status">${options(REF.statuses, 'Needed')}</select></label>
-      <label>Qty<input name="qty" value="${esc(item.qty_num || 1)}"></label>
-      <label class="wide">Notes<input name="notes" value="${esc(`Catalog diagram ${d.code}${item.callout ? ' #' + item.callout : ''}${item.supplement ? ' · ' + item.supplement : ''}`)}"></label></div>`,
+      <label>Qty<input name="qty" inputmode="numeric" value="${esc(item.qty_num || Number(item.qty) || 1)}"></label>
+      <label class="wide">Notes<input name="notes" value="${esc(notes)}"></label></div>`,
   async (data) => {
-    await api('/parts', { json: { ...data, category: d.category_name || '' } });
+    await api('/parts', { json: { ...data, category: (d && d.category_name) || '' } });
+    saved.set('epcCar', data.car_id);
     toast('Added to your parts list');
-    rerender();
+    const pn = normPn(data.part_number);
+    const c = cars.find((x) => String(x.id) === data.car_id);
+    const chip = garageChip([{ status: data.status, car: c ? c.name : null, name: data.name || data.part_number }]);
+    $$('.mine').filter((el) => pn && el.dataset.pn === pn).forEach((el) => { el.innerHTML = $('.badge', el) ? el.innerHTML + ' ' + chip : chip; });
   }, { ok: 'Add' });
 }
 
@@ -201,7 +221,8 @@ async function catalogPart(pn) {
       ${p.record && p.record.notes ? `<div class="note">${esc(p.record.notes)}</div>` : ''}
       ${p.superseded_by.length ? `<div>Replaced by: ${p.superseded_by.map((s) => `<a class="mono" href="#/catalog/part/${esc(s.new_pn)}">${esc(s.new_pn_fmt)}</a>${s.date ? ` <span class="small muted">(${esc(s.date)})</span>` : ''}`).join(' → ')}</div>` : ''}
       ${p.replaces.length ? `<div>Replaces: ${p.replaces.map((s) => `<a class="mono" href="#/catalog/part/${esc(s.old_pn)}">${esc(s.old_pn_fmt)}</a>`).join(', ')}</div>` : ''}
-      <div>In my parts list: ${garageChip(p.garage) || '<span class="muted">no</span>'}</div>
+      <div>In my parts list: <span class="mine" data-pn="${esc(p.part_number)}">${garageChip(p.garage) || '<span class="muted">no</span>'}</span>
+        ${p.part_number ? '<button class="link add" title="Add to my parts list">＋ Add</button>' : ''}</div>
       ${p.record ? `<div class="small muted">Record source: ${esc(p.record.source_name || '?')}</div>` : ''}
     </div>
     <h2>Used in</h2>
@@ -211,21 +232,24 @@ async function catalogPart(pn) {
         <td class="num">${u.qty == null ? missing('?') : esc(u.qty)}</td><td class="small">${esc(range(u))}</td></tr>`).join('')}
     </tbody></table>` : '<div class="empty">Not on any imported diagram.</div>'}</div>`;
   wireHeader();
+  const add = $('button.add');
+  if (add) add.onclick = () => addToGarage(null, { part_number: p.part_number });
 }
 
 async function catalogSearch(params) {
   const q = params.get('q') || '';
   const res = q ? await api(`/epc/search?q=${encodeURIComponent(q)}&${vq()}`) : [];
   view.innerHTML = `${await catalogHeader(null, `Search: ${esc(q)}`, '<a href="#/catalog">Catalog</a>')}
-    <div class="panel table-wrap" style="padding:0;margin-top:12px">${res.length ? `<table><thead><tr><th>Part number</th><th>Description</th><th class="num">Qty</th><th>Diagram</th><th>Fitment</th><th>Mine</th></tr></thead><tbody>
+    <div class="panel table-wrap" style="padding:0;margin-top:12px">${res.length ? `<table><thead><tr><th>Part number</th><th>Description</th><th class="num">Qty</th><th>Diagram</th><th>Fitment</th><th>Mine</th><th></th></tr></thead><tbody>
       ${res.map((r) => `<tr><td class="mono" style="white-space:nowrap"><a href="#/catalog/part/${esc(r.part_number)}">${esc(r.part_number_fmt) || missing('none')}</a></td>
         <td>${esc(r.description) || missing('no description')}${sampleTag(r.is_sample)}${r.supplement ? `<div class="small muted">${esc(r.supplement)}</div>` : ''}</td>
         <td class="num">${r.qty == null ? missing('?') : esc(r.qty)}</td>
         <td><a href="#/catalog/diagram/${r.diagram_id}?c=${encodeURIComponent(r.callout)}"><span class="mono">${esc(r.diagram_code)}</span> #${esc(r.callout)} ${esc(r.diagram_title)}</a></td>
-        <td class="small">${esc(range(r))}</td><td>${garageChip(r.garage)}</td></tr>`).join('')}
+        <td class="small">${esc(range(r))}</td>${mineCell(r)}<td>${addBtn(r)}</td></tr>`).join('')}
     </tbody></table>${res.length >= 200 ? '<div class="small muted" style="padding:8px">Showing the first 200 matches.</div>' : ''}` : `<div class="empty">${q ? 'No matches.' : 'Type a part number (any spacing) or words from the description.'}</div>`}</div>`;
   wireHeader();
   $('#epcSearch').q.value = q;
+  $$('button.add').forEach((b) => (b.onclick = () => { const r = res.find((x) => String(x.id) === b.dataset.id); addToGarage({ code: r.diagram_code }, r); }));
 }
 
 async function catalogData() {

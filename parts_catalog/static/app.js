@@ -744,7 +744,7 @@ async function partsSection(el, { car = null, params = new URLSearchParams() } =
       <th title="Installed">✓</th><th>Part</th>${car ? '' : '<th>Vehicle</th>'}<th class="num">Qty</th><th>Status</th><th class="hide-sm">Installed at</th><th class="hide-sm">Installed on</th><th class="hide-sm">Location</th><th class="hide-sm">Bought</th><th></th></tr></thead><tbody>
       ${parts.map((p) => `<tr data-pid="${p.id}" class="${p.status === 'Installed' ? 'installed' : ''}">
         <td><input type="checkbox" class="inst" ${p.status === 'Installed' ? 'checked' : ''} title="Installed"></td>
-        <td><b>${esc(p.name)}</b><div class="small muted">${esc([p.category, p.brand, p.part_number].filter(Boolean).join(' · '))}</div>${p.notes ? `<div class="small muted" title="${esc(p.notes)}">${esc(p.notes.length > 90 ? p.notes.slice(0, 90) + '…' : p.notes)}</div>` : ''}</td>
+        <td><b>${esc(p.name)}</b><div class="small muted">${[esc(p.category), esc(p.brand), REF.features.catalog && /^\w+$/.test(normPn(p.part_number)) ? `<a href="#/catalog/part/${normPn(p.part_number)}">${esc(p.part_number)}</a>` : esc(p.part_number)].filter(Boolean).join(' · ')}</div>${p.notes ? `<div class="small muted" title="${esc(p.notes)}">${esc(p.notes.length > 90 ? p.notes.slice(0, 90) + '…' : p.notes)}</div>` : ''}</td>
         ${car ? '' : `<td class="small">${esc(p.car || '—')}</td>`}
         <td class="num"><input class="inline qty" inputmode="numeric" value="${p.qty ?? 1}" style="width:52px;text-align:right"></td>
         <td><select class="status ${sCls(p.status)}">${options(REF.statuses, p.status)}</select></td>
