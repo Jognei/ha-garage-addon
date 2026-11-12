@@ -210,9 +210,11 @@ async function addToGarage(d, item) {
     saved.set('epcCar', data.car_id);
     toast('Added to your parts list');
     const pn = normPn(data.part_number);
+    // saved under the number that replaces the tapped one: its rows show it too, as garage_status in app/epc_api.py does
+    const pns = [pn, p.superseded_by.length && p.superseded_by[0].new_pn === pn ? p.part_number : ''].filter(Boolean);
     const c = cars.find((x) => String(x.id) === data.car_id);
     const chip = garageChip([{ status: data.status, car: c ? c.name : null, name: data.name || data.part_number }]);
-    $$('.mine').filter((el) => pn && el.dataset.pn === pn).forEach((el) => { el.innerHTML = $('.badge', el) ? el.innerHTML + ' ' + chip : chip; });
+    $$('.mine').filter((el) => pns.includes(el.dataset.pn)).forEach((el) => { el.innerHTML = $('.badge', el) ? el.innerHTML + ' ' + chip : chip; });
   }, { ok: 'Add' });
 }
 

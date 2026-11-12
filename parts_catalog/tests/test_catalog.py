@@ -304,6 +304,12 @@ class CatalogTest(unittest.TestCase):
         self.c.post("/api/parts", json={"name": "Sample bolt", "part_number": "99.99.9.999.003"})
         self.assertEqual([g["name"] for g in self.c.get("/api/epc/parts/99999999003").get_json()["garage"]], ["Sample bolt"])
 
+    def test_superseded_row_shows_part_under_new_number(self):
+        self.c.post("/api/parts", json={"name": "Sample gasket, new", "part_number": "99 99 9 999 012"})
+        d = self.c.get(f"/api/epc/diagrams/{self.diag('SAMPLE-11-01')['id']}").get_json()
+        old = next(i for i in d["items"] if i["part_number"] == "99999999002")
+        self.assertEqual([g["name"] for g in old["garage"]], ["Sample gasket, new"])
+
     def post_import(self, *files, **form):
         uploads = []
         for n, b in files:  # each file its own upload, as the UI sends them; the import names them together

@@ -51,15 +51,19 @@ def diagrams():
 
 
 def garage_status(pns):
-    """Which of these part numbers are already in the garage parts list, and their status."""
+    """Which of these part numbers are already in the garage parts list, under it or a number replacing it, and their status."""
     pns = {p for p in pns if p}
     if not pns:
         return {}
+    # garage number -> catalog numbers it shows on: its own, and those it replaces one step back (Add saves the replacing number)
+    marks = {p: {p} for p in pns}
+    for s in epc.rows(f"SELECT old_pn, new_pn FROM supersessions WHERE old_pn IN ({','.join('?' * len(pns))})", list(pns)):
+        marks.setdefault(s["new_pn"], set()).add(s["old_pn"])
     out = {}
     for r in db.rows("""SELECT p.id, p.part_number, p.status, p.name, c.name AS car FROM parts p LEFT JOIN cars c ON c.id=p.car_id
                         WHERE p.part_number<>''"""):
-        if epc.norm_pn(r["part_number"]) in pns:
-            out.setdefault(epc.norm_pn(r["part_number"]), []).append(r)
+        for pn in marks.get(epc.norm_pn(r["part_number"]), ()):
+            out.setdefault(pn, []).append(r)
     return out
 
 
