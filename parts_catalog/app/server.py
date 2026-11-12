@@ -66,14 +66,17 @@ PRESETS = [
     ("Inspection / registration", None, 12, "Paperwork"),
 ]
 
-# One-tap titles when logging a service that isn't on a schedule. Settings can add more.
+# One-tap titles when logging a service that isn't on a schedule. Settings › Quick services picks which ones show
+# (QUICK_DEFAULT until then) and can add your own.
 QUICK_SERVICES = [
+    "Wash", "Fuel fill-up", "Oil top-up", "Tire pressure check", "Detail", "Washer fluid", "Bulb replaced",
+    "Battery replaced", "New tires", "Tire repair", "Tire rotation", "Wheel alignment",
     "Brake job (pads & rotors, front)", "Brake job (pads & rotors, rear)", "Brake pads (front)", "Brake pads (rear)",
-    "Battery replaced", "New tires", "Tire repair", "Wheel alignment", "Wheel bearing", "Shocks / struts",
-    "Control arms / bushings", "Tie rods", "Drive belt & tensioner", "Water pump & thermostat", "Radiator & hoses",
-    "Valve cover gasket", "Oil pan gasket", "Oil leak repair", "Clutch", "Starter", "Alternator", "Fuel pump",
-    "Exhaust repair", "A/C recharge", "Bulb replaced", "Wash & detail", "Diagnosis / inspection",
+    "Wheel bearing", "Shocks / struts", "Control arms / bushings", "Tie rods", "Drive belt & tensioner",
+    "Water pump & thermostat", "Radiator & hoses", "Valve cover gasket", "Oil pan gasket", "Oil leak repair", "Clutch",
+    "Starter", "Alternator", "Fuel pump", "Exhaust repair", "A/C recharge", "Diagnosis / inspection",
 ]
+QUICK_DEFAULT = ["Wash", "Fuel fill-up", "Oil top-up", "Tire pressure check"]
 CARD_DEFAULTS = {"photo": True, "mileage": True, "upcoming_rows": 3, "hide_ok": False, "project": True, "buttons": True}
 
 
@@ -85,9 +88,30 @@ def card_settings(s=None):
     return {k: (c[k] if k == "upcoming_rows" else bool(c[k])) for k in CARD_DEFAULTS}
 
 
+def clean_quick(items):
+    out, seen = [], set()
+    for x in items or []:
+        t = str(x).strip()[:80]
+        if t and t.lower() not in seen:
+            seen.add(t.lower())
+            out.append(t)
+    return out[:80]
+
+
 def quick_services(s=None):
-    custom = [str(x).strip() for x in ((load_settings() if s is None else s).get("quick_services") or []) if str(x).strip()]
-    return custom + [q for q in QUICK_SERVICES if q.lower() not in {c.lower() for c in custom}]
+    """The one-tap jobs shown in Log a service. `quick_list` (set once they're picked in Settings) is exactly what
+    shows; without it, the older `quick_services` (own jobs) followed by QUICK_DEFAULT."""
+    s = load_settings() if s is None else s
+    if s.get("quick_list") is not None:
+        return clean_quick(s["quick_list"])
+    return clean_quick(list(s.get("quick_services") or []) + QUICK_DEFAULT)
+
+
+def quick_own(s=None):
+    """Your own jobs (not built in), shown or not, so Settings can offer them again after unticking."""
+    s = load_settings() if s is None else s
+    built = {q.lower() for q in QUICK_SERVICES}
+    return [q for q in clean_quick(list(s.get("quick_own") or []) + quick_services(s)) if q.lower() not in built]
 
 
 def load_settings():
@@ -133,8 +157,37 @@ def today():
     return dt.date.today().isoformat()
 
 
+class BadInput(ValueError):
+    """A value the API can't accept; answered as 400 with this message."""
+
+
+@app.errorhandler(BadInput)
+def bad_input(e):
+    return err(str(e), 400)
+
+
+def to_date(v, field="Date"):
+    """'YYYY-MM-DD' (anything after the 10th character is dropped), None for blank; else 400."""
+    if v in (None, ""):
+        return None
+    try:
+        return dt.date.fromisoformat(str(v).strip()[:10]).isoformat()
+    except ValueError:
+        raise BadInput(f"{field} must be a date like 2026-11-12, not {str(v)[:30]!r}") from None
+
+
+def parse_date(v):
+    """A stored date as a date, or None if it's missing or unreadable (older data may hold anything)."""
+    try:
+        return dt.date.fromisoformat(str(v)[:10]) if v else None
+    except ValueError:
+        return None
+
+
 def add_months(date_str, months):
-    d = dt.date.fromisoformat(date_str[:10])
+    d = parse_date(date_str)
+    if d is None:
+        return None
     m = d.month - 1 + months
     y, m = d.year + m // 12, m % 12 + 1
     return dt.date(y, m, min(d.day, calendar.monthrange(y, m)[1])).isoformat()
@@ -173,9 +226,10 @@ def ping():
 
 @app.route("/api/refdata")
 def api_refdata():
-    return jsonify(statuses=db.STATUSES, kinds=db.KINDS, doc_kinds=db.DOC_KINDS,
+    return jsonify(statuses=db.STATUSES, kinds=db.KINDS, doc_kinds=db.UPLOAD_DOC_KINDS,
                    features={"catalog": bool(load_settings().get("catalog"))},
                    project_statuses=db.PROJECT_STATUSES, card=card_settings(), quick_services=quick_services(),
+                   quick_builtin=QUICK_SERVICES, quick_own=quick_own(),
                    presets=[{"title": t, "interval_miles": m, "interval_months": mo, "group": g} for t, m, mo, g in PRESETS])
 
 
@@ -203,7 +257,10 @@ def miles_per_day(car_id):
                   FROM mileage_log WHERE car_id=? AND date >= ?""", (car_id, since))
     if not r or not r["d0"] or r["d0"] == r["d1"]:
         return None
-    days = (dt.date.fromisoformat(r["d1"][:10]) - dt.date.fromisoformat(r["d0"][:10])).days
+    d0, d1 = parse_date(r["d0"]), parse_date(r["d1"])
+    if not d0 or not d1:
+        return None
+    days = (d1 - d0).days
     if days < 14 or r["m1"] <= r["m0"]:
         return None
     return (r["m1"] - r["m0"]) / days
@@ -214,7 +271,7 @@ def record_mileage(car_id, mileage, date=None, source="manual"):
     mileage = to_int(mileage)
     if mileage is None:
         return
-    date = (date or today())[:10]
+    date = to_date(date) or today()
     db.execute("INSERT INTO mileage_log (car_id, date, mileage, source) VALUES (?,?,?,?)",
                (car_id, date, mileage, source))
     db.execute("""UPDATE cars SET mileage=?, mileage_date=? WHERE id=? AND (mileage IS NULL OR mileage <= ?)""",
@@ -415,7 +472,7 @@ def upcoming(car, manual=False):
         due_m = (s["last_mileage"] + s["interval_miles"]) if (s["interval_miles"] and s["last_mileage"] is not None) else None
         due_d = add_months(s["last_date"], s["interval_months"]) if (s["interval_months"] and s["last_date"]) else None
         miles_left = (due_m - car["mileage"]) if (due_m is not None and car.get("mileage") is not None) else None
-        days_left = (dt.date.fromisoformat(due_d) - today_d).days if due_d else None
+        days_left = (parse_date(due_d) - today_d).days if due_d else None
         if s["last_date"] is None and s["last_mileage"] is None:
             state = "unknown"
         elif (miles_left is not None and miles_left < 0) or (days_left is not None and days_left < 0):
@@ -444,7 +501,9 @@ def upcoming(car, manual=False):
     order = {"overdue": 0, "soon": 1, "ok": 2, "snoozed": 3, "unknown": 4}
     out.sort(key=lambda u: (order[u["state"]], u["rank"], u["title"]))
     if manual:
-        out.sort(key=lambda u: (u.get("sort_order") is None, u.get("sort_order") or 0))  # stable: the rest stay by urgency
+        # a dragged order applies within each state, so overdue and due-soon always come first
+        lead = lambda u: 0 if u["state"] == "overdue" else 1 if u["state"] == "soon" else 2  # noqa: E731
+        out.sort(key=lambda u: (lead(u), u.get("sort_order") is None, u.get("sort_order") or 0))  # stable
     return out
 
 
@@ -459,7 +518,7 @@ def schedule_values(b):
             vals[k] = to_int(vals[k])
     for k in ("last_date", "snoozed_until"):
         if k in vals:
-            vals[k] = (vals[k] or None) and str(vals[k])[:10]
+            vals[k] = to_date(vals[k], "Last done" if k == "last_date" else "Dismiss until")
     # what the user types as "last done" is the baseline that logged services build on
     if "last_date" in vals:
         vals["base_date"] = vals["last_date"]
@@ -532,6 +591,10 @@ def refresh_schedule(sid):
                      WHERE ss.schedule_id=? ORDER BY s.date DESC, s.mileage DESC LIMIT 1""", (sid,))
     if last and (sched["base_date"] is None or last["date"] >= sched["base_date"]):
         date, mileage = last["date"], last["mileage"]
+        if mileage is None:  # logged without mileage: keep the newest known one, or mileage intervals stop counting
+            known = db.row("""SELECT s.mileage FROM services s JOIN service_schedules ss ON ss.service_id=s.id
+                              WHERE ss.schedule_id=? AND s.mileage IS NOT NULL ORDER BY s.date DESC, s.mileage DESC LIMIT 1""", (sid,))
+            mileage = known["mileage"] if known else sched["base_mileage"]
     else:
         date, mileage = sched["base_date"], sched["base_mileage"]
     db.execute("UPDATE schedules SET last_date=?, last_mileage=? WHERE id=?", (date, mileage, sid))
@@ -540,7 +603,7 @@ def refresh_schedule(sid):
 def save_service(car_id, service_id, b):
     if not (b.get("title") or "").strip():
         return err("What was done? (title required)")
-    date = (b.get("date") or today())[:10]
+    date = to_date(b.get("date")) or today()
     mileage = to_int(b.get("mileage"))
     vals = dict(date=date, mileage=mileage, title=b["title"].strip(), notes=b.get("notes") or "",
                 cost=to_money(b.get("cost")), done_by=b.get("done_by") or "DIY")
@@ -615,9 +678,15 @@ def save_project(car_id, pid, b):
     vals = {k: (b[k] or "").strip() for k in ("title", "notes") if k in b}
     if "status" in b:
         vals["status"] = b["status"] if b["status"] in db.PROJECT_STATUSES else "Planned"
-        vals["done_date"] = (b.get("done_date") or today())[:10] if vals["status"] == "Done" else None
+        prev = db.row("SELECT status, done_date FROM projects WHERE id=?", (pid,)) if pid else None
+        if vals["status"] != "Done":
+            vals["done_date"] = None
+        elif b.get("done_date"):
+            vals["done_date"] = to_date(b["done_date"], "Finished on")
+        elif not (prev and prev["status"] == "Done" and prev["done_date"]):  # keep the date of a project already done
+            vals["done_date"] = today()
     if "target_date" in b:
-        vals["target_date"] = (b["target_date"] or None) and str(b["target_date"])[:10]
+        vals["target_date"] = to_date(b["target_date"], "Target date")
     if "title" in vals and not vals["title"]:
         return err("Give the project a name.")
     if pid is None:
@@ -699,7 +768,7 @@ def part_values(b):
         vals["price"] = to_money(vals["price"])
     for k in ("purchased_date", "installed_date"):
         if k in vals:
-            vals[k] = (vals[k] or None) and str(vals[k])[:10]
+            vals[k] = to_date(vals[k], "Purchased" if k == "purchased_date" else "Installed on")
     for k in ("name", "category", "part_number", "brand", "supplier", "url", "order_ref", "location", "notes"):
         if k in vals:
             vals[k] = (vals[k] or "").strip()
@@ -938,6 +1007,8 @@ def api_document(did):
         return jsonify(ok=True)
     b = body()
     vals = {k: b[k] for k in ("title", "kind", "notes", "car_id") if k in b}
+    if "kind" in vals and vals["kind"] not in db.DOC_KINDS:
+        return err("Unknown file type")
     if "car_id" in vals:
         vals["car_id"] = to_int(vals["car_id"])
     if vals:
@@ -1021,8 +1092,15 @@ def api_settings():
             s["catalog"] = bool(b["catalog"])
         if isinstance(b.get("card"), dict):
             s["card"] = card_settings({"card": {**(s.get("card") or {}), **{k: v for k, v in b["card"].items() if k in CARD_DEFAULTS}}})
-        if "quick_services" in b:
-            s["quick_services"] = [str(x).strip()[:80] for x in b["quick_services"] or [] if str(x).strip()][:60]
+        if "quick_services" in b:  # older form: own jobs, shown ahead of the built-in ones
+            s["quick_services"] = clean_quick(b["quick_services"])[:60]
+            s.pop("quick_list", None)
+        if "quick_own" in b:  # your own jobs (Settings › Quick services), shown or not
+            s["quick_own"] = clean_quick(b["quick_own"])
+        if "quick_list" in b:  # exactly which jobs show, in order; null = back to the defaults
+            s["quick_list"] = None if b["quick_list"] is None else clean_quick(b["quick_list"])
+            if b["quick_list"] is None:
+                s.pop("quick_services", None)
         if "agent_key" in b:  # "new" creates (or replaces) the key, null turns agent access off
             import secrets
             s["agent_key"] = secrets.token_urlsafe(32) if b["agent_key"] == "new" else None
@@ -1036,6 +1114,59 @@ def api_settings():
         return jsonify(ok=True, restarting=restart, settings=s)
     return jsonify(settings=s, lan_addresses=lan_addresses(), data_dir=db.DATA_DIR, addon=ADDON,
                    lan_active=app.config.get("BIND_HOST") == "0.0.0.0" and not ADDON)
+
+
+# ---------- car wash weather (app/wash.py) ----------
+
+def last_wash():
+    """Date of the newest logged wash / detail on any vehicle, or None."""
+    from . import wash
+    where = " OR ".join("LOWER(title) LIKE ?" for _ in wash.WASH_WORDS)
+    r = db.row(f"SELECT MAX(date) AS d FROM services WHERE {where}", tuple(f"%{w}%" for w in wash.WASH_WORDS))
+    return r["d"] if r else None
+
+
+def washer():
+    from . import wash
+    return wash.get(load_settings, last_wash, os.path.join(db.DATA_DIR, "wash.json"))
+
+
+@app.route("/api/wash", methods=["GET", "PUT"])
+def api_wash():
+    from . import wash
+    w = washer()
+    if request.method == "PUT":
+        s = load_settings()
+        s["wash"] = wash.clean_config({**wash.config(s), **body()})
+        save_settings(s)
+    cfg = wash.config(load_settings())
+    out = {"available": w.available, "config": cfg, **w.status()}
+    if not w.available:
+        return jsonify(out)
+    try:
+        out["weather_entities"] = w.ha.weather_entities()
+        out["notify_services"] = w.ha.notify_services()
+        if not cfg["weather_entity"] and out["weather_entities"]:
+            out["suggested_entity"] = out["weather_entities"][0]["entity_id"]
+        if cfg["weather_entity"]:
+            out["verdict"] = w.verdict(cfg, fresh=request.method == "PUT")
+    except Exception as e:  # noqa: BLE001 - HA unreachable etc.
+        out["error"] = f"Couldn't reach Home Assistant: {e}"
+    return jsonify(out)
+
+
+@app.route("/api/wash/test", methods=["POST"])
+def api_wash_test():
+    w = washer()
+    if not w.available:
+        return err("Needs Home Assistant (runs as an add-on).")
+    try:
+        v = w.verdict(fresh=True)
+        return jsonify(sent=w.send(v, test=True), verdict=v)
+    except ValueError as e:
+        return err(str(e))
+    except Exception as e:  # noqa: BLE001
+        return err(f"Couldn't send: {e}", 502)
 
 
 def write_backup(out):
@@ -1093,6 +1224,10 @@ def api_restore():
         return err("Choose a backup zip")
     tmp = tempfile.mkdtemp()
     pending = os.path.join(db.DATA_DIR, "restore-pending")
+    # Unpack into a staging folder and only rename it to restore-pending/ once everything is in and checked:
+    # the next start swaps restore-pending/ in, so a half-written one must never exist.
+    staging = os.path.join(db.DATA_DIR, "restore-staging")
+    shutil.rmtree(staging, ignore_errors=True)
     try:
         zpath = os.path.join(tmp, "upload.zip")
         f.save(zpath)
@@ -1108,16 +1243,17 @@ def api_restore():
                 parts = n.replace("\\", "/").split("/")
                 if n.startswith(("/", "\\")) or ".." in parts or ":" in n:
                     return err("Backup contains unsafe paths")
-            shutil.rmtree(pending, ignore_errors=True)
-            os.makedirs(pending)
+            # safety copy of the current data first, so a failure below never leaves you without one
+            write_backup(os.path.join(db.DATA_DIR, time.strftime("before-restore-%Y%m%d-%H%M%S.zip")))
+            os.makedirs(staging)
             for n in names:
                 if n.endswith("/") or not n.startswith(RESTORE_PATHS):
                     continue  # settings.json is left alone: it belongs to this install
-                target = os.path.join(pending, *n.split("/"))
+                target = os.path.join(staging, *n.split("/"))
                 os.makedirs(os.path.dirname(target), exist_ok=True)
                 with z.open(n) as src, open(target, "wb") as dst:
                     shutil.copyfileobj(src, dst)
-        c = sqlite3.connect(os.path.join(pending, "garage.db"))
+        c = sqlite3.connect(os.path.join(staging, "garage.db"))
         try:
             ok = c.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
             c.execute("SELECT COUNT(*) FROM cars").fetchone()
@@ -1126,10 +1262,13 @@ def api_restore():
         finally:
             c.close()
         if not ok:
-            shutil.rmtree(pending, ignore_errors=True)
             return err("The database in that backup is damaged")
-        write_backup(os.path.join(db.DATA_DIR, time.strftime("before-restore-%Y%m%d-%H%M%S.zip")))
+        shutil.rmtree(pending, ignore_errors=True)
+        os.replace(staging, pending)
+    except (zipfile.BadZipFile, OSError, EOFError) as e:
+        return err(f"Restore failed, nothing was changed: {e}")
     finally:
+        shutil.rmtree(staging, ignore_errors=True)
         shutil.rmtree(tmp, ignore_errors=True)
     if not app.config.get("TESTING"):
         threading.Timer(0.5, lambda: os._exit(RESTART_CODE)).start()

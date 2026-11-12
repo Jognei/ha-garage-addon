@@ -342,3 +342,44 @@ dialog::backdrop { background: rgba(0,0,0,.6); backdrop-filter: blur(4px); }
 .quick-list button.on { background: var(--fg); border-color: var(--fg); color: var(--bg); }
 .use-list { border-color: var(--line); border-radius: 12px; }
 tr.group-row td { background: none; color: var(--muted); font-size: 11.5px; text-transform: uppercase; letter-spacing: .04em; padding-top: 14px; }
+
+/* file type filter (Manuals & files) */
+.doc-head { display: flex; align-items: flex-start; gap: 12px; margin: 0 0 12px; }
+.doc-head .doc-filter { flex: 1; }
+.doc-head #upBtn { flex: none; }
+.doc-filter { display: flex; flex-wrap: wrap; gap: 6px; }
+@media (max-width: 600px) {  /* phones: title, type and actions only */
+  .doc-table th:nth-child(3), .doc-table td:nth-child(3), .doc-table th:nth-child(4), .doc-table td:nth-child(4),
+  .doc-table th:nth-child(5), .doc-table td:nth-child(5) { display: none; }
+}
+.doc-filter button { background: none; border: 1px solid var(--line); border-radius: 999px; padding: 4px 12px; font-size: 13px; }
+.doc-filter button.active { background: var(--fg); border-color: var(--fg); color: var(--bg); }
+.doc-filter button.active .muted { color: inherit; opacity: .7; }
+
+/* dialog: error line by the buttons, and the buttons stay in view on long forms */
+.dlg-foot { position: sticky; bottom: -1px; background: var(--panel); padding: 10px 0 2px; z-index: 2; flex-wrap: wrap; }
+.dlg-err { flex: 1 1 100%; color: var(--need); font-size: 13.5px; text-align: right; }
+.dlg-err:empty { display: none; }
+@media (prefers-color-scheme: dark) { .toast.bad { color: #111; } }
+
+/* quick services: picker in Settings, short row in Log a service */
+.qp-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 2px 14px; }
+.qp-item { display: flex; align-items: center; gap: 8px; padding: 6px 0; font-size: 14px; }
+.qp-item span { flex: 1; }
+.qp-item .qp-del { padding: 0 4px; color: var(--muted); text-decoration: none; }
+.qp-item .qp-del:hover { color: var(--need); }
+.qp-more summary { cursor: pointer; padding: 4px 0; font-weight: 500; }
+.quick { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin-top: 10px; }
+.quick-list button { padding: 6px 12px; font-size: 13.5px; }
+
+/* car wash weather (Settings) */
+.wash-verdict { display: flex; gap: 10px; align-items: flex-start; }
+.wash-verdict .big { font-size: 22px; line-height: 1; }
+.wash-hours { display: flex; gap: 2px; align-items: flex-end; height: 34px; margin-top: 6px; }
+.wash-hours i { flex: 1; min-width: 2px; background: var(--accent); border-radius: 1px 1px 0 0; opacity: .75; }
+.wash-hours i.bad { background: var(--need); opacity: 1; }
+
+/* vehicle notes (top of the vehicle page) */
+.car-notes { margin: 0 0 4px; padding: 12px 16px; }
+.car-notes .note-text { white-space: pre-wrap; overflow-wrap: anywhere; }
+.car-notes textarea { width: 100%; min-height: 110px; }

@@ -35,6 +35,9 @@ def main():
         with app.app_context():
             return ha_summary()
     ha_sensors.start(summary_in_app_context)
+    from . import wash
+    from .server import last_wash
+    wash.start(load_settings, last_wash, os.path.join(db.DATA_DIR, "wash.json"))
     serve(app, host=host, port=port, threads=8, ident="parts-catalog")
 
 

@@ -10,7 +10,7 @@ const esc = (v) => String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '
 const money = (v) => (v == null || v === '' ? '' : '$' + Number(v).toFixed(2));
 const miles = (v) => (v == null || v === '' ? '' : Number(v).toLocaleString() + ' mi');
 const num = (v) => (v == null || v === '' ? '' : Number(v).toLocaleString());
-const today = () => new Date().toISOString().slice(0, 10);
+const today = () => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; };  // local, not UTC
 const sCls = (s) => 's-' + String(s || '').replace(/\s+/g, '-');
 const fmtSize = (b) => (b > 1e6 ? (b / 1e6).toFixed(1) + ' MB' : Math.max(1, Math.round(b / 1e3)) + ' KB');
 const fileUrl = (d, page) => `files/${d.id || d.doc_id}/${encodeURIComponent(d.original_name || d.filename || d.doc_title || 'file')}${page ? '#page=' + page : ''}`;
@@ -24,12 +24,16 @@ async function api(path, opts = {}) {
   }
   const r = await fetch('api' + path, init);
   const data = await r.json().catch(() => ({}));
-  if (!r.ok) throw new Error(data.error || r.statusText);
+  if (!r.ok) throw new Error(data.error || (r.status === 413 ? 'That file is too big to send in one go' : `Something went wrong (HTTP ${r.status})`));
   return data;
 }
 
 function toast(msg, bad) {
   const t = $('#toast');
+  // an open modal dialog sits above everything else, so show the toast inside it
+  const dlg = $('#dlg');
+  const home = dlg.open ? dlg : document.body;
+  if (t.parentNode !== home) home.appendChild(t);
   t.textContent = msg;
   t.className = 'toast' + (bad ? ' bad' : '');
   t.hidden = false;
@@ -58,15 +62,24 @@ function openDialog(title, html, onSubmit, { ok = 'Save', wide = false } = {}) {
   const dlg = $('#dlg');
   $('#dlgTitle').textContent = title;
   $('#dlgBody').innerHTML = html;
-  $('#dlgOk').textContent = ok;
+  const okBtn = $('#dlgOk'), errLine = $('#dlgErr');
+  okBtn.textContent = ok; okBtn.disabled = false;
+  errLine.textContent = '';
   dlg.style.width = wide ? 'min(1000px, calc(100vw - 24px))' : '';
   const form = $('#dlgForm');
+  let busy = false;
   form.onsubmit = async (e) => {
     e.preventDefault();
+    if (busy) return;  // a second tap while saving would save twice
+    busy = true; okBtn.disabled = true; okBtn.textContent = 'Saving…'; errLine.textContent = '';
     try {
       await onSubmit(Object.fromEntries(new FormData(form)), form);
       dlg.close();
-    } catch (err) { toast(err.message, true); }
+    } catch (err) {
+      errLine.textContent = err.message;  // shown next to the buttons, inside the dialog
+    } finally {
+      busy = false; okBtn.disabled = false; okBtn.textContent = ok;
+    }
   };
   $('#dlgCancel').onclick = $('#dlgX').onclick = () => dlg.close();
   dlg.showModal();
@@ -111,6 +124,11 @@ function applyFeatures() {
   $$('[data-nav="catalog"]').forEach((a) => { a.hidden = !on; });
 }
 window.addEventListener('hashchange', () => { router(); window.scrollTo(0, 0); });
+// anything that fails without its own handler (a status change, a delete, a toggle) still says so
+window.addEventListener('unhandledrejection', (e) => {
+  const m = (e.reason && e.reason.message) || String(e.reason || 'Something went wrong');
+  toast(m === 'Failed to fetch' ? "Couldn't reach the app. Check your connection and try again." : m, true);
+});
 $('#searchForm').addEventListener('submit', (e) => {
   e.preventDefault();
   location.hash = '#/parts?q=' + encodeURIComponent($('#searchBox').value.trim());
@@ -382,15 +400,41 @@ async function carPage(id, tab = 'services') {
         <form class="row" id="mileForm"><input name="m" inputmode="numeric" placeholder="New reading" style="width:120px"><button>Update</button></form>
       </div>
     </div>
+    <div class="panel car-notes" id="carNotes"></div>
     <div class="tabs">${tabs.map(([k, l]) => `<a href="#/car/${id}${k === 'services' ? '' : '/' + k}" class="${k === tab ? 'active' : ''}">${l}</a>`).join('')}</div>
     <div id="tab"></div>`;
   $('#mileForm').onsubmit = (e) => { e.preventDefault(); updateMileage(car, e.target.m.value); };
+  carNotes($('#carNotes'), car);
   const el = $('#tab');
   if (tab === 'projects') return projectsTab(el, car);
   if (tab === 'parts') return partsSection(el, { car });
   if (tab === 'documents') return documentsTab(el, car);
   if (tab === 'details') return carDetails(el, car);
   return servicesTab(el, car);
+}
+
+// Overall notes for a vehicle (history, quirks, what's been done to it), editable in place.
+function carNotes(el, car) {
+  const show = () => {
+    el.innerHTML = car.notes
+      ? `<div class="spread" style="align-items:flex-start"><div class="note-text small">${esc(car.notes)}</div><button class="link" id="editNotes">Edit</button></div>`
+      : `<button class="link" id="editNotes">＋ Add notes about this vehicle</button>`;
+    $('#editNotes', el).onclick = edit;
+  };
+  const edit = () => {
+    el.innerHTML = `<form class="form" id="notesForm"><label class="wide">Vehicle notes<textarea name="notes" placeholder="History, quirks, mods, things to remember…">${esc(car.notes || '')}</textarea></label>
+      <div class="row wide"><button class="primary">Save</button><button type="button" id="cancelNotes">Cancel</button></div></form>`;
+    const f = $('#notesForm', el);
+    f.elements.notes.focus();
+    $('#cancelNotes', el).onclick = show;
+    f.onsubmit = async (e) => {
+      e.preventDefault();
+      const notes = f.elements.notes.value.trim();
+      await api('/cars/' + car.id, { method: 'PUT', json: { notes } });
+      car.notes = notes; toast('Notes saved'); show();
+    };
+  };
+  show();
 }
 
 // ----- services & upcoming -----
@@ -459,9 +503,9 @@ async function serviceDialog(car, schedules, svc, checked, pre = {}) {
       <label>Cost<input name="cost" inputmode="decimal" value="${esc(svc ? svc.cost ?? '' : '')}" placeholder="0.00"></label>
       <label class="wide">What was done<input name="title" required value="${esc(svc ? svc.title : pre.title || titleFrom())}" placeholder="Oil change, new thermostat…"></label>
     </div>
-    <details class="quick" ${!svc && !checked.length && !pre.title ? 'open' : ''}><summary>Common jobs (tap to add)</summary>
-      <div class="quick-list">${REF.quick_services.map((q) => `<button type="button" data-q="${esc(q)}">${esc(q)}</button>`).join('')}</div>
-      <div class="small muted" style="margin-top:6px">Add your own under Settings › Quick services.</div></details>
+    ${svc ? '' : `<div class="quick">
+      ${REF.quick_services.length ? `<div class="quick-list">${REF.quick_services.map((q) => `<button type="button" data-q="${esc(q)}">${esc(q)}</button>`).join('')}</div>` : ''}
+      <a class="small muted quick-edit-link" href="#/settings?go=quick">${REF.quick_services.length ? 'Change these' : 'Add one-tap jobs (wash, fuel…)'}</a></div>`}
     <div class="form" style="margin-top:10px">
       <label class="wide">Notes<textarea name="notes" placeholder="Oil used, torque specs, what you found…">${esc(svc ? svc.notes : pre.notes || '')}</textarea></label>
     </div>
@@ -481,22 +525,27 @@ async function serviceDialog(car, schedules, svc, checked, pre = {}) {
     delete payload.part;
     if (svc) await api('/services/' + svc.id, { method: 'PUT', json: payload });
     else await api(`/cars/${car.id}/services`, { json: payload });
+    if (pre.onSaved) await pre.onSaved();
     toast('Service saved');
     rerender();
   });
   $$('input[name=sched]', form).forEach((cb) => (cb.onchange = () => {
     checked = $$('input[name=sched]:checked', form).map((i) => +i.value);
-    if (!svc && !pre.title) form.elements.title.value = [titleFrom(), ...$$('.quick-list .on', form).map((b) => b.dataset.q)].filter(Boolean).join(', ');
+    if (!svc && !pre.title) form.elements.title.value = [titleFrom(), ...$$('.quick-list .on[data-q]', form).map((b) => b.dataset.q)].filter(Boolean).join(', ');
   }));
   // quick picks add to (or take out of) "What was done"
-  const titleParts = () => form.elements.title.value.split(',').map((x) => x.trim()).filter(Boolean);
-  $$('.quick-list button', form).forEach((b) => {
-    b.classList.toggle('on', titleParts().includes(b.dataset.q));
-    b.onclick = () => {
-      const now = titleParts();
-      form.elements.title.value = (now.includes(b.dataset.q) ? now.filter((x) => x !== b.dataset.q) : now.concat(b.dataset.q)).join(', ');
-      b.classList.toggle('on');
-    };
+  // (matched as whole text, not by splitting on commas: some job names contain one)
+  const tidy = (t) => t.replace(/\s*,\s*(,\s*)+/g, ', ').replace(/^\s*,\s*|\s*,\s*$/g, '').trim();
+  if ($('.quick-edit-link', form)) $('.quick-edit-link', form).onclick = () => $('#dlg').close();
+  const quickToggle = (b) => {
+    const t = form.elements.title.value, q = b.dataset.q;
+    const on = b.classList.contains('on');
+    form.elements.title.value = on ? tidy(t.split(q).join(',')) : tidy(t ? `${t}, ${q}` : q);
+    b.classList.toggle('on', !on);
+  };
+  $$('.quick-list button[data-q]', form).forEach((b) => {
+    b.classList.toggle('on', form.elements.title.value.includes(b.dataset.q));
+    b.onclick = () => quickToggle(b);
   });
   const at = () => {
     if (!$('#partsAt', form)) return;
@@ -547,11 +596,13 @@ async function projectsTab(el, car) {
     $('.edit', box).onclick = () => projectDialog(car, p);
     if ($('.start', box)) $('.start', box).onclick = async () => { await put(p, { status: 'In progress' }); rerender(); };
     if ($('.reopen', box)) $('.reopen', box).onclick = async () => { await put(p, { status: 'In progress' }); rerender(); };
-    if ($('.finish', box)) $('.finish', box).onclick = async () => {
-      await put(p, { status: 'Done' });
-      await rerender();
-      serviceDialog(car, car.upcoming, null, [], { title: p.title, notes: p.tasks.map((t) => '- ' + t.title).join('\n'),
-        partIds: p.parts.filter((x) => x.status !== 'Installed').map((x) => x.id) });
+    if ($('.finish', box)) $('.finish', box).onclick = () => {
+      // the project only becomes Done when the service is saved; Cancel leaves it as it was.
+      // Notes list the steps that were done, plus the project's own notes; only parts on hand are pre-ticked.
+      const done = p.tasks.filter((t) => t.done).map((t) => '- ' + t.title);
+      serviceDialog(car, car.upcoming, null, [], { title: p.title, notes: [done.join('\n'), p.notes].filter(Boolean).join('\n\n'),
+        partIds: p.parts.filter((x) => x.status === 'On hand').map((x) => x.id),
+        onSaved: () => put(p, { status: 'Done' }) });
     };
     $$('[data-tid]', box).forEach((cb) => (cb.onchange = async () => {
       await api('/project-tasks/' + cb.dataset.tid, { method: 'PUT', json: { done: cb.checked } });
@@ -796,46 +847,58 @@ async function allPartsPage(params) {
 
 // ----- documents -----
 
+let docFilter = '';  // file type shown in "Manuals & files" ('' = all); kept while moving between vehicles
+
 async function documentsTab(el, car) {
-  const docs = await api(`/documents?car_id=${car.id}`);
+  const all = await api(`/documents?car_id=${car.id}`);
+  const counts = {};
+  all.forEach((d) => (counts[d.kind] = (counts[d.kind] || 0) + 1));
+  if (docFilter && !counts[docFilter]) docFilter = '';
+  const docs = docFilter ? all.filter((d) => d.kind === docFilter) : all;
+  const kinds = REF.doc_kinds.filter((k) => counts[k]);
+  const linked = (d) => !d.parts ? '' : `<div class="small muted">${d.parts} linked part${d.parts === 1 ? '' : 's'}${d.kind === 'Receipt' ? ' from this receipt' : ''}</div>`;
   el.innerHTML = `
-    <form class="panel form" id="upForm" style="margin-bottom:16px">
-      <label>Type<select name="kind">${options(REF.doc_kinds, 'Manual')}</select></label>
-      <label>Title (for a single file)<input name="title" placeholder="Bentley service manual"></label>
-      <label class="wide">Files<input type="file" name="file" multiple required></label>
-      <div><button class="primary">Upload</button></div>
-    </form>
-    <div class="panel table-wrap" style="padding:0">${docs.length ? `<table><thead><tr><th>Title</th><th>Type</th><th>File</th><th class="num">Size</th><th>Added</th><th></th></tr></thead><tbody>
-      ${docs.map((d) => `<tr data-did="${d.id}"><td><a href="${fileUrl(d)}" target="_blank"><b>${esc(d.title)}</b></a>${d.notes ? `<div class="small muted">${esc(d.notes)}</div>` : ''}${d.parts ? `<div class="small muted">${d.parts} parts from this receipt</div>` : ''}</td>
+    <div class="doc-head">
+      <div class="doc-filter">${kinds.length > 1 ? `
+        <button type="button" class="${docFilter ? '' : 'active'}" data-kind="">All <span class="muted">${all.length}</span></button>
+        ${kinds.map((k) => `<button type="button" class="${k === docFilter ? 'active' : ''}" data-kind="${esc(k)}">${esc(k)} <span class="muted">${counts[k]}</span></button>`).join('')}` : ''}</div>
+      <button type="button" class="primary" id="upBtn">＋ Upload</button>
+    </div>
+    <div class="panel table-wrap" style="padding:0">${docs.length ? `<table class="doc-table"><thead><tr><th>Title</th><th>Type</th><th>File</th><th class="num">Size</th><th>Added</th><th></th></tr></thead><tbody>
+      ${docs.map((d) => `<tr data-did="${d.id}"><td><a href="${fileUrl(d)}" target="_blank"><b>${esc(d.title)}</b></a>${d.notes ? `<div class="small muted">${esc(d.notes)}</div>` : ''}${linked(d)}</td>
         <td>${esc(d.kind)}</td><td class="small muted">${esc(d.original_name)}</td><td class="num small">${fmtSize(d.size || 0)}</td><td class="small muted">${esc((d.uploaded_at || '').slice(0, 10))}</td>
         <td class="num" style="white-space:nowrap"><a class="btn" href="${fileUrl(d)}?download=1">⬇</a> <button class="link edit">Edit</button></td></tr>`).join('')}
     </tbody></table>` : '<div class="empty">No manuals or files yet.</div>'}</div>`;
-  $('#upForm').onsubmit = async (e) => {
-    e.preventDefault();
-    const form = e.target;
-    const files = Array.from(form.elements.file.files);
-    const btn = $('button', form); btn.disabled = true; btn.textContent = 'Uploading…';
-    try {
-      const small = files.filter((f) => f.size <= CHUNK);
-      if (small.length) {
-        const fd = new FormData();
-        small.forEach((f) => fd.append('file', f));
-        fd.append('car_id', car.id); fd.append('kind', form.elements.kind.value);
-        if (files.length === 1) fd.append('title', form.elements.title.value);
-        const r = await fetch('api/documents', { method: 'POST', body: fd });
-        if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || 'Upload failed');
-      }
-      for (const f of files.filter((x) => x.size > CHUNK)) {
-        await uploadChunked(f, { car_id: car.id, kind: form.elements.kind.value, title: files.length === 1 ? form.elements.title.value : '' },
-          (pct) => (btn.textContent = `Uploading ${f.name}… ${pct}%`));
-      }
-      toast('Uploaded');
+  $('#upBtn', el).onclick = () => {
+    const form = openDialog('Upload files', `<div class="form">
+        <label class="wide">Files<input type="file" name="file" multiple required></label>
+        <label>Type<select name="kind">${options(REF.doc_kinds, docFilter || 'Manual')}</select></label>
+        <label>Title <span class="muted small">(one file only)</span><input name="title" placeholder="Service manual"></label></div>`,
+    async (data, f) => {
+      const files = Array.from(f.elements.file.files);
+      const btn = $('#dlgOk'); btn.disabled = true; btn.textContent = 'Uploading…';
+      try {
+        const small = files.filter((x) => x.size <= CHUNK);
+        if (small.length) {
+          const fd = new FormData();
+          small.forEach((x) => fd.append('file', x));
+          fd.append('car_id', car.id); fd.append('kind', data.kind);
+          if (files.length === 1) fd.append('title', data.title);
+          const r = await fetch('api/documents', { method: 'POST', body: fd });
+          if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || 'Upload failed');
+        }
+        for (const x of files.filter((y) => y.size > CHUNK)) {
+          await uploadChunked(x, { car_id: car.id, kind: data.kind, title: files.length === 1 ? data.title : '' },
+            (pct) => (btn.textContent = `Uploading ${x.name}… ${pct}%`));
+        }
+      } finally { btn.disabled = false; }
+      toast(files.length === 1 ? 'Uploaded' : `Uploaded ${files.length} files`);
+      docFilter = data.kind;  // show what was just added
       documentsTab(el, car);
-    } catch (err) {
-      toast(err.message, true);
-      btn.disabled = false; btn.textContent = 'Upload';
-    }
+    }, { ok: 'Upload' });
+    $('input[type=file]', form).focus();
   };
+  $$('.doc-filter button', el).forEach((b) => (b.onclick = () => { docFilter = b.dataset.kind; documentsTab(el, car); }));
   $$('tr[data-did]', el).forEach((tr) => {
     const d = docs.find((x) => x.id === +tr.dataset.did);
     $('.edit', tr).onclick = () => {
@@ -924,6 +987,104 @@ function addCarPage() {
   };
 }
 
+// Settings › Quick services: tick which one-tap jobs show in "Log a service"; add or delete your own.
+const QUICK_EVERYDAY = 7;  // the first built-ins (wash, fuel…) are always visible; repair jobs fold away
+
+function quickPanel(el) {
+  const own = REF.quick_own.slice();
+  const shown = new Set(REF.quick_services.map((q) => q.toLowerCase()));
+  const everyday = REF.quick_builtin.slice(0, QUICK_EVERYDAY), repairs = REF.quick_builtin.slice(QUICK_EVERYDAY);
+  const box = (q, mine) => `<label class="qp-item"><input type="checkbox" value="${esc(q)}" ${shown.has(q.toLowerCase()) ? 'checked' : ''}> <span>${esc(q)}</span>
+    ${mine ? `<button type="button" class="link qp-del" data-q="${esc(q)}" title="Delete ${esc(q)}" aria-label="Delete ${esc(q)}">✕</button>` : ''}</label>`;
+  const repairsOn = repairs.filter((q) => shown.has(q.toLowerCase())).length;
+  el.innerHTML = `
+    <p class="muted small">Ticked jobs show as one-tap buttons in <b>Log a service</b>. Keep it to the few you log often.</p>
+    <div class="qp-grid">${own.map((q) => box(q, true)).join('')}${everyday.map((q) => box(q)).join('')}</div>
+    <details class="qp-more"><summary>Repair jobs <span class="muted small">${repairsOn ? repairsOn + ' shown' : ''}</span></summary>
+      <div class="qp-grid">${repairs.map((q) => box(q)).join('')}</div></details>
+    <form class="row" id="quickAdd"><input name="q" placeholder="Add your own, e.g. Car wash (automatic)" maxlength="80" style="flex:1;min-width:180px" required><button>Add</button></form>
+    <div><button type="button" class="link" id="quickReset">Back to the defaults</button></div>`;
+  const save = async (ownList) => {
+    const order = [...ownList, ...REF.quick_builtin];
+    const ticked = new Set($$('.qp-item input:checked', el).map((i) => i.value.toLowerCase()));
+    await api('/settings', { method: 'PUT', json: { quick_own: ownList, quick_list: order.filter((q) => ticked.has(q.toLowerCase())) } });
+    REF = await api('/refdata');
+  };
+  $$('.qp-item input', el).forEach((i) => (i.onchange = () => save(own)));
+  $$('.qp-del', el).forEach((b) => (b.onclick = async (e) => {
+    e.preventDefault();
+    await save(own.filter((q) => q !== b.dataset.q)); quickPanel(el);
+  }));
+  $('#quickAdd', el).onsubmit = async (e) => {
+    e.preventDefault();
+    const q = e.target.q.value.trim();
+    if ([...own, ...REF.quick_builtin].some((x) => x.toLowerCase() === q.toLowerCase())) return toast('Already in the list', true);
+    el.querySelector('.qp-grid').insertAdjacentHTML('afterbegin', box(q, true));  // ticked by save below
+    el.querySelector('.qp-item input').checked = true;
+    await save([q, ...own]); quickPanel(el);
+    toast(`Added "${q}"`);
+  };
+  $('#quickReset', el).onclick = async () => {
+    if (!confirm('Show only the default quick services again? Your own jobs are deleted.')) return;
+    await api('/settings', { method: 'PUT', json: { quick_own: [], quick_list: null } });
+    REF = await api('/refdata'); quickPanel(el);
+  };
+}
+
+// Settings › Car wash weather: a phone nudge when it's nice out and dry for the next couple of days.
+const notifyName = (s) => s.replace(/^mobile_app_/, '').replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
+
+async function washPanel(el) {
+  el.innerHTML = '<p class="muted small">Loading…</p>';
+  let w;
+  try { w = await api('/wash'); } catch (e) { el.innerHTML = `<p class="muted small">${esc(e.message)}</p>`; return; }
+  if (!w.available) {
+    el.innerHTML = '<p class="muted small">Get a notification when it\'s a good day to wash the car. This needs Home Assistant (it uses HA\'s weather forecast and phone notifications), so it works when the app runs as a Home Assistant add-on.</p>';
+    return;
+  }
+  const c = w.config, v = w.verdict;
+  const unit = (v && v.unit) || '°';
+  const hourBar = v && v.hours.length ? `<div class="wash-hours" title="Next ${c.hours} hours (red = rain)">${v.hours.map((h) => `<i class="${h.wet ? 'bad' : ''}" style="height:${h.wet ? 100 : 35}%"></i>`).join('')}</div>
+    <div class="spread small muted"><span>now</span><span>+${c.hours} h</span></div>` : '';
+  el.innerHTML = `
+    <label class="switch"><input type="checkbox" id="washOn" ${c.enabled ? 'checked' : ''}> Tell me when it's a good day to wash the car</label>
+    <p class="muted small" style="margin-top:-4px">Sends a notification when it's warm enough and no rain is forecast for the next ${c.hours} hours. Skips days soon after you log a wash.</p>
+    ${w.error ? `<div class="callout-box small">${esc(w.error)}</div>` : ''}
+    ${v ? `<div class="wash-verdict"><span class="big">${v.good ? '☀️' : '🌧️'}</span><div><b>${v.good ? 'Good day to wash' : 'Not today'}</b>
+      <div class="small muted">${esc(v.good ? v.summary : v.reasons.join(' · '))}</div></div></div>${hourBar}` : ''}
+    <div id="washOpts" ${c.enabled ? '' : 'hidden'}>
+      <div class="form">
+        <label class="wide">Weather<select name="weather_entity">${options((w.weather_entities || []).map((e) => [e.entity_id, e.name]), c.weather_entity || w.suggested_entity, (w.weather_entities || []).length ? undefined : 'No weather entity in Home Assistant')}</select></label>
+        <label>Warmer than (${esc(unit)})<input name="min_temp" inputmode="numeric" value="${esc(c.min_temp)}"></label>
+        <label>Not before<select name="notify_hour">${options(Array.from({ length: 24 }, (_, h) => [h, `${(h % 12) || 12}:00 ${h < 12 ? 'am' : 'pm'}`]), c.notify_hour)}</select></label>
+        <label>At most every<select name="every_days">${options([1, 2, 3, 5, 7, 10, 14].map((d) => [d, d === 1 ? 'day' : `${d} days`]), c.every_days)}</select></label>
+        <label>Dry for<select name="hours">${options([24, 36, 48, 72].map((h) => [h, `${h} hours`]), c.hours)}</select></label>
+      </div>
+      <h3 style="margin-bottom:4px">Send to</h3>
+      <div class="qp-grid">${(w.notify_services || []).map((n) => `<label class="qp-item"><input type="checkbox" name="notify" value="${esc(n)}" ${c.notify.includes(n) ? 'checked' : ''}> <span>${esc(notifyName(n))}</span></label>`).join('')}</div>
+      <p class="muted small">${(w.notify_services || []).length ? 'Nothing ticked = a notification in Home Assistant\'s bell instead.' : 'No phones found. Install the Home Assistant app on your phone to get push notifications; until then it shows in Home Assistant\'s bell.'}</p>
+      <div class="row"><button type="button" id="washTest">Send a test</button>${w.last_sent ? `<span class="small muted">Last reminder: ${esc(w.last_sent.replace('T', ' '))}</span>` : ''}</div>
+    </div>`;
+  const save = async (extra = {}) => {
+    const opts = $('#washOpts', el);
+    const val = (n) => $(`[name=${n}]`, opts).value;
+    const body = { enabled: $('#washOn', el).checked, weather_entity: val('weather_entity'), min_temp: val('min_temp'),
+      notify_hour: val('notify_hour'), every_days: val('every_days'), hours: val('hours'),
+      notify: $$('input[name=notify]:checked', opts).map((i) => i.value), ...extra };
+    try { await api('/wash', { method: 'PUT', json: body }); washPanel(el); } catch (e) { toast(e.message, true); }
+  };
+  $('#washOn', el).onchange = () => save();
+  $$('#washOpts select, #washOpts input', el).forEach((i) => (i.onchange = () => save()));
+  $('#washTest', el).onclick = async (e) => {
+    e.target.disabled = true;
+    try {
+      const r = await api('/wash/test', { method: 'POST', json: {} });
+      toast('Sent to ' + r.sent.map(notifyName).join(', '));
+    } catch (err) { toast(err.message, true); }
+    e.target.disabled = false;
+  };
+}
+
 // ---------- settings ----------
 
 async function settingsPage() {
@@ -949,12 +1110,10 @@ async function settingsPage() {
       <label class="switch"><input type="checkbox" id="catalogOn" ${s.settings.catalog ? 'checked' : ''}> Parts catalog</label>
       <p class="muted small">An offline parts catalog with diagrams, filled from files you import (JSON, CSV, saved HTML pages, images). Off by default: it starts empty.</p>
     </div>
-    <h2>Quick services</h2>
-    <form class="panel stack" id="quickForm">
-      <p class="muted small">Your own one-tap jobs for <b>Log a service</b>, one per line. They show ahead of the built-in ones (brake job, battery, tires…).</p>
-      <textarea name="q" rows="4" placeholder="Winter tire swap&#10;Detailing">${esc((s.settings.quick_services || []).join('\n'))}</textarea>
-      <div><button>Save</button></div>
-    </form>
+    <h2 id="quick">Quick services</h2>
+    <div class="panel stack" id="quickPanel"></div>
+    <h2 id="wash">Car wash weather</h2>
+    <div class="panel stack" id="washPanel"></div>
     <h2>AI agents</h2>
     <div class="panel stack small">
       <p>Let an AI assistant (Claude, or any app that supports MCP) read and update your garage: vehicles, what's due, service history, odometer and parts.</p>
@@ -1016,12 +1175,9 @@ async function settingsPage() {
     REF = await api('/refdata'); applyFeatures();
     toast(e.target.checked ? 'Catalog turned on' : 'Catalog hidden');
   };
-  $('#quickForm').onsubmit = async (e) => {
-    e.preventDefault();
-    await api('/settings', { method: 'PUT', json: { quick_services: e.target.q.value.split('\n').map((x) => x.trim()).filter(Boolean) } });
-    REF = await api('/refdata');
-    toast('Quick services saved');
-  };
+  quickPanel($('#quickPanel'));
+  washPanel($('#washPanel'));
+  if (location.hash.includes('?')) { const id = new URLSearchParams(location.hash.split('?')[1]).get('go'); if (id && $('#' + id)) $('#' + id).scrollIntoView(); }
   $('#newKey').onclick = async () => {
     if (s.settings.agent_key && !confirm('Make a new key? Agents using the old key will stop working until you give them the new one.')) return;
     await api('/settings', { method: 'PUT', json: { agent_key: 'new' } }); settingsPage();

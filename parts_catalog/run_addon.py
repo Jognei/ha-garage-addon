@@ -2,6 +2,7 @@
 runs `python -m app` with data in /data and restarts it on exit code 3 (restore / settings) or a crash."""
 import json
 import os
+import signal
 import subprocess
 import sys
 import time
@@ -27,10 +28,35 @@ if not options.get("direct_access"):
     env["PARTS_CATALOG_ALLOW"] = HA_CLIENTS
 print("Parts Catalog add-on starting; direct network access:", bool(options.get("direct_access")), flush=True)
 
+child = None
+
+
+def stop(signum, _frame):
+    """As process 1 we get no default SIGTERM handling: pass the stop on to the app and exit,
+    instead of Home Assistant waiting out its timeout and killing us."""
+    if child and child.poll() is None:
+        child.terminate()
+        try:
+            child.wait(timeout=8)
+        except subprocess.TimeoutExpired:
+            child.kill()
+    sys.exit(0)
+
+
+signal.signal(signal.SIGTERM, stop)
+signal.signal(signal.SIGINT, stop)
+
+fast_fails = 0
 while True:
-    code = subprocess.call([sys.executable, "-m", "app"], env=env)
+    started = time.time()
+    child = subprocess.Popen([sys.executable, "-m", "app"], env=env)
+    code = child.wait()
     if code == RESTART_CODE:
         print("Restarting (requested by the app)", flush=True)
         continue
+    fast_fails = fast_fails + 1 if time.time() - started < 30 else 0
+    if fast_fails >= 5:  # crashing on start: stop, so Home Assistant shows the add-on as stopped with its log
+        print(f"App keeps failing at start (last exit code {code}); giving up", flush=True)
+        sys.exit(1)
     print(f"App exited with code {code}; restarting in 5 seconds", flush=True)
     time.sleep(5)

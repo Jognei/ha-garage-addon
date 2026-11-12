@@ -105,6 +105,10 @@ class McpTest(unittest.TestCase):
         self.assertEqual(hist[0]["title"], "Oil change")
         sched, _ = self.tool("add_schedule", vehicle="wagon", title="Spark plugs", interval_miles=60000)
         self.assertTrue(sched["ids"])
+        self.tool("set_vehicle_notes", vehicle="wagon", notes="Bought used")
+        r, _ = self.tool("set_vehicle_notes", vehicle="wagon", notes="New clutch", append=True)
+        self.assertEqual(r["notes"], "Bought used\nNew clutch")
+        self.assertEqual(self.tool("get_vehicle", vehicle="wagon")[0]["notes"], "Bought used\nNew clutch")
 
     def test_tool_errors(self):
         msg, err = self.tool("get_vehicle", vehicle="nonexistent")

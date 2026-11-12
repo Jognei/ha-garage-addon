@@ -43,6 +43,21 @@ class AddonTest(unittest.TestCase):
         (db.DATA_DIR, db.DB_PATH, db.DOC_DIR, epc.EPC_DIR, epc.EPC_DB, epc.FILES_DIR, server.SETTINGS_PATH) = cls.saved
         shutil.rmtree(cls.tmp, ignore_errors=True)
 
+    def test_document_kinds(self):
+        cid = self.c.post("/api/cars", json={"name": "Kinds car"}).get_json()["id"]
+        ref = self.c.get("/api/refdata").get_json()["doc_kinds"]
+        self.assertIn("Part photo", ref)
+        self.assertNotIn("Photo", ref)  # vehicle photos aren't picked by hand
+        did = self.c.post("/api/documents", data={"car_id": str(cid), "kind": "Part photo", "title": "Filter",
+                                                   "file": (io.BytesIO(b"x"), "f.jpg")}, content_type="multipart/form-data").get_json()["ids"][0]
+        docs = self.c.get(f"/api/documents?car_id={cid}").get_json()
+        self.assertEqual(docs[0]["kind"], "Part photo")
+        self.assertEqual(self.c.put(f"/api/documents/{did}", json={"kind": "Bogus"}).status_code, 400)
+        self.assertEqual(self.c.put(f"/api/documents/{did}", json={"kind": "Receipt"}).status_code, 200)
+        self.c.put(f"/api/cars/{cid}", json={"notes": "Overall note"})
+        car = self.c.get(f"/api/cars/{cid}").get_json()
+        self.assertEqual((car["name"], car["notes"]), ("Kinds car", "Overall note"))  # partial update keeps the rest
+
     def test_backup_restore_roundtrip(self):
         cid = self.c.post("/api/cars", json={"name": "Backup car"}).get_json()["id"]
         r = self.c.post("/api/documents", data={"car_id": str(cid), "kind": "Other", "title": "Note",

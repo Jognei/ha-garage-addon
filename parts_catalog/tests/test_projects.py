@@ -119,14 +119,28 @@ class ProjectsTest(unittest.TestCase):
     def test_card_settings_and_quick_services(self):
         ref = self.c.get("/api/refdata").get_json()
         self.assertEqual(ref["card"]["upcoming_rows"], 3)
-        self.assertIn("Brake job (pads & rotors, front)", ref["quick_services"])
+        self.assertEqual(ref["quick_services"], server.QUICK_DEFAULT)  # short list by default
+        self.assertIn("Brake job (pads & rotors, front)", ref["quick_builtin"])
         self.assertTrue(all(p["group"] for p in ref["presets"]))
+        # older settings: own jobs ahead of the defaults
         self.c.put("/api/settings", json={"card": {"upcoming_rows": 99, "photo": False, "bogus": 1},
                                           "quick_services": ["Control arm install", " "]})
         ref = self.c.get("/api/refdata").get_json()
         self.assertEqual(ref["card"], {**server.CARD_DEFAULTS, "upcoming_rows": 12, "photo": False})
-        self.assertEqual(ref["quick_services"][0], "Control arm install")
-        self.c.put("/api/settings", json={"card": dict(server.CARD_DEFAULTS), "quick_services": []})
+        self.assertEqual(ref["quick_services"], ["Control arm install"] + server.QUICK_DEFAULT)
+        self.assertEqual(ref["quick_own"], ["Control arm install"])
+        # picked in Settings: exactly what's ticked shows; unticked own jobs are kept for later
+        self.c.put("/api/settings", json={"quick_own": ["Control arm install", "Gas (premium)"],
+                                          "quick_list": ["Gas (premium)", "Wash", "wash", " "]})
+        ref = self.c.get("/api/refdata").get_json()
+        self.assertEqual(ref["quick_services"], ["Gas (premium)", "Wash"])
+        self.assertEqual(ref["quick_own"], ["Control arm install", "Gas (premium)"])
+        self.c.put("/api/settings", json={"quick_list": []})
+        self.assertEqual(self.c.get("/api/refdata").get_json()["quick_services"], [])
+        self.c.put("/api/settings", json={"quick_own": [], "quick_list": None})
+        ref = self.c.get("/api/refdata").get_json()
+        self.assertEqual((ref["quick_services"], ref["quick_own"]), (server.QUICK_DEFAULT, []))
+        self.c.put("/api/settings", json={"card": dict(server.CARD_DEFAULTS)})
 
 
 if __name__ == "__main__":

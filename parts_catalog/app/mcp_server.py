@@ -52,6 +52,8 @@ TOOLS = [
           {"vehicle": VEHICLE, "title": {"type": "string"}, "interval_miles": {"type": "integer"}, "interval_months": {"type": "integer"},
            "last_date": {"type": "string"}, "last_mileage": {"type": "integer"}, "notes": {"type": "string"}},
           ["vehicle", "title"]),
+    _tool("set_vehicle_notes", "Overall notes for a vehicle (history, quirks, mods). Replaces them, or adds a line with append=true.",
+          {"vehicle": VEHICLE, "notes": {"type": "string"}, "append": {"type": "boolean"}}, ["vehicle", "notes"]),
     _tool("list_parts", "Parts, filtered by vehicle, status and/or a search over name, part number and brand.",
           {"vehicle": VEHICLE, "status": {"type": "string", "enum": STATUSES}, "search": {"type": "string"}}),
     _tool("add_parts", "Add one or more parts (e.g. from an order). Status defaults to Needed.",
@@ -132,6 +134,10 @@ def run_tool(name, a):
                 "note": None if now["mileage"] == a["mileage"] else "Reading is lower than the current odometer; pass correct=true to lower it."}
     if name == "log_service":
         c = vehicle(a["vehicle"])
+        if isinstance(a.get("schedules"), str):
+            a["schedules"] = [a["schedules"]]
+        if a.get("part_ids") is not None and not isinstance(a["part_ids"], list):
+            raise ToolError("part_ids must be a list of part ids, e.g. [12]")
         sched_ids, unmatched = [], []
         if a.get("schedules"):
             up = call("GET", f"/cars/{c['id']}")["upcoming"]
@@ -139,6 +145,8 @@ def run_tool(name, a):
                 m = [u for u in up if u["title"].lower() == t.lower()] or [u for u in up if t.lower() in u["title"].lower()]
                 (sched_ids.append(m[0]["id"]) if m else unmatched.append(t))
         payload = {k: a.get(k) for k in ("title", "date", "mileage", "cost", "notes", "done_by") if a.get(k) is not None}
+        if payload.get("mileage") is None and c.get("mileage") is not None:
+            payload["mileage"] = c["mileage"]  # as the UI does: default to the current odometer
         payload.update(schedule_ids=sched_ids, part_ids=a.get("part_ids") or [])
         r = call("POST", f"/cars/{c['id']}/services", payload)
         return {"logged": r, "vehicle": c["name"], "schedules_reset": len(sched_ids), "schedules_not_found": unmatched}
@@ -146,6 +154,13 @@ def run_tool(name, a):
         c = vehicle(a["vehicle"])
         item = {k: a.get(k) for k in ("title", "interval_miles", "interval_months", "last_date", "last_mileage", "notes") if a.get(k) is not None}
         return call("POST", f"/cars/{c['id']}/schedules", {"items": [item]})
+    if name == "set_vehicle_notes":
+        c = call("GET", f"/cars/{vehicle(a['vehicle'])['id']}")
+        notes = str(a["notes"]).strip()
+        if a.get("append") and c.get("notes"):
+            notes = c["notes"].rstrip() + "\n" + notes
+        call("PUT", f"/cars/{c['id']}", {"notes": notes})
+        return {"vehicle": c["name"], "notes": notes}
     if name == "list_parts":
         q = []
         if a.get("vehicle"):

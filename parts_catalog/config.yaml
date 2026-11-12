@@ -1,5 +1,5 @@
 name: Parts Catalog
-version: "1.0.42"
+version: "1.0.48"
 slug: parts_catalog
 url: https://github.com/Jognei/ha-garage-addon
 # Ready-built images from .github/workflows/build.yaml; HA downloads instead of building.
@@ -14,6 +14,7 @@ boot: auto
 ingress: true
 homeassistant_api: true
 ingress_port: 8765
+watchdog: http://[HOST]:[PORT:8765]/api/ping
 panel_icon: mdi:car-wrench
 panel_title: Garage
 ports:
