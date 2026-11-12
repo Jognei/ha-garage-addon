@@ -617,6 +617,9 @@ def schedule_values(b, cur=None):
             vals["base_mileage"] = vals["last_mileage"]
         if cur:  # a different last done also ends a dismissal, unless this request sets one
             vals.setdefault("snoozed_until", None)
+            # half of last done sent alone: the other half stays as the schedule shows it
+            vals.setdefault("base_date", cur["last_date"])
+            vals.setdefault("base_mileage", cur["last_mileage"])
     return vals
 
 

@@ -665,6 +665,18 @@ class AuditFixesTest(unittest.TestCase):
         self.c.delete(f"/api/services/{svc}")
         self.assertEqual(self.last_done(cid, sid), ("2026-06-01", 25000))
 
+    def test_half_of_last_done_sent_alone_keeps_the_other_half(self):
+        cid = self.car("DEMO-SCHED-HALF", 60000)
+        item = {"title": "Oil", "interval_miles": 5000, "interval_months": 12, "last_date": ago(700), "last_mileage": 40000}
+        by_date, by_mileage = self.c.post(f"/api/cars/{cid}/schedules", json={"items": [item, {**item, "title": "Coolant"}]}).get_json()["ids"]
+        svc = self.c.post(f"/api/cars/{cid}/services", json={"title": "Oil and coolant", "date": ago(500), "mileage": 45000,
+                                                             "schedule_ids": [by_date, by_mileage]}).get_json()["id"]
+        self.c.put(f"/api/schedules/{by_date}", json={"last_date": ago(10)})  # as update_schedule sends it
+        self.assertEqual(self.last_done(cid, by_date), (ago(10), 45000))
+        self.c.put(f"/api/schedules/{by_mileage}", json={"last_mileage": 44000})
+        self.c.delete(f"/api/services/{svc}")  # a service on the same day outranks it until then
+        self.assertEqual(self.last_done(cid, by_mileage), (ago(500), 44000))
+
     def test_a_different_last_done_ends_a_dismissal(self):
         cid = self.car("DEMO-SNOOZE")
         sid = self.c.post(f"/api/cars/{cid}/schedules", json={"title": "Wipers", "interval_months": 12,
