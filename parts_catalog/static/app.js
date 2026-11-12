@@ -1371,6 +1371,7 @@ actions:
       await api('/restore', { method: 'POST', body: fd });
       $('#restoreMsg').textContent = 'Restoring and restarting…';
       if (!(await waitForRestart($('#restoreMsg')))) return;
+      REF = null;  // the backup brought its own settings: route() fetches them again
       toast('Backup restored');
       location.hash = '#/';
       router();
