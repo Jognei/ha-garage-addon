@@ -496,16 +496,16 @@ async function servicesTab(el, car) {
     <div class="spread"><h2 style="margin-top:0">Upcoming services</h2>
       <div class="row"><button id="addPresets">＋ Common services</button><button id="addSched">＋ Custom schedule</button><button class="primary" id="logSvc">Log a service</button></div></div>
     ${car.archived ? '<div class="callout-box" style="margin-bottom:12px">This vehicle is hidden from the garage and Home Assistant. <a href="#/car/' + car.id + '/details">Show it again</a> under Details.</div>' : ''}
-    <div class="panel table-wrap" style="padding:0">${up.length ? `<table><thead><tr><th></th><th>Service</th><th class="hide-sm">Interval</th><th>Last done</th><th>Due</th><th></th><th class="hide-sm">Manual</th><th></th></tr></thead><tbody>
+    <div class="panel table-wrap" style="padding:0">${up.length ? `<table><thead><tr><th></th><th>Service</th><th class="hide-sm">Interval</th><th class="hide-sm">Last done</th><th>Due</th><th class="hide-sm"></th><th class="hide-sm">Manual</th><th></th></tr></thead><tbody>
       ${up.map((u) => `<tr class="upcoming-row" data-sid="${u.id}">
         <td style="width:1%"><span class="svc-ico ${u.state}${up.length > 1 ? ' grip" title="Drag to reorder' : ''}">${svcIcon(u.title)}</span></td>
         <td><b>${esc(u.title)}</b>${u.notes ? `<div class="small muted">${esc(u.notes)}</div>` : ''}</td>
         <td class="small hide-sm">${esc(intervalText(u))}</td>
-        <td class="small">${u.last_date || u.last_mileage != null ? `${esc(u.last_date || '')}${u.last_mileage != null ? ' @ ' + miles(u.last_mileage) : ''}` : '<span class="muted">never logged</span>'}</td>
+        <td class="small hide-sm">${u.last_date || u.last_mileage != null ? `${esc(u.last_date || '')}${u.last_mileage != null ? ' @ ' + miles(u.last_mileage) : ''}` : '<span class="muted">never logged</span>'}</td>
         <td class="small">${[u.due_mileage != null ? miles(u.due_mileage) : '', esc(u.due_date || '')].filter(Boolean).join(' / ')}<div class="muted">${esc(dueText(u))}</div></td>
-        <td>${stateChip(u)}${u.state === 'snoozed' ? `<div class="small muted">until ${esc(u.snoozed_until)}</div>` : ''}</td>
+        <td class="hide-sm">${stateChip(u)}${u.state === 'snoozed' ? `<div class="small muted">until ${esc(u.snoozed_until)}</div>` : ''}</td>
         <td class="small hide-sm">${u.doc_id ? `<a href="${fileUrl({ id: u.doc_id, original_name: u.doc_title + '.pdf' }, u.doc_page)}" target="_blank">${esc(u.doc_title)}${u.doc_page ? ' p.' + u.doc_page : ''}</a>` : ''}</td>
-        <td class="num" style="white-space:nowrap"><button class="done">✓ Done</button>
+        <td class="num up-act"><button class="done">✓ Done</button>
           ${['overdue', 'soon'].includes(u.state) ? '<button class="link snooze">Dismiss</button>' : ''}${u.state === 'snoozed' ? '<button class="link unsnooze">Bring back</button>' : ''}
           <button class="link edit">Edit</button></td></tr>`).join('')}
     </tbody></table>${up.some((u) => u.sort_order != null) ? '<div class="small muted" style="padding:8px 10px">In your own order. <button class="link" id="autoOrder">Back to most urgent first</button></div>' : ''}` : `<div class="empty">No schedules yet. Click <b>＋ Common services</b> to pick oil changes, filters, fluids and so on.</div>`}</div>
@@ -820,11 +820,11 @@ async function partsSection(el, { car = null, params = new URLSearchParams() } =
     </div>
     ${total ? `<p class="muted small">To get: <b>${money(total)}</b> at listed prices.</p>` : ''}
     <div class="panel table-wrap" style="padding:0">${parts.length ? `<table id="partsTable"><thead><tr>
-      <th title="Installed">✓</th><th>Part</th>${car ? '' : '<th>Vehicle</th>'}<th class="num">Qty</th><th>Status</th><th class="hide-sm">Installed at</th><th class="hide-sm">Installed on</th><th class="hide-sm">Location</th><th class="hide-sm">Bought</th><th></th></tr></thead><tbody>
+      <th title="Installed">✓</th><th>Part</th>${car ? '' : '<th class="hide-sm">Vehicle</th>'}<th class="num">Qty</th><th>Status</th><th class="hide-sm">Installed at</th><th class="hide-sm">Installed on</th><th class="hide-sm">Location</th><th class="hide-sm">Bought</th><th></th></tr></thead><tbody>
       ${parts.map((p) => `<tr data-pid="${p.id}" class="${p.status === 'Installed' ? 'installed' : ''}">
         <td><input type="checkbox" class="inst" ${p.status === 'Installed' ? 'checked' : ''} title="Installed"></td>
         <td><b>${esc(p.name)}</b><div class="small muted">${[esc(p.category), esc(p.brand), REF.features.catalog && /^\w+$/.test(normPn(p.part_number)) ? `<a href="#/catalog/part/${normPn(p.part_number)}">${esc(p.part_number)}</a>` : esc(p.part_number), p.project_title ? esc('for ' + p.project_title) : ''].filter(Boolean).join(' · ')}</div>${p.notes ? `<div class="small muted" title="${esc(p.notes)}">${esc(p.notes.length > 90 ? p.notes.slice(0, 90) + '…' : p.notes)}</div>` : ''}</td>
-        ${car ? '' : `<td class="small">${esc(p.car || '—')}</td>`}
+        ${car ? '' : `<td class="small hide-sm">${esc(p.car || '—')}</td>`}
         <td class="num"><input class="inline qty" inputmode="numeric" value="${p.qty ?? 1}" style="width:52px;text-align:right"></td>
         <td><select class="status ${sCls(p.status)}">${options(REF.statuses, p.status)}</select></td>
         <td class="hide-sm"><input class="inline mi" inputmode="numeric" value="${p.installed_mileage ?? ''}" placeholder="miles"></td>
