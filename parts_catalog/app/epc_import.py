@@ -206,6 +206,7 @@ def upsert_vehicle(v, source_id, rep):
             conn.execute(f"UPDATE vehicles SET {', '.join(k + '=?' for k in vals)} WHERE id=?", [*vals.values(), r[0]])
         rep.count("vehicles_updated")
         return r[0]
+    vals.setdefault("make", "")  # the column's default, 'BMW', stays in existing databases
     vals.update(code=code, source_id=source_id)
     rep.count("vehicles_added")
     return conn.execute(f"INSERT INTO vehicles ({','.join(vals)}) VALUES ({','.join('?' * len(vals))})", list(vals.values())).lastrowid

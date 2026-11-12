@@ -407,6 +407,15 @@ class CatalogTest(unittest.TestCase):
         shared = {s["name"]: s["shared_items"] for s in self.c.get("/api/epc/overview").get_json()["sources"]}
         self.assertEqual((shared["Shared A"], shared["Shared B"]), (2, 0))
 
+    def test_vehicle_without_make(self):
+        bundle = {"source": {"name": "No make"}, "vehicles": [{"code": "NOMAKE-1"}],
+                  "diagrams": [{"code": "94_0001", "vehicles": ["NOMAKE-1"], "items": [{"callout": "1", "part_number": "16100-39466"}]}]}
+        epc_import.import_bundle(bundle)
+        self.assertNotIn("Part number 1610039466 is not 11 digits", [r["message"] for r in epc.validate()])
+        epc_import.import_bundle({"source": {"name": "No make"}, "vehicles": [{"code": "NOMAKE-1", "make": "Toyota"}]})
+        epc_import.import_bundle(bundle)
+        self.assertEqual(epc.row("SELECT make FROM vehicles WHERE code='NOMAKE-1'")["make"], "Toyota")  # a stored make stays
+
     def test_delete_vehicle_keeps_other_diagrams(self):
         epc_import.import_bundle({"source": {"name": "Del A"}, "vehicles": [{"code": "DEL-A"}, {"code": "DEL-B"}],
                                   "diagrams": [{"code": "DEL_1", "vehicles": ["DEL-A", "DEL-B"], "items": [{"callout": "1", "part_number": "1"}]},
