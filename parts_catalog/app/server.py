@@ -1305,6 +1305,8 @@ def api_backup():
 
 
 RESTORE_PATHS = ("garage.db", "epc/epc.db", "documents/", "epc/files/")
+# what the backup's install showed, taken from its settings.json; this install keeps its lan, port, agent_key and wash
+RESTORE_SETTINGS = ("card", "quick_list", "quick_own", "quick_services", "catalog")
 
 
 def database_ok(path, table):
@@ -1353,11 +1355,15 @@ def api_restore():
                 os.makedirs(os.path.join(staging, d))
             for n in names:
                 if n.endswith("/") or not n.startswith(RESTORE_PATHS):
-                    continue  # settings.json is left alone: it belongs to this install
+                    continue  # settings.json is taken apart below
                 target = os.path.join(staging, *n.split("/"))
                 os.makedirs(os.path.dirname(target), exist_ok=True)
                 with z.open(n) as src, open(target, "wb") as dst:
                     shutil.copyfileobj(src, dst)
+            if "settings.json" in names:  # merged into this install's settings with the data (db.apply_pending_restore)
+                theirs = json.loads(z.read("settings.json"))
+                with open(os.path.join(staging, "settings.json"), "w", encoding="utf-8") as out:
+                    json.dump({k: theirs[k] for k in RESTORE_SETTINGS if k in theirs}, out)
         if not database_ok(os.path.join(staging, "garage.db"), "cars"):
             return err("The database in that backup is damaged")
         epc_db = os.path.join(staging, "epc", "epc.db")

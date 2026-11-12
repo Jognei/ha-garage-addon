@@ -237,6 +237,32 @@ class AuditFixesTest(unittest.TestCase):
         self.assertEqual(len(kept), 1, kept)
         self.assertIn("garage.db", zipfile.ZipFile(os.path.join(self.tmp, kept[0])).namelist())
 
+    def test_restore_takes_the_backups_layout_and_keeps_this_installs_access(self):
+        shown = ("card", "quick_list", "quick_own", "quick_services", "catalog")
+        theirs = {"card": {**server.CARD_DEFAULTS, "upcoming_rows": 7}, "quick_list": ["Wash", "Chain lube"], "quick_own": ["Chain lube"],
+                  "quick_services": ["Chain lube"], "catalog": True,
+                  "lan": True, "port": 9999, "agent_key": "theirs", "wash": {"weather_entity": "weather.theirs"}}
+        mine = {"card": {**server.CARD_DEFAULTS, "upcoming_rows": 2}, "quick_list": ["Wash"], "quick_own": [], "quick_services": [],
+                "catalog": False, "lan": False, "port": 8765, "agent_key": "mine", "wash": {"weather_entity": "weather.mine"}}
+        saved = server.load_settings()
+        try:
+            server.save_settings({**saved, **theirs})
+            backup = self.backup()
+            server.save_settings({**saved, **mine})
+            self.assertEqual(self.restore(backup).status_code, 200)
+            self.assertEqual(server.load_settings(), {**saved, **mine})  # nothing yet: it comes with the data, at the next start
+            db.connect().close()
+            db._local.conn = None
+            epc.close()
+            self.assertTrue(db.apply_pending_restore())
+            db.init()
+            epc_api.init()
+            s = server.load_settings()
+            self.assertEqual({k: s[k] for k in shown}, {k: theirs[k] for k in shown})
+            self.assertEqual({k: s[k] for k in ("lan", "port", "agent_key", "wash")}, {k: mine[k] for k in ("lan", "port", "agent_key", "wash")})
+        finally:
+            server.save_settings(saved)
+
     def test_service_without_mileage_keeps_the_last_known_mileage(self):
         cid = self.car("DEMO-MILES", 200000)
         sid = self.c.post(f"/api/cars/{cid}/schedules", json={"items": [

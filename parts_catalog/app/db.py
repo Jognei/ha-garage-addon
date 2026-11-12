@@ -142,6 +142,19 @@ def apply_pending_restore():
     pending = os.path.join(DATA_DIR, "restore-pending")
     if not os.path.exists(os.path.join(pending, "garage.db")):
         return False
+    theirs = os.path.join(pending, "settings.json")
+    if os.path.exists(theirs):  # the backup's card layout, quick services and catalog switch, over this install's settings
+        ours = os.path.join(DATA_DIR, "settings.json")
+        try:
+            with open(ours, encoding="utf-8") as f:
+                s = json.load(f)
+        except (OSError, ValueError):
+            s = {}
+        with open(theirs, encoding="utf-8") as f:
+            s.update(json.load(f))
+        with open(ours + ".part", "w", encoding="utf-8") as f:  # replaced whole, so a start cut short never leaves half
+            json.dump(s, f, indent=2)
+        os.replace(ours + ".part", ours)
     # garage.db goes last: while it is still pending, the next start finishes a swap that was cut short
     for name, live in (("documents", [DOC_DIR]), ("epc", [os.path.join(DATA_DIR, "epc")]),
                        ("garage.db", [DB_PATH, DB_PATH + "-wal", DB_PATH + "-shm"])):
