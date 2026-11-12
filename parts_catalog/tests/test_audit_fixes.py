@@ -215,6 +215,19 @@ class AuditFixesTest(unittest.TestCase):
         self.c.delete(f"/api/services/{svc}")
         self.assertEqual(self.last_done(cid, sid), ("2026-06-01", 25000))
 
+    def test_a_different_last_done_ends_a_dismissal(self):
+        cid = self.car("DEMO-SNOOZE")
+        sid = self.c.post(f"/api/cars/{cid}/schedules", json={"title": "Wipers", "interval_months": 12,
+                                                               "last_date": ago(400)}).get_json()["ids"][0]
+        until = lambda: next(u for u in self.c.get(f"/api/cars/{cid}").get_json()["upcoming"] if u["id"] == sid)["snoozed_until"]  # noqa: E731
+        self.c.put(f"/api/schedules/{sid}", json={"snoozed_until": ago(-14)})
+        self.c.put(f"/api/schedules/{sid}", json={"title": "Wipers", "last_date": ago(400), "notes": "Bosch"})
+        self.assertEqual(until(), ago(-14))  # last done sent back unchanged
+        self.c.put(f"/api/schedules/{sid}", json={"title": "Wipers", "last_date": ago(340), "snoozed_until": ago(-7)})
+        self.assertEqual(until(), ago(-7))
+        self.c.put(f"/api/schedules/{sid}", json={"title": "Wipers", "last_date": ago(300)})
+        self.assertIsNone(until())
+
 
 if __name__ == "__main__":
     unittest.main()
