@@ -311,10 +311,11 @@ async function catalogData() {
         <li>Main groups: <code>code</code>, <code>name</code>, <code>parent</code></li>
       </ul>
       <p>Headers ignore case, and common variants work (Part No., Ref, Pos, Quantity, Remarks). Production dates read as 1991-02, 02/1991 or 199102.</p>
-      <p><b>Saved web page</b> (.html, .htm): the parts list is the table that holds 11-digit BMW part numbers, its columns read by their headers (No., Part number, Description, Qty, From, Up to).
+      <p><b>Saved web page</b> (.html, .htm): the parts list is the table that looks most like one: a part-number header (Part number, Part No., P/N…) over part numbers or beside a Description or No. header, or else a column of 11-digit BMW numbers. Its columns are read by their headers (No., Part number, Description, Qty, From, Up to).
         The diagram image is the one image sent with a single page, else the largest image saved with the page; its <code>&lt;map&gt;</code> areas become clickable numbers.
         The file name without .html is the diagram code (unless Diagram code is filled in for a single page), and the page title is the diagram title.</p>
       <p><b>Diagram images</b>: an image named after a diagram's code is attached to it, ignoring case and anything but letters and digits (<code>11-0050.PNG</code> fits <code>11_0050</code>).
+        With a vehicle under Link to vehicle only its diagrams count; with none, an image whose code several diagrams share is reported.
         Images with no such diagram are reported, or become new diagrams when the box above is ticked.</p>
     </details>
     <h2>Validation report</h2>
