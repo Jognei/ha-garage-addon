@@ -28,6 +28,9 @@ RESTART_CODE = 3
 # accept requests from HA's ingress proxy.
 ADDON = os.environ.get("PARTS_CATALOG_ADDON") == "1"
 ALLOWED_CLIENTS = {a.strip() for a in os.environ.get("PARTS_CATALOG_ALLOW", "").split(",") if a.strip()}
+# The add-on's name on Home Assistant's network: its slug with dashes (local-parts-catalog for a local install,
+# 1a2b3c4d-parts-catalog from a repository).
+ADDON_HOST = os.environ.get("HOSTNAME", "")
 
 app = Flask(__name__, static_folder=None)
 app.config["MAX_CONTENT_LENGTH"] = 500 * 1024 * 1024  # service manuals are big
@@ -1055,10 +1058,8 @@ def api_ha_summary():
 def api_ha_dashboard():
     """YAML for a Garage dashboard view using the add-on's sensors."""
     from . import ha_sensors
-    # The add-on's sidebar panel lives at /<slug>; its container hostname is the slug with dashes
-    # (local-parts-catalog for a local install, 1a2b3c4d-parts-catalog from a repository).
-    host = os.environ.get("HOSTNAME", "")
-    path = "/" + host.replace("-", "_") if ADDON and host.endswith("parts-catalog") else "/local_parts_catalog"
+    # The add-on's sidebar panel lives at /<slug>, its hostname with underscores.
+    path = "/" + ADDON_HOST.replace("-", "_") if ADDON and ADDON_HOST.endswith("parts-catalog") else "/local_parts_catalog"
     return app.response_class(ha_sensors.dashboard_yaml(ha_summary(), path), mimetype="text/plain")
 
 
@@ -1114,7 +1115,7 @@ def api_settings():
             threading.Timer(0.5, lambda: os._exit(RESTART_CODE)).start()
         return jsonify(ok=True, restarting=restart, settings=s)
     from . import ha_sensors
-    return jsonify(settings=s, lan_addresses=lan_addresses(), data_dir=db.DATA_DIR, addon=ADDON,
+    return jsonify(settings=s, lan_addresses=lan_addresses(), data_dir=db.DATA_DIR, addon=ADDON, hostname=ADDON_HOST,
                    lan_active=app.config.get("BIND_HOST") == "0.0.0.0" and not ADDON, publish_sensors=ha_sensors.enabled())
 
 

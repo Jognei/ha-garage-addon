@@ -33,6 +33,39 @@ Use them in automations, e.g. a notification when `sensor.garage_overdue` goes a
 In the add-on, go to **Settings › Home Assistant dashboard** and copy the YAML it shows for your vehicles. Then in
 your dashboard choose **Edit dashboard › ⋮ › Raw configuration editor**, and paste it under `views:`.
 
+## Update the odometer from Home Assistant
+If a sensor in Home Assistant knows a vehicle's odometer (from the car's own integration, for example), Home
+Assistant can send it to the garage whenever it changes. The sensor must report miles, the unit the garage uses.
+In the add-on, **Settings › Update the odometer from Home Assistant** shows the YAML below filled in with the
+add-on's hostname and your vehicle ids. The hostname is `<repository id>-parts-catalog`, or
+`local-parts-catalog` for a local install.
+
+Add this to `configuration.yaml` and restart Home Assistant:
+```yaml
+rest_command:
+  garage_odometer:
+    url: "http://<add-on hostname>:8765/api/cars/{{ car_id }}/mileage"
+    method: post
+    content_type: "application/json"
+    payload: '{"mileage": {{ mileage }}, "source": "home assistant"}'
+```
+Then an automation for each vehicle, with your sensor and the vehicle's id:
+```yaml
+alias: Garage odometer
+triggers:
+  - trigger: state
+    entity_id: sensor.YOUR_ODOMETER
+    to: null
+conditions:
+  - condition: template
+    value_template: "{{ trigger.to_state.state | is_number }}"
+actions:
+  - action: rest_command.garage_odometer
+    data:
+      car_id: <vehicle id>
+      mileage: "{{ trigger.to_state.state | int }}"
+```
+
 ## AI agents (MCP)
 Let an AI assistant such as Claude, or any app that supports MCP, work with your garage. It can list vehicles,
 check what's due, read service history, record odometer readings, log services, and add or update parts.

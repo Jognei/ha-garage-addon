@@ -1150,6 +1150,31 @@ async function settingsPage() {
       <pre class="code" id="dashYaml">Loading…</pre>
       <div><button type="button" id="copyDash">Copy</button></div>`
       : '<p>Sensors are off (the <b>Publish sensors</b> option in the add-on\'s Configuration tab), so there is no dashboard to add.</p>'}
+    </div>
+    <h2>Update the odometer from Home Assistant</h2>
+    <div class="panel stack small">
+      <p>If a sensor in Home Assistant knows a vehicle's odometer (from the car's own integration, for example), Home Assistant can send it here whenever it changes. The sensor must report miles, the unit the garage uses. Vehicle ids: ${cars.map((c) => `<b>${c.id}</b> = ${esc(c.name)}`).join(', ')}.</p>
+      <p>Add this to <code>configuration.yaml</code> and restart Home Assistant:</p>
+      <pre class="code">rest_command:
+  garage_odometer:
+    url: "http://${esc(s.hostname || 'ADD-ON-HOSTNAME')}:8765/api/cars/{{ car_id }}/mileage"
+    method: post
+    content_type: "application/json"
+    payload: '{"mileage": {{ mileage }}, "source": "home assistant"}'</pre>
+      <p>Then an automation for each vehicle (paste it in the automation editor's YAML mode), with your sensor and the vehicle's id:</p>
+      <pre class="code">alias: Garage odometer
+triggers:
+  - trigger: state
+    entity_id: sensor.YOUR_ODOMETER
+    to: null
+conditions:
+  - condition: template
+    value_template: "{{ trigger.to_state.state | is_number }}"
+actions:
+  - action: rest_command.garage_odometer
+    data:
+      car_id: ${cars.length ? cars[0].id : 'VEHICLE_ID'}
+      mileage: "{{ trigger.to_state.state | int }}"</pre>
     </div>` : `<h2>Home Assistant</h2>
     <div class="panel stack small">
       <p>Ready for later. Home Assistant needs phone access turned on (so it can reach this PC). Vehicle ids: ${cars.map((c) => `<b>${c.id}</b> = ${esc(c.name)}`).join(', ')}.</p>

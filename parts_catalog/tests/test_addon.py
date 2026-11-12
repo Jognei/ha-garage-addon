@@ -115,14 +115,16 @@ class AddonTest(unittest.TestCase):
             self.assertEqual(self.c.get("/api/ping", environ_base={"REMOTE_ADDR": "172.30.32.2"}).status_code, 200)
         finally:
             server.ALLOWED_CLIENTS = set()
+        host = server.ADDON_HOST
         try:
-            server.ADDON = True
+            server.ADDON, server.ADDON_HOST = True, "1a2b3c4d-parts-catalog"
             s = self.c.get("/api/settings").get_json()
             self.assertTrue(s["addon"])
             self.assertFalse(s["lan_active"])
+            self.assertEqual(s["hostname"], "1a2b3c4d-parts-catalog")  # how Home Assistant reaches the add-on
             self.assertEqual(self.c.put("/api/settings", json={"lan": True}).status_code, 400)
         finally:
-            server.ADDON = False
+            server.ADDON, server.ADDON_HOST = False, host
 
     def test_settings_say_whether_sensors_are_published(self):
         with mock.patch.dict(os.environ, {"SUPERVISOR_TOKEN": "tok", "PARTS_CATALOG_SENSORS": "0"}):
