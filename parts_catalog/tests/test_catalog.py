@@ -449,6 +449,18 @@ class CatalogTest(unittest.TestCase):
         with self.c.get("/api/epc/export?samples=1") as r, zipfile.ZipFile(io.BytesIO(r.data)) as z:
             self.assertEqual({i.compress_type for i in z.infolist() if i.filename.startswith("images/")}, {zipfile.ZIP_STORED})
 
+    def test_tool_folder_skips_a_readme(self):
+        d, data = tempfile.mkdtemp(dir=self.tmp), tempfile.mkdtemp(dir=self.tmp)
+        for n, text in {"README.txt": "Saved from the dealer's catalog, 2024.\n", "items.csv": "diagram,callout,part number\n86_0090,1,86111230090\n"}.items():
+            with open(os.path.join(d, n), "w", encoding="utf-8") as f:
+                f.write(text)
+        tool = lambda p: subprocess.run([sys.executable, TOOL, p], env=dict(os.environ, PARTS_CATALOG_DATA=data), stdin=subprocess.DEVNULL,  # noqa: E731
+                                        capture_output=True, text=True, timeout=60)
+        r = tool(d)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn('"skipped": "Can\'t tell what this CSV holds from its headers', r.stdout)
+        self.assertNotEqual(tool(os.path.join(d, "README.txt")).returncode, 0)  # named on its own it is meant as data
+
     def test_same_code_on_two_vehicles(self):
         def bundle(source, vehicle, title, pn):
             return {"source": {"name": source}, "vehicles": [{"code": vehicle, "series": vehicle[:3], "model": "x"}],

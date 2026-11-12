@@ -531,6 +531,10 @@ def map_headers(headers, wanted):
     return out
 
 
+class UnknownCsvKind(ValueError):
+    pass
+
+
 def csv_kind(headers):
     h = {re.sub(r"\s+", " ", x.strip().lower()) for x in headers}
     has = lambda f: bool(h & set(ALIASES[f]))  # noqa: E731
@@ -566,11 +570,11 @@ def import_csv(path, source_name=None, kind=None, vehicle=None, category=None, i
         dialect = "excel"
     reader = list(csv.reader(io.StringIO(text), dialect=dialect))
     if not reader:
-        raise ValueError("Empty CSV")
+        raise UnknownCsvKind("Empty CSV")
     headers, data = reader[0], [r for r in reader[1:] if any(c.strip() for c in r)]
     kind = kind or csv_kind(headers)
     if not kind:
-        raise ValueError(f"Can't tell what this CSV holds from its headers: {headers}")
+        raise UnknownCsvKind(f"Can't tell what this CSV holds from its headers: {headers}")
     name = source_name or os.path.basename(path)
     sid = get_source(name, "csv", is_sample)
     rep = Report(name)
