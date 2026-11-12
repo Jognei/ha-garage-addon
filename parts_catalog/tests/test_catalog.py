@@ -4,8 +4,10 @@ import io
 import json
 import os
 import shutil
+import sqlite3
 import tempfile
 import unittest
+from unittest import mock
 
 os.environ.setdefault("PARTS_CATALOG_DATA", tempfile.mkdtemp())
 
@@ -269,6 +271,38 @@ class CatalogTest(unittest.TestCase):
                         content_type="multipart/form-data")
         self.assertEqual(r.get_json()["reports"][0]["counts"]["items_added"], 1)
         self.assertEqual(self.c.get(f"/api/epc/diagrams?vehicle={epc.row('SELECT id FROM vehicles WHERE code=?', ('DEMO-SEDAN',))['id']}&category={epc.row('SELECT id FROM categories WHERE code=?', ('12',))['id']}").get_json()[0]["code"], "12_0001")
+
+    def post_import(self, *files):
+        r = self.c.post("/api/epc/import", data={"file": [(io.BytesIO(b), n) for n, b in files]}, content_type="multipart/form-data")
+        return r.get_json()["reports"]
+
+    def assert_not_locked(self):
+        other = sqlite3.connect(epc.EPC_DB, timeout=0.2)
+        try:
+            other.execute("BEGIN IMMEDIATE")  # "database is locked" while another connection holds a write transaction
+            other.rollback()
+        finally:
+            other.close()
+
+    def test_failed_import_leaves_catalog_unlocked(self):
+        broken = {"source": {"name": "Broken bundle"}, "vehicles": [{"code": "BROKEN-1"}], "diagrams": [{"code": "98_0001", "image": 5}]}
+        good = b"diagram,callout,part number,description\n98_0003,1,98111234567,Pump\n"
+        reports = self.post_import(("broken.json", json.dumps(broken).encode()), ("good.csv", good))
+        self.assertIn("error", reports[0])
+        self.assertIsNone(epc.row("SELECT 1 FROM sources WHERE name='Broken bundle'"))  # the next file's commit didn't keep it
+
+        def half_written(*a, **kw):
+            epc.connect().execute("INSERT INTO sources (name) VALUES ('Half-written images')")
+            raise RuntimeError("disk full")
+        with mock.patch.object(epc_import, "import_images", half_written), mock.patch.dict(app.config, PROPAGATE_EXCEPTIONS=True):
+            with self.assertRaises(RuntimeError):
+                self.post_import(("98_0001.png", b"not really a png"))
+        self.assert_not_locked()
+
+    def test_bundle_shape_errors(self):
+        self.assertEqual(self.post_import(("strings.json", b'{"vehicles": ["E34-535i"]}'))[0]["error"], "vehicles[0] must be an object")
+        nested = {"diagrams": [{"code": "98_0002", "items": ["1 pump"]}]}
+        self.assertEqual(self.post_import(("nested.json", json.dumps(nested).encode()))[0]["error"], "diagrams[0].items[0] must be an object")
 
     def test_same_code_on_two_vehicles(self):
         def bundle(source, vehicle, title, pn):

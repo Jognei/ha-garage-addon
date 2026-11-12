@@ -141,11 +141,13 @@ def import_files():
                     kw["image"] = images[0]
                 reports.append(epc_import.import_path(p, **kw).as_dict())
             except Exception as e:  # noqa: BLE001 - report per file
+                epc.connect().rollback()
                 reports.append({"source": os.path.basename(p), "error": str(e)})
         loose = images if not (len(htmls) == 1 and len(images) == 1) else []
         if loose:
             reports.append(epc_import.import_images(loose, opts["source_name"], opts["create"], opts["category"], opts["vehicle"]).as_dict())
     finally:
+        epc.connect().rollback()
         shutil.rmtree(tmp, ignore_errors=True)
     return jsonify(reports=reports)
 

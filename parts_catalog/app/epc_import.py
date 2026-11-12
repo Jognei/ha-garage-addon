@@ -357,6 +357,21 @@ def add_supersession(old, new, source_id, rep, date=None, note=""):
 
 # ---------- JSON bundle ----------
 
+BUNDLE_LISTS = {"vehicles": {}, "categories": {}, "parts": {}, "diagrams": {"items": {}, "hotspots": {}}, "supersessions": {}, "expected_diagrams": {}}
+
+
+def check_lists(obj, lists=BUNDLE_LISTS, path=""):
+    """ValueError naming the first list or entry that isn't shaped like the bundle format."""
+    for key, inner in lists.items():
+        entries = obj.get(key, [])
+        if not isinstance(entries, list):
+            raise ValueError(f"{path}{key} must be a list")
+        for i, e in enumerate(entries):
+            if not isinstance(e, dict):
+                raise ValueError(f"{path}{key}[{i}] must be an object")
+            check_lists(e, inner, f"{path}{key}[{i}].")
+
+
 def import_bundle(path_or_obj, source_name=None, base_dir=None, is_sample=None):
     """Import the portable JSON format (see Catalog > Data & import). Image paths are relative to the JSON file."""
     if isinstance(path_or_obj, dict):
@@ -366,8 +381,13 @@ def import_bundle(path_or_obj, source_name=None, base_dir=None, is_sample=None):
             raw = f.read()
         b = json.loads(raw.decode("utf-8-sig"))
         base_dir = base_dir or os.path.dirname(os.path.abspath(path_or_obj))
+    if not isinstance(b, dict):
+        raise ValueError(f"Not a {BUNDLE_FORMAT} file (not a JSON object)")
     if b.get("format") not in (None, BUNDLE_FORMAT):
         raise ValueError(f"Not a {BUNDLE_FORMAT} file (format={b.get('format')!r})")
+    if not isinstance(b.get("source") or {}, dict):
+        raise ValueError("source must be an object")
+    check_lists(b)
     src = b.get("source") or {}
     name = source_name or src.get("name") or (os.path.basename(path_or_obj) if raw else "JSON import")
     sample = bool(src.get("is_sample")) if is_sample is None else is_sample
