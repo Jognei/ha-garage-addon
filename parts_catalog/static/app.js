@@ -10,7 +10,8 @@ const esc = (v) => String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '
 const money = (v) => (v == null || v === '' ? '' : '$' + Number(v).toFixed(2));
 const miles = (v) => (v == null || v === '' ? '' : Number(v).toLocaleString() + ' mi');
 const num = (v) => (v == null || v === '' ? '' : Number(v).toLocaleString());
-const today = () => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; };  // local, not UTC
+const datePlus = (days) => { const d = new Date(); d.setDate(d.getDate() + days); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; };  // local, not UTC
+const today = () => datePlus(0);
 const sCls = (s) => 's-' + String(s || '').replace(/\s+/g, '-');
 const fmtSize = (b) => (b > 1e6 ? (b / 1e6).toFixed(1) + ' MB' : Math.max(1, Math.round(b / 1e3)) + ' KB');
 const fileUrl = (d, page) => `files/${d.id || d.doc_id}/${encodeURIComponent(d.original_name || d.filename || d.doc_title || 'file')}${page ? '#page=' + page : ''}`;
@@ -257,8 +258,6 @@ function sortable(root, itemSel, handleSel, onDone) {
     };
   });
 }
-
-const datePlus = (days) => { const d = new Date(); d.setDate(d.getDate() + days); return d.toISOString().slice(0, 10); };
 
 // "Dismiss for now": the schedule stops counting as due soon / overdue until a date.
 function snoozeDialog(u) {
