@@ -250,7 +250,9 @@ async function usableParts(car, keep = () => false) {
   return own.concat(loose).filter((p) => p.status !== 'Installed' || keep(p));
 }
 
-const partSub = (p) => [p.brand, p.part_number, p.location, p.car_id ? '' : 'not assigned'].filter(Boolean).join(' · ');
+// `projectId`: the project being edited, whose own parts need no "for" mark
+const partSub = (p, projectId) => [p.brand, p.part_number, p.location, p.car_id ? '' : 'not assigned',
+  p.project_title && p.project_id !== projectId ? 'for ' + p.project_title : ''].filter(Boolean).join(' · ');
 
 async function updateMileage(car, value) {
   const m = parseInt(String(value).replace(/\D/g, ''), 10);
@@ -644,7 +646,7 @@ async function projectDialog(car, p) {
       ${parts.length > 8 ? '<input id="partFilter" type="search" placeholder="Filter parts…" style="width:100%;margin-bottom:6px">' : ''}
       <div class="use-list">${parts.map((x) => `<label class="use-row" data-text="${esc([x.name, x.brand, x.part_number, x.location, x.category].join(' ').toLowerCase())}">
         <input type="checkbox" name="part" value="${x.id}" ${mine.has(x.id) ? 'checked' : ''}>
-        <span class="use-main"><b>${esc(x.name)}</b><span class="muted small">${esc(partSub(x))}</span></span>
+        <span class="use-main"><b>${esc(x.name)}</b><span class="muted small">${esc(partSub(x, p && p.id))}</span></span>
         <span class="small ${sCls(x.status)}">${esc(x.status)}</span></label>`).join('')}</div>` : ''}
     ${p ? '<div style="margin-top:14px"><button type="button" class="danger" id="delProj">Delete project</button></div>' : ''}`,
   async (data, f) => {
@@ -771,7 +773,7 @@ async function partsSection(el, { car = null, params = new URLSearchParams() } =
       <th title="Installed">✓</th><th>Part</th>${car ? '' : '<th>Vehicle</th>'}<th class="num">Qty</th><th>Status</th><th class="hide-sm">Installed at</th><th class="hide-sm">Installed on</th><th class="hide-sm">Location</th><th class="hide-sm">Bought</th><th></th></tr></thead><tbody>
       ${parts.map((p) => `<tr data-pid="${p.id}" class="${p.status === 'Installed' ? 'installed' : ''}">
         <td><input type="checkbox" class="inst" ${p.status === 'Installed' ? 'checked' : ''} title="Installed"></td>
-        <td><b>${esc(p.name)}</b><div class="small muted">${[esc(p.category), esc(p.brand), REF.features.catalog && /^\w+$/.test(normPn(p.part_number)) ? `<a href="#/catalog/part/${normPn(p.part_number)}">${esc(p.part_number)}</a>` : esc(p.part_number)].filter(Boolean).join(' · ')}</div>${p.notes ? `<div class="small muted" title="${esc(p.notes)}">${esc(p.notes.length > 90 ? p.notes.slice(0, 90) + '…' : p.notes)}</div>` : ''}</td>
+        <td><b>${esc(p.name)}</b><div class="small muted">${[esc(p.category), esc(p.brand), REF.features.catalog && /^\w+$/.test(normPn(p.part_number)) ? `<a href="#/catalog/part/${normPn(p.part_number)}">${esc(p.part_number)}</a>` : esc(p.part_number), p.project_title ? esc('for ' + p.project_title) : ''].filter(Boolean).join(' · ')}</div>${p.notes ? `<div class="small muted" title="${esc(p.notes)}">${esc(p.notes.length > 90 ? p.notes.slice(0, 90) + '…' : p.notes)}</div>` : ''}</td>
         ${car ? '' : `<td class="small">${esc(p.car || '—')}</td>`}
         <td class="num"><input class="inline qty" inputmode="numeric" value="${p.qty ?? 1}" style="width:52px;text-align:right"></td>
         <td><select class="status ${sCls(p.status)}">${options(REF.statuses, p.status)}</select></td>

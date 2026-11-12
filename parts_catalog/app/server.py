@@ -829,8 +829,9 @@ def insert_part(b):
 
 
 PART_SELECT = """SELECT p.*, c.name AS car, d.title AS document_title, d.filename AS document_file,
-                 s.title AS service_title FROM parts p LEFT JOIN cars c ON c.id=p.car_id
-                 LEFT JOIN documents d ON d.id=p.document_id LEFT JOIN services s ON s.id=p.service_id"""
+                 s.title AS service_title, pr.title AS project_title FROM parts p LEFT JOIN cars c ON c.id=p.car_id
+                 LEFT JOIN documents d ON d.id=p.document_id LEFT JOIN services s ON s.id=p.service_id
+                 LEFT JOIN projects pr ON pr.id=p.project_id"""
 
 
 @app.route("/api/parts", methods=["GET", "POST"])

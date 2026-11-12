@@ -250,6 +250,13 @@ class AuditFixesTest(unittest.TestCase):
         p = self.c.get(f"/api/parts/{plugs}").get_json()
         self.assertEqual((p["qty"], p["status"]), (6, "Installed"))  # more than the row has: the whole row
 
+    def test_parts_carry_the_project_they_are_set_aside_for(self):
+        cid = self.car("DEMO-SET-ASIDE")
+        part = self.c.post("/api/parts", json={"car_id": cid, "name": "Control arm", "status": "On hand"}).get_json()["id"]
+        self.c.post(f"/api/cars/{cid}/projects", json={"title": "Suspension refresh", "part_ids": [part]})
+        p = next(p for p in self.c.get(f"/api/parts?car_id={cid}").get_json() if p["id"] == part)
+        self.assertEqual(p["project_title"], "Suspension refresh")
+
 
 if __name__ == "__main__":
     unittest.main()
