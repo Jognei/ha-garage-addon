@@ -369,7 +369,9 @@ def api_car_photo(car_id):
         if not f:
             return err("Choose a photo")
         did = store_document(f, car_id, "Photo", f"{car['name']} photo")
-        shrink_photo(did)
+        if not shrink_photo(did):
+            delete_document(did)
+            return err("Couldn't read that photo. Save it as JPEG or PNG.")
         db.execute("UPDATE cars SET photo_id=? WHERE id=?", (did, car_id))
     else:
         db.execute("UPDATE cars SET photo_id=NULL WHERE id=?", (car_id,))
@@ -379,7 +381,7 @@ def api_car_photo(car_id):
 
 
 def shrink_photo(did, max_side=1600):
-    """Phone photos are large; keep vehicle photos to a sensible size (and the right way up)."""
+    """Phone photos are large; keep vehicle photos to a sensible size (and the right way up). False if Pillow can't read it."""
     d = db.row("SELECT * FROM documents WHERE id=?", (did,))
     path = os.path.join(db.DOC_DIR, d["filename"])
     try:
@@ -396,8 +398,9 @@ def shrink_photo(did, max_side=1600):
         db.execute("UPDATE documents SET filename=?, original_name=?, size=? WHERE id=?",
                    (new, os.path.splitext(d["original_name"] or "photo")[0] + ".jpg",
                     os.path.getsize(os.path.join(db.DOC_DIR, new)), did))
-    except Exception:  # noqa: BLE001 - not an image Pillow can read: keep the original file
-        pass
+    except Exception:  # noqa: BLE001 - not an image Pillow can read (HEIC from an iPhone...)
+        return False
+    return True
 
 
 def delete_document(did):
@@ -1381,4 +1384,19 @@ def api_restore():
 def not_found(e):
     if request.path.startswith("/api/"):
         return err("Not found", 404)
+    return e
+
+
+@app.errorhandler(413)
+def too_large(e):
+    if request.path.startswith("/api/"):
+        return err(f"That's too big: an upload can be up to {app.config['MAX_CONTENT_LENGTH'] // (1024 * 1024)} MB.", 413)
+    return e
+
+
+@app.errorhandler(500)
+def server_error(e):
+    """Any unexpected exception; Flask has logged its traceback before this runs."""
+    if request.path.startswith("/api/"):
+        return err("Something went wrong on the server. The add-on log has the details.", 500)
     return e

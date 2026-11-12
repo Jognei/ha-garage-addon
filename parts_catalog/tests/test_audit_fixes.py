@@ -179,6 +179,36 @@ class AuditFixesTest(unittest.TestCase):
         p = self.c.get(f"/api/parts/{pid}").get_json()
         self.assertEqual((p["price"], p["qty"]), (1234.5, 2))
 
+    def test_api_errors_answer_json(self):
+        limit = app.config["MAX_CONTENT_LENGTH"]
+        uid = self.c.post("/api/documents/chunked", json={"filename": "manual.pdf", "size": 3 * 1024 * 1024}).get_json()["upload_id"]
+        try:
+            app.config["MAX_CONTENT_LENGTH"] = 1024 * 1024
+            r = self.c.put(f"/api/documents/chunked/{uid}?offset=0", data=b"x" * 2 * 1024 * 1024, content_type="application/octet-stream")
+        finally:
+            app.config["MAX_CONTENT_LENGTH"] = limit
+        self.assertEqual(r.status_code, 413)
+        self.assertIn("1 MB", r.get_json()["error"])
+        try:
+            app.config["PROPAGATE_EXCEPTIONS"] = False  # as in production; tests otherwise re-raise
+            with mock.patch.object(server, "ha_summary", side_effect=RuntimeError("boom")), self.assertLogs(app.logger, "ERROR") as logs:
+                r = self.c.get("/api/ha/summary")
+        finally:
+            app.config["PROPAGATE_EXCEPTIONS"] = None
+        self.assertEqual(r.status_code, 500)
+        self.assertIn("add-on log", r.get_json()["error"])
+        self.assertIsNotNone(logs.records[0].exc_info)  # the traceback still reaches the log
+
+    def test_unreadable_photo_is_refused_and_removed(self):
+        cid = self.car("DEMO-HEIC")
+        files = set(os.listdir(db.DOC_DIR))
+        r = self.c.post(f"/api/cars/{cid}/photo", data={"photo": (io.BytesIO(b"ftypheic, not for Pillow"), "IMG_0001.HEIC")},
+                        content_type="multipart/form-data")
+        self.assertEqual((r.status_code, r.get_json()["error"]), (400, "Couldn't read that photo. Save it as JPEG or PNG."))
+        self.assertEqual(set(os.listdir(db.DOC_DIR)), files)
+        self.assertIsNone(db.row("SELECT id FROM documents WHERE car_id=? AND kind='Photo'", (cid,)))
+        self.assertIsNone(self.c.get(f"/api/cars/{cid}").get_json()["photo_id"])
+
     def test_service_without_mileage_keeps_the_last_known_mileage(self):
         cid = self.car("DEMO-MILES", 200000)
         sid = self.c.post(f"/api/cars/{cid}/schedules", json={"items": [
