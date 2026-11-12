@@ -44,8 +44,13 @@ jobs:
         env:
           TAG: ${{ steps.v.outputs.image }}:${{ steps.v.outputs.version }}
         run: |
-          if docker manifest inspect "$TAG" > /dev/null 2>&1; then
+          if out=$(docker manifest inspect "$TAG" 2>&1); then
             echo "::error::$TAG is already published. Raise version: in parts_catalog/config.yaml so this build doesn't overwrite it."
+            exit 1
+          fi
+          # only a registry that answers "no such tag" lets the build go on; a failed lookup proves nothing
+          if ! grep -qiE "no such manifest|manifest unknown" <<< "$out"; then
+            echo "::error::Couldn't check the registry for $TAG, so the build stops: $out"
             exit 1
           fi
       - uses: docker/build-push-action@v6
