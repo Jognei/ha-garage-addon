@@ -22,6 +22,8 @@ const garageChip = (g) => (g && g.length ? g.map((p) => `<span class="badge ${sC
 // "Mine" cell and add button of a diagram or search row; addToGarage fills the cells of the number it adds
 const mineCell = (i) => `<td class="mine" data-pn="${esc(i.part_number)}">${garageChip(i.garage)}</td>`;
 const addBtn = (i) => (i.part_number ? `<button class="link add" data-id="${i.id}" title="Add to my parts list">＋</button>` : '');
+// a diagram's vehicles, while all vehicles are listed: codes like 11_0050 repeat between vehicles
+const vehicleLine = (r) => (!EPC.vehicle && r.vehicles && r.vehicles.length ? `<div class="small muted">${r.vehicles.map(esc).join(', ')}</div>` : '');
 
 // When the catalog is switched off (Settings > Features), its pages say so instead of showing an empty catalog.
 const catalogGuard = (fn) => async (...args) => {
@@ -40,10 +42,10 @@ routes.push(
   [/^\/catalog\/data$/, catalogGuard(catalogData)],
 );
 
-async function catalogHeader(vehicles, title, crumbs = '') {
+async function catalogHeader(vehicles, title, crumbs = '', sub = '') {
   const vs = vehicles || await api('/epc/vehicles');
   if (EPC.vehicle && !vs.some((v) => String(v.id) === EPC.vehicle)) EPC.vehicle = '';
-  return `<div class="spread"><div>${crumbs ? `<div class="small muted">${crumbs}</div>` : ''}<h1>${title}</h1></div>
+  return `<div class="spread"><div>${crumbs ? `<div class="small muted">${crumbs}</div>` : ''}<h1>${title}</h1>${sub ? `<div class="small muted">${sub}</div>` : ''}</div>
     <div class="row">
       <label class="small muted">Vehicle <select id="epcVehicle">${options(vs.map((v) => [v.id, `${v.code}${v.is_sample ? ' (SAMPLE)' : ''} · ${v.diagrams} diagrams`]), EPC.vehicle, 'All vehicles')}</select></label>
       <form id="epcSearch" class="row"><input type="search" name="q" placeholder="Part number or description" style="min-width:240px"><button>Search</button></form>
@@ -100,7 +102,7 @@ async function catalogGroup(id) {
     ${list.length ? `<div class="thumbs">${list.map((d) => `<a class="thumb" href="#/catalog/diagram/${d.id}">
         <div class="thumb-img">${thumbUrl(d) ? `<img src="${esc(thumbUrl(d))}" alt="" loading="lazy">` : '<span class="muted small">no image</span>'}</div>
         <div class="thumb-title">${esc(d.title) || missing('no title')}${sampleTag(d.is_sample)}</div>
-        <div class="thumb-code mono">${esc(d.code)}${d.items ? '' : ' · ' + missing('no parts list')}</div></a>`).join('')}</div>`
+        <div class="thumb-code mono">${esc(d.code)}${d.items ? '' : ' · ' + missing('no parts list')}</div>${vehicleLine(d)}</a>`).join('')}</div>`
       : '<div class="panel empty">No diagrams in this group' + (EPC.vehicle ? ' for this vehicle' : '') + ' yet.</div>'}`;
   wireHeader();
   wireGroupSelect();
@@ -121,7 +123,8 @@ async function catalogDiagram(id, params) {
   const showAll = params.get('all') === '1';
   const items = d.items.filter((i) => showAll || i.fits);
   const hidden = d.items.length - items.length;
-  view.innerHTML = `${await catalogHeader(null, `${esc(d.title) || esc(d.code)}${sampleTag(d.is_sample)}`, `<a href="#/catalog">Main groups</a> › ${cat} › <span class="mono">${esc(d.code)}</span>`)}
+  const vehicleList = d.vehicles.length ? `${d.vehicles.length === 1 ? 'Vehicle' : 'Vehicles'}: ${d.vehicles.map((v) => esc(v.code)).join(', ')}` : missing('no vehicle');
+  view.innerHTML = `${await catalogHeader(null, `${esc(d.title) || esc(d.code)}${sampleTag(d.is_sample)}`, `<a href="#/catalog">Main groups</a> › ${cat} › <span class="mono">${esc(d.code)}</span>`, vehicleList)}
     <div class="spread epc-bar">
       <div class="row">
         <a class="btn ${prev ? '' : 'disabled'}" ${prev ? `href="#/catalog/diagram/${prev.id}"` : ''} title="Previous diagram (←)">←</a>
@@ -227,7 +230,7 @@ async function catalogPart(pn) {
     </div>
     <h2>Used in</h2>
     <div class="panel table-wrap" style="padding:0">${p.used_in.length ? `<table><thead><tr><th>Diagram</th><th>No.</th><th>Description</th><th class="num">Qty</th><th>Fitment</th></tr></thead><tbody>
-      ${p.used_in.map((u) => `<tr><td><a href="#/catalog/diagram/${u.diagram_id}?c=${encodeURIComponent(u.callout)}"><span class="mono">${esc(u.diagram_code)}</span> ${esc(u.diagram_title)}</a></td>
+      ${p.used_in.map((u) => `<tr><td><a href="#/catalog/diagram/${u.diagram_id}?c=${encodeURIComponent(u.callout)}"><span class="mono">${esc(u.diagram_code)}</span> ${esc(u.diagram_title)}</a>${vehicleLine(u)}</td>
         <td class="mono">${esc(u.callout)}</td><td>${esc(u.description)}${u.supplement ? `<div class="small muted">${esc(u.supplement)}</div>` : ''}</td>
         <td class="num">${u.qty == null ? missing('?') : esc(u.qty)}</td><td class="small">${esc(range(u))}</td></tr>`).join('')}
     </tbody></table>` : '<div class="empty">Not on any imported diagram.</div>'}</div>`;
@@ -244,7 +247,7 @@ async function catalogSearch(params) {
       ${res.map((r) => `<tr><td class="mono" style="white-space:nowrap">${r.part_number ? `<a href="#/catalog/part/${esc(r.part_number)}">${esc(r.part_number_fmt)}</a>` : missing('none')}</td>
         <td>${esc(r.description) || missing('no description')}${sampleTag(r.is_sample)}${r.supplement ? `<div class="small muted">${esc(r.supplement)}</div>` : ''}</td>
         <td class="num">${r.qty == null ? missing('?') : esc(r.qty)}</td>
-        <td><a href="#/catalog/diagram/${r.diagram_id}?c=${encodeURIComponent(r.callout)}"><span class="mono">${esc(r.diagram_code)}</span> #${esc(r.callout)} ${esc(r.diagram_title)}</a></td>
+        <td><a href="#/catalog/diagram/${r.diagram_id}?c=${encodeURIComponent(r.callout)}"><span class="mono">${esc(r.diagram_code)}</span> #${esc(r.callout)} ${esc(r.diagram_title)}</a>${vehicleLine(r)}</td>
         <td class="small">${esc(range(r))}</td>${mineCell(r)}<td>${addBtn(r)}</td></tr>`).join('')}
     </tbody></table>${res.length >= 200 ? '<div class="small muted" style="padding:8px">Showing the first 200 matches.</div>' : ''}` : `<div class="empty">${q ? `No matches.${EPC.vehicle ? ' <button class="link" id="searchAll">Search all vehicles</button>' : ''}` : 'Type a part number (any spacing) or words from the description.'}</div>`}</div>`;
   wireHeader();
