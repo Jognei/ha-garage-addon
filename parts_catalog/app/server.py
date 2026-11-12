@@ -1224,6 +1224,7 @@ def ha_summary():
             "parts_needed": db.row("SELECT COUNT(*) AS n FROM parts WHERE car_id=? AND status IN ('Needed','Check','Ordered')",
                                    (c["id"],))["n"],
             "snoozed": sum(1 for u in up if u["state"] == "snoozed"),
+            "schedules": len(up),
         })
     return {"cars": out}
 

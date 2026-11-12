@@ -35,8 +35,8 @@ TOOLS = [
                            "hidden = sold or stored."),
     _tool("get_vehicle", "One vehicle in detail: every service schedule with its due mileage/date and state, recent odometer readings.",
           {"vehicle": VEHICLE}, ["vehicle"]),
-    _tool("whats_due", "Services that are overdue or due soon (and schedules never done or dismissed until a date), for one vehicle "
-                       "or all that aren't hidden.",
+    _tool("whats_due", "Services that are overdue or due soon (and schedules never done, missing the last-done mileage or date "
+                       "their interval counts from, or dismissed until a date), for one vehicle or all that aren't hidden.",
           {"vehicle": VEHICLE}),
     _tool("list_services", "Service history of a vehicle, newest first, each with its id.",
           {"vehicle": VEHICLE, "limit": {"type": "integer", "default": 20}}, ["vehicle"]),
@@ -160,9 +160,13 @@ def run_tool(name, a):
         out = []
         for c in cars:
             up = call("GET", f"/cars/{c['id']}")["upcoming"]
+            unknown = [u for u in up if u["state"] == "unknown"]
+            done = [u for u in unknown if u["last_date"] is not None or u["last_mileage"] is not None]  # but nothing to count from
             out.append({"vehicle": c["name"], "odometer": c.get("mileage"),
                         "due": [due_row(u) for u in up if u["state"] in ("overdue", "soon")],
-                        "never_done": [u["title"] for u in up if u["state"] == "unknown"],
+                        "never_done": [u["title"] for u in unknown if u not in done],
+                        "missing_last_mileage": [u["title"] for u in done if u["interval_miles"] and u["last_mileage"] is None],
+                        "missing_last_date": [u["title"] for u in done if u["interval_months"] and u["last_date"] is None],
                         "dismissed": [{"title": u["title"], "snoozed_until": u["snoozed_until"]}
                                       for u in up if u["state"] == "snoozed"]})
         return out

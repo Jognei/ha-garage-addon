@@ -145,6 +145,22 @@ class AuditFixesTest(unittest.TestCase):
         for sid, (item, state) in zip(ids, cases):
             self.assertEqual(up[sid]["state"], state, item["title"])
 
+    def test_agents_and_home_assistant_tell_never_done_from_done_without_a_due_point(self):
+        cid = self.car("DEMO-HALF-DONE", 12000)
+        self.c.post(f"/api/cars/{cid}/schedules", json={"items": [{"title": "Chain", "interval_miles": 500},
+                                                                  {"title": "Valve adjustment", "interval_miles": 15000, "last_date": "2026-03-01"},
+                                                                  {"title": "Brake fluid", "interval_months": 24, "last_mileage": 11000}]})
+        self.c.put("/api/settings", json={"agent_key": "new"})
+        key = self.c.get("/api/settings").get_json()["settings"]["agent_key"]
+        r = self.c.post("/mcp", json={"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                                      "params": {"name": "whats_due", "arguments": {"vehicle": "DEMO-HALF-DONE"}}},
+                        headers={"Authorization": f"Bearer {key}"}).get_json()["result"]
+        due = json.loads(r["content"][0]["text"])[0]
+        self.assertEqual({k: due.get(k) for k in ("never_done", "missing_last_mileage", "missing_last_date")},
+                         {"never_done": ["Chain"], "missing_last_mileage": ["Valve adjustment"], "missing_last_date": ["Brake fluid"]})
+        states = ha_sensors.build_states(self.c.get("/api/ha/summary").get_json())
+        self.assertEqual(states["sensor.garage_demo_half_done_status"]["state"], "OK")
+
     def test_a_newer_baseline_beats_an_older_service_mileage(self):
         cid = self.car("DEMO-BASELINE", 103000)
         sid = self.c.post(f"/api/cars/{cid}/schedules", json={"items": [
