@@ -683,6 +683,24 @@ def refresh_schedule(sid):
     db.execute("UPDATE schedules SET last_date=?, last_mileage=? WHERE id=?", (date, mileage, sid))
 
 
+def back_on_hand(pid, car_id):
+    """A part its service on `car_id` stopped using: back onto the row it was split from if neither was edited, else On hand by itself."""
+    p = db.row("SELECT * FROM parts WHERE id=?", (pid,))
+    src = db.row("SELECT * FROM parts WHERE id=?", (p["split_from"],))
+    # using it set the quantity and the install fields, and gave a part with no vehicle the service's
+    same = src and src["status"] != "Installed" and all(
+        p[k] == src[k] or (k == "car_id" and src[k] is None and p[k] == car_id)
+        for k in PART_FIELDS if k not in ("qty", "status", "installed_mileage", "installed_date", "service_id"))
+    if same:
+        with db.connect() as conn:  # one write: stopped halfway, the copy would count twice or not at all
+            conn.execute("UPDATE parts SET qty=?, updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                         ((src["qty"] or 1) + (p["qty"] or 1), src["id"]))
+            conn.execute("DELETE FROM parts WHERE id=?", (pid,))
+    else:
+        db.execute("""UPDATE parts SET status='On hand', installed_date=NULL, installed_mileage=NULL,
+                      updated_at=CURRENT_TIMESTAMP WHERE id=?""", (pid,))
+
+
 def save_service(car_id, service_id, b):
     if not (b.get("title") or "").strip():
         return err("What was done? (title required)")
@@ -721,15 +739,14 @@ def save_service(car_id, service_id, b):
         if pid not in old_parts and u["qty"] and 0 < u["qty"] < have:
             db.execute("UPDATE parts SET qty=?, updated_at=CURRENT_TIMESTAMP WHERE id=?", (have - u["qty"], pid))
             copy = {k: p[k] for k in PART_FIELDS if k in p}
-            copy["qty"] = u["qty"]
+            copy["qty"], copy["split_from"] = u["qty"], pid
             pid = db.execute(f"INSERT INTO parts ({','.join(copy)}) VALUES ({','.join('?' * len(copy))})",
                              list(copy.values())).lastrowid
         db.execute("""UPDATE parts SET service_id=?, car_id=COALESCE(car_id, ?), status='Installed', installed_date=?,
                       installed_mileage=COALESCE(?, installed_mileage), updated_at=CURRENT_TIMESTAMP WHERE id=?""",
                    (service_id, car_id, date, mileage, pid))
-    for pid in old_parts - {u["id"] for u in uses}:  # unticked while editing: not installed after all
-        db.execute("""UPDATE parts SET status='On hand', installed_date=NULL, installed_mileage=NULL,
-                      updated_at=CURRENT_TIMESTAMP WHERE id=?""", (pid,))
+    for pid in sorted(old_parts - {u["id"] for u in uses}):  # unticked while editing: not installed after all; a row before its copies
+        back_on_hand(pid, car_id)
     if mileage is not None:
         record_mileage(car_id, mileage, date, "service")
     return jsonify(id=service_id)
@@ -742,6 +759,8 @@ def api_service(service_id):
         return err("No such service", 404)
     if request.method == "DELETE":
         scheds = [r["schedule_id"] for r in db.rows("SELECT schedule_id FROM service_schedules WHERE service_id=?", (service_id,))]
+        for r in db.rows("SELECT id FROM parts WHERE service_id=? ORDER BY id", (service_id,)):  # a row before its copies
+            back_on_hand(r["id"], s["car_id"])
         db.execute("DELETE FROM services WHERE id=?", (service_id,))
         for sid in scheds:
             refresh_schedule(sid)

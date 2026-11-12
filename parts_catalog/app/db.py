@@ -186,6 +186,8 @@ def add_missing_columns(conn):
         conn.execute("ALTER TABLE parts ADD COLUMN category TEXT DEFAULT ''")
     if "project_id" not in have:
         conn.execute("ALTER TABLE parts ADD COLUMN project_id INTEGER REFERENCES projects(id) ON DELETE SET NULL")
+    if "split_from" not in have:  # the row a partly used part was taken from
+        conn.execute("ALTER TABLE parts ADD COLUMN split_from INTEGER REFERENCES parts(id) ON DELETE SET NULL")
     have = {r[1] for r in conn.execute("PRAGMA table_info(schedules)")}
     for col, ddl in (("sort_order", "INTEGER"), ("snoozed_until", "TEXT")):  # manual order; "dismissed until" date
         if col not in have:

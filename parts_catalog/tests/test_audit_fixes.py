@@ -577,6 +577,50 @@ class AuditFixesTest(unittest.TestCase):
         self.assertEqual((p["status"], p["installed_date"], p["installed_mileage"]), ("On hand", None, None))
         self.assertEqual(self.c.get(f"/api/parts/{washer}").get_json()["status"], "Installed")
 
+    def use_four_of_six(self, cid, name, **row):
+        pid = self.c.post("/api/parts", json={"name": name, "qty": 6, "status": "On hand", "price": 4.25, **row}).get_json()["id"]
+        svc = self.c.post(f"/api/cars/{cid}/services", json={"title": "Plugs", "date": "2026-10-01", "mileage": 40000,
+                                                             "parts": [{"id": pid, "qty": 4}]}).get_json()["id"]
+        return pid, svc
+
+    def stock(self, name):
+        return sorted((p["qty"], p["status"], p["installed_date"], p["installed_mileage"])
+                      for p in self.c.get("/api/parts").get_json() if p["name"] == name)
+
+    def test_deleting_a_service_puts_a_partly_used_row_back_together(self):
+        cid = self.car("DEMO-MERGE-DELETE")
+        for name, owner in (("Plug for the car", cid), ("Plug not assigned", None)):
+            pid, svc = self.use_four_of_six(cid, name, car_id=owner)
+            self.c.delete(f"/api/services/{svc}")
+            self.assertEqual(self.stock(name), [(6, "On hand", None, None)], name)
+            self.assertEqual(self.c.get(f"/api/parts/{pid}").get_json()["car_id"], owner)
+
+    def test_unticking_a_partly_used_part_puts_its_row_back_together(self):
+        cid = self.car("DEMO-MERGE-UNTICK")
+        _, svc = self.use_four_of_six(cid, "Plug unticked", car_id=cid)
+        self.c.put(f"/api/services/{svc}", json={"title": "Plugs", "date": "2026-10-01", "mileage": 40000, "parts": []})
+        self.assertEqual(self.stock("Plug unticked"), [(6, "On hand", None, None)])
+
+    def test_a_partly_used_row_edited_or_used_up_since_stays_apart(self):
+        cid = self.car("DEMO-MERGE-APART")
+        pid, svc = self.use_four_of_six(cid, "Plug repriced", car_id=cid)
+        self.c.put(f"/api/parts/{pid}", json={"price": 5.10})
+        self.c.delete(f"/api/services/{svc}")
+        self.assertEqual(self.stock("Plug repriced"), [(2, "On hand", None, None), (4, "On hand", None, None)])
+        pid, svc = self.use_four_of_six(cid, "Plug used up", car_id=cid)
+        self.c.post(f"/api/cars/{cid}/services", json={"title": "Plugs", "date": "2026-10-08", "mileage": 40100, "parts": [{"id": pid}]})
+        self.c.delete(f"/api/services/{svc}")
+        self.assertEqual(self.stock("Plug used up"), [(2, "Installed", "2026-10-08", 40100), (4, "On hand", None, None)])
+
+    def test_deleting_a_service_puts_its_parts_back_on_hand(self):
+        cid = self.car("DEMO-DELETE-PARTS")
+        filt = self.c.post("/api/parts", json={"car_id": cid, "name": "Oil filter", "status": "On hand"}).get_json()["id"]
+        svc = self.c.post(f"/api/cars/{cid}/services", json={"title": "Oil", "date": "2026-10-01", "mileage": 40000,
+                                                             "parts": [{"id": filt}]}).get_json()["id"]
+        self.c.delete(f"/api/services/{svc}")
+        p = self.c.get(f"/api/parts/{filt}").get_json()
+        self.assertEqual((p["status"], p["installed_date"], p["installed_mileage"], p["service_id"]), ("On hand", None, None, None))
+
     def test_using_none_of_a_part_is_refused(self):
         cid = self.car("DEMO-QTY")
         plugs = self.c.post("/api/parts", json={"car_id": cid, "name": "Spark plug", "qty": 6, "status": "On hand"}).get_json()["id"]
