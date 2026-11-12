@@ -678,6 +678,16 @@ class AuditFixesTest(unittest.TestCase):
         self.c.put(f"/api/schedules/{sid}", json={"title": "Wipers", "last_date": ago(300)})
         self.assertIsNone(until())
 
+    def test_editing_a_service_keeps_its_schedules_dismissed(self):
+        cid = self.car("DEMO-SNOOZE-EDIT")
+        sid = self.c.post(f"/api/cars/{cid}/schedules", json={"title": "Oil", "interval_months": 12}).get_json()["ids"][0]
+        svc = {"title": "Oil change", "date": ago(400), "schedule_ids": [sid]}
+        svc_id = self.c.post(f"/api/cars/{cid}/services", json=svc).get_json()["id"]
+        self.c.put(f"/api/schedules/{sid}", json={"snoozed_until": ago(-30)})
+        self.c.put(f"/api/services/{svc_id}", json={**svc, "cost": 45.5})  # sent back whole, as update_service does
+        u = next(u for u in self.c.get(f"/api/cars/{cid}").get_json()["upcoming"] if u["id"] == sid)
+        self.assertEqual((u["state"], u["snoozed_until"]), ("snoozed", ago(-30)))
+
     def test_a_part_unticked_from_a_service_goes_back_on_hand(self):
         cid = self.car("DEMO-UNTICK")
         filt = self.c.post("/api/parts", json={"car_id": cid, "name": "Oil filter", "status": "On hand"}).get_json()["id"]

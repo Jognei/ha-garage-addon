@@ -742,8 +742,8 @@ def save_service(car_id, service_id, b):
         db.execute("INSERT OR IGNORE INTO service_schedules (service_id, schedule_id) VALUES (?,?)", (service_id, int(sid)))
     for sid in set(old_scheds) | {int(x) for x in b.get("schedule_ids") or []}:
         refresh_schedule(sid)
-    for sid in b.get("schedule_ids") or []:  # done now, so a "dismissed until" date no longer applies
-        db.execute("UPDATE schedules SET snoozed_until=NULL WHERE id=?", (int(sid),))
+    for sid in {int(x) for x in b.get("schedule_ids") or []} - set(old_scheds):  # newly done, so a "dismissed until" date no longer applies
+        db.execute("UPDATE schedules SET snoozed_until=NULL WHERE id=?", (sid,))
     for u in uses:
         p = db.row("SELECT * FROM parts WHERE id=?", (u["id"],))
         if not p:
