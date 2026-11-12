@@ -138,18 +138,28 @@ def run_tool(name, a):
             a["schedules"] = [a["schedules"]]
         if a.get("part_ids") is not None and not isinstance(a["part_ids"], list):
             raise ToolError("part_ids must be a list of part ids, e.g. [12]")
-        sched_ids, unmatched = [], []
+        for pid in a.get("part_ids") or []:  # checked before logging: a failure after it would make a retry log it twice
+            try:
+                call("GET", f"/parts/{int(str(pid))}")
+            except (ToolError, ValueError):
+                raise ToolError(f"No part with id {pid!r}. Part ids come from list_parts.") from None
+        hits, unmatched = [], []
         if a.get("schedules"):
             up = call("GET", f"/cars/{c['id']}")["upcoming"]
             for t in a["schedules"]:
-                m = [u for u in up if u["title"].lower() == t.lower()] or [u for u in up if t.lower() in u["title"].lower()]
-                (sched_ids.append(m[0]["id"]) if m else unmatched.append(t))
+                exact = [u for u in up if u["title"].lower() == t.lower()]
+                m = exact or [u for u in up if t.lower() in u["title"].lower()]
+                if len(m) > 1 and not exact:
+                    raise ToolError(f"{t!r} matches several schedules: " + ", ".join(u["title"] for u in m))
+                (hits.append(m[0]) if m else unmatched.append(t))
+        sched_ids = [u["id"] for u in hits]
         payload = {k: a.get(k) for k in ("title", "date", "mileage", "cost", "notes", "done_by") if a.get(k) is not None}
         if payload.get("mileage") is None and c.get("mileage") is not None:
             payload["mileage"] = c["mileage"]  # as the UI does: default to the current odometer
         payload.update(schedule_ids=sched_ids, part_ids=a.get("part_ids") or [])
         r = call("POST", f"/cars/{c['id']}/services", payload)
-        return {"logged": r, "vehicle": c["name"], "schedules_reset": len(sched_ids), "schedules_not_found": unmatched}
+        return {"logged": r, "vehicle": c["name"], "schedules_reset": len(hits),
+                "schedules_reset_titles": [u["title"] for u in hits], "schedules_not_found": unmatched}
     if name == "add_schedule":
         c = vehicle(a["vehicle"])
         item = {k: a.get(k) for k in ("title", "interval_miles", "interval_months", "last_date", "last_mileage", "notes") if a.get(k) is not None}

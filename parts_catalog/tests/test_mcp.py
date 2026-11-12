@@ -117,6 +117,22 @@ class McpTest(unittest.TestCase):
         msg, err = self.tool("get_vehicle")
         self.assertTrue(err)
 
+    def test_log_service_checks_before_logging(self):
+        car = self.c.post("/api/cars", json={"name": "Red Coupe", "mileage": 40000}).get_json()["id"]
+        self.c.post(f"/api/cars/{car}/schedules", json={"items": [
+            {"title": "Manual transmission fluid", "interval_miles": 60000},
+            {"title": "Automatic transmission fluid & filter", "interval_miles": 60000},
+            {"title": "Spark plugs", "interval_miles": 30000}]})
+        msg, err = self.tool("log_service", vehicle="Red Coupe", title="Fluid", schedules=["transmission fluid"])
+        self.assertTrue(err)
+        self.assertIn("Automatic transmission fluid & filter, Manual transmission fluid", msg)
+        for ids in (["abc"], [999999]):
+            msg, err = self.tool("log_service", vehicle="Red Coupe", title="Fluid", part_ids=ids)
+            self.assertTrue(err, ids)
+        self.assertEqual(self.c.get(f"/api/cars/{car}/services").get_json(), [])  # nothing logged, so a retry can't double it
+        r, _ = self.tool("log_service", vehicle="Red Coupe", title="Plugs", schedules=["spark"])
+        self.assertEqual((r["schedules_reset"], r["schedules_reset_titles"]), (1, ["Spark plugs"]))
+
     def test_internal_calls_pass_allowlist(self):
         try:
             server.ALLOWED_CLIENTS = {"172.30.32.2"}
