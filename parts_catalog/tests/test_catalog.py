@@ -3,10 +3,14 @@ cd parts_catalog && python -m unittest discover tests"""
 import io
 import json
 import os
+import runpy
 import shutil
 import sqlite3
+import subprocess
+import sys
 import tempfile
 import unittest
+import zipfile
 from unittest import mock
 
 os.environ.setdefault("PARTS_CATALOG_DATA", tempfile.mkdtemp())
@@ -14,6 +18,7 @@ os.environ.setdefault("PARTS_CATALOG_DATA", tempfile.mkdtemp())
 from app import db, epc, epc_api, epc_import  # noqa: E402
 from app.server import app  # noqa: E402
 
+TOOL = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tools", "epc_import.py")
 PAGE = """<html><head><title>Test page: water pump</title></head><body>
 <img src="page_files/logo.png"><img src="page_files/diagram.png" usemap="#m">
 <map name="m"><area shape="rect" coords="10,20,50,60" alt="1"><area shape="circle" coords="200,150,20" alt="2">
@@ -404,6 +409,39 @@ class CatalogTest(unittest.TestCase):
         self.assertEqual(old.execute("SELECT COUNT(*) FROM diagram_items WHERE diagram_id=7").fetchone()[0], 1)
         self.assertIn("diagram_items", [r[0] for r in old.execute("SELECT name FROM sqlite_master WHERE type='table'")])
         old.close()
+
+    def test_tool_uses_addon_data_folder(self):
+        real_exists = os.path.exists
+        with mock.patch.dict(os.environ), mock.patch("os.path.exists", lambda p: p == "/data/options.json" or real_exists(p)):
+            os.environ.pop("PARTS_CATALOG_DATA", None)
+            runpy.run_path(TOOL)
+            self.assertEqual(os.environ.get("PARTS_CATALOG_DATA"), "/data")
+
+    def test_tool_folder_goes_on_after_a_bad_file(self):
+        d, data = tempfile.mkdtemp(dir=self.tmp), tempfile.mkdtemp(dir=self.tmp)
+        files = {"a_broken.json": json.dumps({"source": {"name": "Broken CLI"}, "vehicles": [{"code": "BROKEN-CLI"}],
+                                              "diagrams": [{"code": "99_0009", "image": 5}]}),
+                 "b_items.tsv": "diagram\tcallout\tpart number\tdescription\n99_0001\t1\t99111234567\tPump\n",
+                 "c_items.txt": "diagram,callout,part number,description\n99_0002,1,99111234568,Hose\n"}
+        for n, text in files.items():
+            with open(os.path.join(d, n), "w", encoding="utf-8") as f:
+                f.write(text)
+        r = subprocess.run([sys.executable, TOOL, d], env=dict(os.environ, PARTS_CATALOG_DATA=data), stdin=subprocess.DEVNULL,
+                           capture_output=True, text=True, timeout=60)
+        self.assertNotEqual(r.returncode, 0)
+        con = sqlite3.connect(os.path.join(data, "epc", "epc.db"))
+        names = {n for (n,) in con.execute("SELECT name FROM sources")}
+        con.close()
+        self.assertEqual(names & {"Broken CLI", "b_items.tsv", "c_items.txt"}, {"b_items.tsv", "c_items.txt"})
+
+    def test_api_export(self):
+        r = self.c.get("/api/epc/export")
+        self.assertIn("filename=catalog-export.zip", r.headers["Content-Disposition"])
+        with zipfile.ZipFile(io.BytesIO(r.data)) as z:
+            self.assertNotIn("SAMPLE-11-01", [x["code"] for x in json.loads(z.read("catalog.json"))["diagrams"]])
+        with zipfile.ZipFile(io.BytesIO(self.c.get("/api/epc/export?samples=1").data)) as z:
+            sample = next(x for x in json.loads(z.read("catalog.json"))["diagrams"] if x["code"] == "SAMPLE-11-01")
+            self.assertIn(sample["image"], z.namelist())
 
     def test_zz_remove_sample(self):
         sid = epc.row("SELECT id FROM sources WHERE is_sample=1 AND name='SAMPLE DATA (not real)'")["id"]

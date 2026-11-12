@@ -24,6 +24,8 @@ from . import epc
 BUNDLE_FORMAT = "garage-epc"
 BUNDLE_VERSION = 1
 IMAGE_EXT = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".bmp", ".tif", ".tiff"}
+CSV_EXT = (".csv", ".tsv", ".txt")
+HTML_EXT = (".html", ".htm", ".xhtml", ".mhtml")
 
 
 class Report:
@@ -851,9 +853,9 @@ def import_path(path, **kw):
     ext = os.path.splitext(path)[1].lower()
     if ext == ".json":
         return import_bundle(path, kw.get("source_name"), is_sample=kw.get("is_sample") or None, find_upload=kw.get("find_upload"))
-    if ext in (".csv", ".tsv", ".txt"):
+    if ext in CSV_EXT:
         return import_csv(path, kw.get("source_name"), vehicle=kw.get("vehicle"), category=kw.get("category"), is_sample=kw.get("is_sample", False))
-    if ext in (".html", ".htm", ".xhtml", ".mhtml"):
+    if ext in HTML_EXT:
         return import_html(path, kw.get("source_name"), kw.get("diagram"), kw.get("category"), kw.get("vehicle"), kw.get("image"), kw.get("title"),
                            kw.get("is_sample", False), kw.get("find_upload"))
     if ext in IMAGE_EXT or os.path.isdir(path):

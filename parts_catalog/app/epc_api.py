@@ -1,9 +1,11 @@
 """Catalog (EPC) JSON API under /api/epc and stored files under /epc-files/."""
+import io
 import os
 import shutil
 import tempfile
+import zipfile
 
-from flask import Blueprint, jsonify, request, send_from_directory, abort
+from flask import Blueprint, jsonify, request, send_file, send_from_directory, abort
 
 from . import db, epc, epc_import
 
@@ -160,6 +162,24 @@ def import_files():
         epc.connect().rollback()
         shutil.rmtree(tmp, ignore_errors=True)
     return jsonify(reports=reports)
+
+
+@bp.route("/api/epc/export")
+def export():
+    """The catalog in the portable format as a zip (catalog.json + images/); sample data only with samples=1."""
+    tmp = tempfile.mkdtemp()
+    try:
+        epc_import.export_bundle(tmp, include_samples=request.args.get("samples") == "1")
+        data = io.BytesIO()
+        with zipfile.ZipFile(data, "w", zipfile.ZIP_DEFLATED) as z:
+            for dirpath, _, fns in os.walk(tmp):
+                for fn in fns:
+                    full = os.path.join(dirpath, fn)
+                    z.write(full, os.path.relpath(full, tmp).replace(os.sep, "/"))
+        data.seek(0)
+        return send_file(data, mimetype="application/zip", as_attachment=True, download_name="catalog-export.zip")
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
 
 
 @bp.route("/epc-files/<path:p>")
