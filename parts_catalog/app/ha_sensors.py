@@ -140,6 +140,7 @@ class Publisher:
         self.get_summary, self.token, self.api = get_summary, token, api
         self.sent = {}
         self.last_full = 0
+        self.swept = False
 
     def _req(self, method, entity_id, body=None):
         req = urllib.request.Request(f"{self.api}/states/{entity_id}", method=method,
@@ -161,8 +162,28 @@ class Publisher:
         except urllib.error.HTTPError as e:
             return e.code == 404
 
+    def remove_stale(self, keep=()):
+        """Delete the add-on's states in HA that `keep` doesn't name, including ones published before this start."""
+        req = urllib.request.Request(f"{self.api}/states", headers={"Authorization": f"Bearer {self.token}"})
+        with urllib.request.urlopen(req, timeout=10) as r:
+            listed = json.loads(r.read())
+        totals = build_states({"cars": []})
+        gone = 0
+        for s in listed:
+            eid = s["entity_id"]
+            # ours: a total, or a vehicle's sensor with its car_id; never another sensor.garage_* (a user's garage door)
+            ours = eid in totals or (eid.startswith("sensor.garage_") and "car_id" in (s.get("attributes") or {}))
+            if ours and eid not in keep:
+                self._req("DELETE", eid)
+                gone += 1
+        if gone:
+            log.info("Removed %d Home Assistant sensors the add-on no longer publishes", gone)
+
     def push(self, force=False):
         states = build_states(self.get_summary())
+        if not self.swept:  # e.g. vehicles missing from a restored backup
+            self.remove_stale(keep=states)
+            self.swept = True
         full = force or time.time() - self.last_full > REFRESH_EVERY or self.ha_lost_states()
         for eid, st in states.items():
             if full or self.sent.get(eid) != st:
@@ -193,9 +214,16 @@ def enabled():
 
 
 def start(get_summary):
-    if not enabled():
+    token = os.environ.get("SUPERVISOR_TOKEN")
+    if not token:
         return None
-    p = Publisher(get_summary, os.environ["SUPERVISOR_TOKEN"])
+    p = Publisher(get_summary, token, API)
+    if not enabled():  # publish_sensors is off: take down what an earlier start published
+        try:
+            p.remove_stale()
+        except Exception as e:  # noqa: BLE001 - HA unreachable; states set this way go when HA restarts
+            log.warning("Couldn't remove Home Assistant sensors: %s", e)
+        return None
     threading.Thread(target=p.run, name="ha-sensors", daemon=True).start()
     log.info("Publishing Home Assistant sensors")
     return p

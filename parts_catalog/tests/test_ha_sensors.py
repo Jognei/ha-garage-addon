@@ -1,8 +1,10 @@
 """The add-on's own Home Assistant sensors, against a fake Supervisor Core API."""
 import json
+import os
 import threading
 import unittest
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from unittest import mock
 
 from app import ha_sensors
 
@@ -16,6 +18,13 @@ CAR = {"id": 3, "name": "Blue Wagon", "mileage": 119800, "mileage_date": "2026-1
                                             "miles_left": -1066, "days_left": 49, "est_date": None, "state": "overdue"}}
 TRUCK = {"id": 4, "name": "Work Truck", "mileage": None, "mileage_date": None, "overdue": 0, "due_soon": 0,
          "parts_needed": 0, "next_service": None}
+# What HA has before the add-on starts: a total, Blue Wagon's odometer, a vehicle no longer in the garage,
+# and two that aren't the add-on's: the user's own sensor.garage_door, and a light that happens to have a car_id.
+HA_STATES = [{"entity_id": "sensor.garage_overdue", "state": "1", "attributes": {"friendly_name": "Garage overdue"}},
+             {"entity_id": "sensor.garage_blue_wagon_odometer", "state": "119800", "attributes": {"car_id": 3}},
+             {"entity_id": "sensor.garage_old_van_status", "state": "OK", "attributes": {"car_id": 9}},
+             {"entity_id": "sensor.garage_door", "state": "closed", "attributes": {"friendly_name": "Garage door"}},
+             {"entity_id": "light.garage", "state": "on", "attributes": {"car_id": 1}}]
 
 
 class FakeHA(BaseHTTPRequestHandler):
@@ -31,12 +40,14 @@ class FakeHA(BaseHTTPRequestHandler):
 
     do_POST = do_DELETE = _handle
     known = True  # whether HA "has" our states (False = it restarted)
+    states = []   # what GET /states lists
 
     def do_GET(self):
         FakeHA.calls.append(("GET", self.path, self.headers.get("Authorization"), None))
-        self.send_response(200 if FakeHA.known else 404)
+        listing = self.path.endswith("/states")
+        self.send_response(200 if FakeHA.known or listing else 404)
         self.end_headers()
-        self.wfile.write(b"{}")
+        self.wfile.write(json.dumps(FakeHA.states if listing else {}).encode())
 
     def log_message(self, *a):
         pass
@@ -73,8 +84,8 @@ class SensorTest(unittest.TestCase):
             p = ha_sensors.Publisher(lambda: data, "tok", api=f"http://127.0.0.1:{srv.server_port}/core/api")
             FakeHA.calls.clear()
             n = p.push()
-            self.assertEqual(len(FakeHA.calls), n)
-            self.assertTrue(all(c[2] == "Bearer tok" and c[0] == "POST" for c in FakeHA.calls))
+            self.assertEqual([c[0] for c in FakeHA.calls], ["GET"] + ["POST"] * n)  # the GET lists what an earlier start left
+            self.assertTrue(all(c[2] == "Bearer tok" for c in FakeHA.calls))
             self.assertIn("/core/api/states/sensor.garage_blue_wagon_odometer", [c[1] for c in FakeHA.calls])
             FakeHA.calls.clear()
             p.push()
@@ -95,6 +106,31 @@ class SensorTest(unittest.TestCase):
             self.assertEqual(len([c for c in FakeHA.calls if c[0] == "POST"]), 3 + 5)
         finally:
             srv.shutdown()
+
+    def deleted_by(self, run):
+        """Entity ids `run(api)` deletes from a fake HA holding HA_STATES."""
+        srv = HTTPServer(("127.0.0.1", 0), FakeHA)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        try:
+            FakeHA.states = HA_STATES
+            FakeHA.calls.clear()
+            run(f"http://127.0.0.1:{srv.server_port}/core/api")
+            return sorted(c[1].rsplit("/", 1)[1] for c in FakeHA.calls if c[0] == "DELETE")
+        finally:
+            FakeHA.states = []
+            srv.shutdown()
+
+    def test_first_push_removes_what_an_earlier_start_left(self):
+        deleted = self.deleted_by(lambda api: ha_sensors.Publisher(lambda: summary([CAR]), "tok", api=api).push())
+        self.assertEqual(deleted, ["sensor.garage_old_van_status"])
+
+    def test_publishing_off_removes_the_addon_states_once(self):
+        def start(api):
+            with mock.patch.dict(os.environ, {"SUPERVISOR_TOKEN": "tok", "PARTS_CATALOG_SENSORS": "0"}), \
+                    mock.patch.object(ha_sensors, "API", api):
+                self.assertIsNone(ha_sensors.start(lambda: summary([CAR])))
+        self.assertEqual(self.deleted_by(start),
+                         ["sensor.garage_blue_wagon_odometer", "sensor.garage_old_van_status", "sensor.garage_overdue"])
 
     def test_dashboard_yaml(self):
         y = ha_sensors.dashboard_yaml(summary([CAR, TRUCK]))
