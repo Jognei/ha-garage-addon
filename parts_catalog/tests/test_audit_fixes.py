@@ -192,6 +192,29 @@ class AuditFixesTest(unittest.TestCase):
         car = self.c.get(f"/api/cars/{cid}").get_json()
         self.assertEqual((car["mileage"], car["mileage_date"]), (148000, ago(171)))
 
+    def last_done(self, cid, sid):
+        u = next(u for u in self.c.get(f"/api/cars/{cid}").get_json()["upcoming"] if u["id"] == sid)
+        return u["last_date"], u["last_mileage"]
+
+    def test_editing_a_schedule_leaves_last_done_to_its_services(self):
+        cid = self.car("DEMO-SCHED-EDIT")
+        sid = self.c.post(f"/api/cars/{cid}/schedules", json={"title": "Oil", "interval_miles": 5000}).get_json()["ids"][0]
+        log = lambda: self.c.post(f"/api/cars/{cid}/services", json={  # noqa: E731
+            "title": "Oil", "date": "2026-10-01", "mileage": 30000, "schedule_ids": [sid]}).get_json()["id"]
+        edit = lambda **kw: self.c.put(f"/api/schedules/{sid}", json={  # noqa: E731 - every field, as the Edit dialog sends
+            "title": "Oil", "interval_miles": "5000", "interval_months": "", "last_date": "2026-10-01", "last_mileage": "30000",
+            "doc_id": "", "doc_page": "", "notes": "", **kw})
+        svc = log()
+        edit(interval_miles="7500")
+        self.c.delete(f"/api/services/{svc}")
+        self.assertEqual(self.last_done(cid, sid), (None, None))
+        # a last done typed by hand counts only while it is newer than the logged services
+        svc = log()
+        edit(last_date="2026-06-01", last_mileage="25000")
+        self.assertEqual(self.last_done(cid, sid), ("2026-10-01", 30000))
+        self.c.delete(f"/api/services/{svc}")
+        self.assertEqual(self.last_done(cid, sid), ("2026-06-01", 25000))
+
 
 if __name__ == "__main__":
     unittest.main()

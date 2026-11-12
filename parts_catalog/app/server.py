@@ -538,7 +538,7 @@ SCHEDULE_FIELDS = ["title", "interval_miles", "interval_months", "last_date", "l
                    "notes", "active", "snoozed_until"]
 
 
-def schedule_values(b):
+def schedule_values(b, cur=None):
     vals = {k: b[k] for k in SCHEDULE_FIELDS if k in b}
     for k in ("interval_miles", "interval_months", "last_mileage", "doc_id", "doc_page", "active"):
         if k in vals:
@@ -546,11 +546,13 @@ def schedule_values(b):
     for k in ("last_date", "snoozed_until"):
         if k in vals:
             vals[k] = to_date(vals[k], "Last done" if k == "last_date" else "Dismiss until")
-    # what the user types as "last done" is the baseline that logged services build on
-    if "last_date" in vals:
-        vals["base_date"] = vals["last_date"]
-    if "last_mileage" in vals:
-        vals["base_mileage"] = vals["last_mileage"]
+    # what the user types as "last done" is the baseline that logged services build on; the Edit dialog sends
+    # "last done" back even when it wasn't touched, and that must not freeze what the logged services gave it
+    if cur is None or any(k in vals and vals[k] != cur[k] for k in ("last_date", "last_mileage")):
+        if "last_date" in vals:
+            vals["base_date"] = vals["last_date"]
+        if "last_mileage" in vals:
+            vals["base_mileage"] = vals["last_mileage"]
     return vals
 
 
@@ -588,9 +590,10 @@ def api_schedule(sid):
     if request.method == "DELETE":
         db.execute("DELETE FROM schedules WHERE id=?", (sid,))
         return jsonify(ok=True)
-    vals = schedule_values(body())
+    vals = schedule_values(body(), db.row("SELECT last_date, last_mileage FROM schedules WHERE id=?", (sid,)))
     if vals:
         db.execute(f"UPDATE schedules SET {','.join(k + '=?' for k in vals)} WHERE id=?", list(vals.values()) + [sid])
+        refresh_schedule(sid)
     return jsonify(ok=True)
 
 
