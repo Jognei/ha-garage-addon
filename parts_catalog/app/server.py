@@ -1293,12 +1293,15 @@ def api_backup():
     try:
         out = os.path.join(tmp, "backup.zip")
         write_backup(out)
-        with open(out, "rb") as f:
-            data = io.BytesIO(f.read())
-        return send_file(data, mimetype="application/zip", as_attachment=True,
+        resp = send_file(out, mimetype="application/zip", as_attachment=True,
                          download_name=time.strftime("parts-catalog-backup-%Y-%m-%d-%H%M.zip"))
-    finally:
+    except Exception:
         shutil.rmtree(tmp, ignore_errors=True)
+        raise
+    # sent from disk, so removed once it's sent; a passed-through file would skip Response.close and this with it
+    resp.direct_passthrough = False
+    resp.call_on_close(lambda: shutil.rmtree(tmp, ignore_errors=True))
+    return resp
 
 
 RESTORE_PATHS = ("garage.db", "epc/epc.db", "documents/", "epc/files/")
@@ -1375,6 +1378,12 @@ def api_restore():
     finally:
         shutil.rmtree(staging, ignore_errors=True)
         shutil.rmtree(tmp, ignore_errors=True)
+    for fn in os.listdir(db.DATA_DIR):  # keep only the newest safety copy
+        if fn.startswith("before-restore-") and fn.endswith((".zip", ".zip.part")) and fn != os.path.basename(safety):
+            try:
+                os.remove(os.path.join(db.DATA_DIR, fn))
+            except OSError:
+                pass
     if not app.config.get("TESTING"):
         threading.Timer(0.5, lambda: os._exit(RESTART_CODE)).start()
     return jsonify(ok=True, restarting=True)

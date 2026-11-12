@@ -50,6 +50,10 @@ class AuditFixesTest(unittest.TestCase):
     def car(self, name, mileage=None):
         return self.c.post("/api/cars", json={"name": name, "mileage": mileage}).get_json()["id"]
 
+    def backup(self):
+        with self.c.get("/api/backup") as r:
+            return r.data
+
     def restore(self, data):
         return self.c.post("/api/restore", data={"backup": (io.BytesIO(data), "b.zip")}, content_type="multipart/form-data")
 
@@ -209,6 +213,30 @@ class AuditFixesTest(unittest.TestCase):
         self.assertIsNone(db.row("SELECT id FROM documents WHERE car_id=? AND kind='Photo'", (cid,)))
         self.assertIsNone(self.c.get(f"/api/cars/{cid}").get_json()["photo_id"])
 
+    def test_backup_is_sent_from_disk_and_removed_once_sent(self):
+        made, real = [], tempfile.mkdtemp
+
+        def mkdtemp(*a, **k):
+            made.append(real(*a, **k))
+            return made[-1]
+        with mock.patch("tempfile.mkdtemp", mkdtemp):
+            r = self.c.get("/api/backup")
+        with open(os.path.join(made[0], "backup.zip"), "ab") as f:
+            f.write(b"read from disk")  # only a response reading the file as it sends sees this
+        self.assertTrue(r.data.endswith(b"read from disk"))
+        r.close()
+        self.assertFalse(os.path.exists(made[0]))
+
+    def test_restore_keeps_only_the_newest_safety_copy(self):
+        for old in ("before-restore-20200101-000000.zip", "before-restore-20200102-000000.zip.part"):
+            with open(os.path.join(self.tmp, old), "wb") as f:
+                f.write(b"older")
+        self.assertEqual(self.restore(self.backup()).status_code, 200)
+        shutil.rmtree(os.path.join(self.tmp, "restore-pending"))
+        kept = list(self.safety_zips())
+        self.assertEqual(len(kept), 1, kept)
+        self.assertIn("garage.db", zipfile.ZipFile(os.path.join(self.tmp, kept[0])).namelist())
+
     def test_service_without_mileage_keeps_the_last_known_mileage(self):
         cid = self.car("DEMO-MILES", 200000)
         sid = self.c.post(f"/api/cars/{cid}/schedules", json={"items": [
@@ -230,7 +258,7 @@ class AuditFixesTest(unittest.TestCase):
         self.assertEqual(self.safety_zips(), before)
 
     def test_restore_that_fails_to_unpack_changes_nothing(self):
-        garage = zipfile.ZipFile(io.BytesIO(self.c.get("/api/backup").data)).read("garage.db")
+        garage = zipfile.ZipFile(io.BytesIO(self.backup())).read("garage.db")
         for why, method, where, value in (("bad CRC", zipfile.ZIP_STORED, "data", ord("X")),
                                           ("corrupt deflate stream", zipfile.ZIP_DEFLATED, "data", 0xFF),
                                           ("encrypted", zipfile.ZIP_STORED, "flags", 1),
@@ -253,13 +281,13 @@ class AuditFixesTest(unittest.TestCase):
                 f.write(b"PK partial")
             raise OSError(28, "No space left on device")
         before = self.safety_zips()
-        backup = self.c.get("/api/backup").data
+        backup = self.backup()
         with mock.patch.object(server, "write_backup", disk_full):
             self.assert_restore_changed_nothing(self.restore(backup), before)
 
     def test_restore_refuses_a_damaged_catalog(self):
         buf = io.BytesIO()
-        with zipfile.ZipFile(io.BytesIO(self.c.get("/api/backup").data)) as src, zipfile.ZipFile(buf, "w") as z:
+        with zipfile.ZipFile(io.BytesIO(self.backup())) as src, zipfile.ZipFile(buf, "w") as z:
             z.writestr("garage.db", src.read("garage.db"))
             z.writestr("epc/epc.db", b"not a database")
         r = self.restore(buf.getvalue())
@@ -272,7 +300,7 @@ class AuditFixesTest(unittest.TestCase):
                                                    "file": (io.BytesIO(b"kept"), "r.txt")}, content_type="multipart/form-data").get_json()["ids"][0]
         with open(os.path.join(epc.FILES_DIR, "diagram.svg"), "w", encoding="utf-8") as f:
             f.write("<svg/>")
-        backup = self.c.get("/api/backup").data
+        backup = self.backup()
         real_move = shutil.move
         for cut in range(3):  # documents/, epc/, garage.db
             with self.subTest(cut_at_move=cut):
@@ -310,7 +338,7 @@ class AuditFixesTest(unittest.TestCase):
         with open(os.path.join(epc.FILES_DIR, "old.svg"), "w", encoding="utf-8") as f:
             f.write("<svg/>")
         buf = io.BytesIO()
-        with zipfile.ZipFile(io.BytesIO(self.c.get("/api/backup").data)) as src, zipfile.ZipFile(buf, "w") as z:
+        with zipfile.ZipFile(io.BytesIO(self.backup())) as src, zipfile.ZipFile(buf, "w") as z:
             z.writestr("garage.db", src.read("garage.db"))
         self.assertEqual(self.restore(buf.getvalue()).status_code, 200)
         db.connect().close()

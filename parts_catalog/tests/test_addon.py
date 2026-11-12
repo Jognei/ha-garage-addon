@@ -64,7 +64,9 @@ class AddonTest(unittest.TestCase):
         r = self.c.post("/api/documents", data={"car_id": str(cid), "kind": "Other", "title": "Note",
                                                  "file": (io.BytesIO(b"hello"), "note.txt")}, content_type="multipart/form-data")
         self.assertEqual(r.status_code, 200, r.get_data(as_text=True))
-        backup = self.c.get("/api/backup").data
+        r = self.c.get("/api/backup")
+        backup = r.data
+        r.close()
         names = zipfile.ZipFile(io.BytesIO(backup)).namelist()
         self.assertIn("garage.db", names)
         self.assertIn("epc/epc.db", names)
