@@ -132,18 +132,28 @@ def import_files():
         images = [p for p in saved if os.path.splitext(p)[1].lower() in epc_import.IMAGE_EXT]
         others = [p for p in saved if p not in images]
         htmls = [p for p in others if p.lower().endswith((".html", ".htm"))]
+        # uploads arrive flat, so "page_files/diagram.png" or "images/11_0050.png" is found by its base name
+        by_name = {os.path.basename(p): p for p in images}
+        referred = set()
+
+        def find_upload(ref):
+            p = by_name.get(os.path.basename(ref.replace("\\", "/")))
+            if p:
+                referred.add(p)
+            return p
         for p in others:
             try:
-                kw = dict(opts)
+                kw = dict(opts, find_upload=find_upload)
                 if p in htmls and len(htmls) > 1:
                     kw["diagram"] = None  # several pages: each uses its own file name as diagram code
                 if p in htmls and len(htmls) == 1 and len(images) == 1:
                     kw["image"] = images[0]
+                    referred.add(images[0])
                 reports.append(epc_import.import_path(p, **kw).as_dict())
             except Exception as e:  # noqa: BLE001 - report per file
                 epc.connect().rollback()
                 reports.append({"source": os.path.basename(p), "error": str(e)})
-        loose = images if not (len(htmls) == 1 and len(images) == 1) else []
+        loose = [p for p in images if p not in referred]
         if loose:
             reports.append(epc_import.import_images(loose, opts["source_name"], opts["create"], opts["category"], opts["vehicle"]).as_dict())
     finally:

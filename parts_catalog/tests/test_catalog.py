@@ -34,6 +34,13 @@ def make_png(path, size=(400, 300)):
     Image.new("RGB", size, "white").save(path)
 
 
+def png_bytes(size=(400, 300)):
+    from PIL import Image
+    b = io.BytesIO()
+    Image.new("RGB", size, "white").save(b, "PNG")
+    return b.getvalue()
+
+
 class CatalogTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -303,6 +310,15 @@ class CatalogTest(unittest.TestCase):
         self.assertEqual(self.post_import(("strings.json", b'{"vehicles": ["E34-535i"]}'))[0]["error"], "vehicles[0] must be an object")
         nested = {"diagrams": [{"code": "98_0002", "items": ["1 pump"]}]}
         self.assertEqual(self.post_import(("nested.json", json.dumps(nested).encode()))[0]["error"], "diagrams[0].items[0] must be an object")
+
+    def test_upload_finds_referenced_images_by_name(self):
+        reports = self.post_import(("98_0020.html", PAGE.encode()), ("diagram.png", png_bytes()), ("logo.png", png_bytes((20, 20))))
+        self.assertEqual(epc.diagram_detail(self.diag("98_0020")["id"])["image_name"], "diagram.png")
+        self.assertEqual(len(reports), 1)  # both images belong to the page, neither goes on to name matching
+        bundle = {"source": {"name": "Upload bundle"}, "diagrams": [{"code": "98_0021", "image": "images/front.png"}]}
+        reports = self.post_import(("b.json", json.dumps(bundle).encode()), ("front.png", png_bytes()), ("loose.png", png_bytes((30, 30))))
+        self.assertIsNotNone(self.diag("98_0021")["image_file_id"])
+        self.assertEqual(reports[1]["counts"], {"images_unmatched": 1})
 
     def test_same_code_on_two_vehicles(self):
         def bundle(source, vehicle, title, pn):

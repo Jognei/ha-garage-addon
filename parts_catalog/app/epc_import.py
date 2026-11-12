@@ -373,8 +373,8 @@ def check_lists(obj, lists=BUNDLE_LISTS, path=""):
             check_lists(e, inner, f"{path}{key}[{i}].")
 
 
-def import_bundle(path_or_obj, source_name=None, base_dir=None, is_sample=None):
-    """Import the portable JSON format (see Catalog > Data & import). Image paths are relative to the JSON file."""
+def import_bundle(path_or_obj, source_name=None, base_dir=None, is_sample=None, find_upload=None):
+    """Import the portable JSON format (see Catalog > Data & import). Image paths are relative to the JSON file, or found by find_upload."""
     if isinstance(path_or_obj, dict):
         b, raw = path_or_obj, None
     else:
@@ -409,8 +409,11 @@ def import_bundle(path_or_obj, source_name=None, base_dir=None, is_sample=None):
             continue
         img_fid = None
         if d.get("image"):
-            ip = d["image"] if os.path.isabs(d["image"]) else os.path.join(base_dir or ".", d["image"])
-            if os.path.exists(ip):
+            if find_upload:
+                ip = find_upload(d["image"])
+            else:
+                ip = d["image"] if os.path.isabs(d["image"]) else os.path.join(base_dir or ".", d["image"])
+            if ip and os.path.exists(ip):
                 img_fid = store_file(sid, ip, "image")
             else:
                 rep.problem(f"Diagram {d['code']}: image {d['image']} not found")
@@ -700,7 +703,7 @@ def find_parts_table(tables):
     return best
 
 
-def import_html(path, source_name=None, diagram=None, category=None, vehicle=None, image=None, title=None, is_sample=False):
+def import_html(path, source_name=None, diagram=None, category=None, vehicle=None, image=None, title=None, is_sample=False, find_upload=None):
     """A locally saved web page holding one diagram: parts table, diagram image, optional <map>/<area> hotspots.
     Generic: any page with a parts table works. Only local files are read; remote image URLs are ignored."""
     with open(path, "rb") as f:
@@ -744,8 +747,11 @@ def import_html(path, source_name=None, diagram=None, category=None, vehicle=Non
             src = html.unescape(a.get("src") or "")
             if not src or re.match(r"^(https?:|data:|//)", src, re.I):
                 continue
-            fp = os.path.normpath(os.path.join(base, src.split("?")[0].replace("/", os.sep)))
-            if os.path.exists(fp) and os.path.splitext(fp)[1].lower() in IMAGE_EXT:
+            if find_upload:
+                fp = find_upload(src.split("?")[0])
+            else:
+                fp = os.path.normpath(os.path.join(base, src.split("?")[0].replace("/", os.sep)))
+            if fp and os.path.exists(fp) and os.path.splitext(fp)[1].lower() in IMAGE_EXT:
                 cands.append((os.path.getsize(fp), fp, a.get("usemap")))
         if cands:
             _, img_path, usemap = max(cands)
@@ -844,11 +850,12 @@ def import_path(path, **kw):
     """Pick the importer from the file extension."""
     ext = os.path.splitext(path)[1].lower()
     if ext == ".json":
-        return import_bundle(path, kw.get("source_name"), is_sample=kw.get("is_sample") or None)
+        return import_bundle(path, kw.get("source_name"), is_sample=kw.get("is_sample") or None, find_upload=kw.get("find_upload"))
     if ext in (".csv", ".tsv", ".txt"):
         return import_csv(path, kw.get("source_name"), vehicle=kw.get("vehicle"), category=kw.get("category"), is_sample=kw.get("is_sample", False))
     if ext in (".html", ".htm", ".xhtml", ".mhtml"):
-        return import_html(path, kw.get("source_name"), kw.get("diagram"), kw.get("category"), kw.get("vehicle"), kw.get("image"), kw.get("title"), kw.get("is_sample", False))
+        return import_html(path, kw.get("source_name"), kw.get("diagram"), kw.get("category"), kw.get("vehicle"), kw.get("image"), kw.get("title"),
+                           kw.get("is_sample", False), kw.get("find_upload"))
     if ext in IMAGE_EXT or os.path.isdir(path):
         return import_images([path], kw.get("source_name"), kw.get("create", False), kw.get("category"), kw.get("vehicle"), kw.get("is_sample", False))
     raise ValueError(f"Don't know how to import {path}")
