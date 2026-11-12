@@ -263,6 +263,11 @@ def supersession_chain(pn):
 
 # ---------- queries for the UI ----------
 
+def vehicle_codes(diagram_id):
+    return [r["code"] for r in rows("""SELECT v.code FROM vehicles v JOIN diagram_vehicles dv ON dv.vehicle_id=v.id
+                                       WHERE dv.diagram_id=? ORDER BY v.code""", (diagram_id,))]
+
+
 def vehicles():
     return rows("""SELECT v.*, s.name AS source_name, s.is_sample,
                    (SELECT COUNT(*) FROM diagram_vehicles dv WHERE dv.vehicle_id=v.id) AS diagrams
@@ -299,7 +304,10 @@ def diagrams_in(category_id=None, vehicle_id=None):
     if vehicle_id:
         sql += " AND d.id IN (SELECT diagram_id FROM diagram_vehicles WHERE vehicle_id=?)"
         args.append(vehicle_id)
-    return rows(sql + " ORDER BY d.sort, d.code", args)
+    out = rows(sql + " ORDER BY d.sort, d.code", args)
+    for r in out:
+        r["vehicles"] = vehicle_codes(r["id"])
+    return out
 
 
 def item_fits(item, vehicle):
@@ -377,6 +385,7 @@ def search(q, vehicle_id=None, limit=200):
     out = rows(sql + " ORDER BY i.part_number, d.code LIMIT ?", args + [limit])
     for r in out:
         r["part_number_fmt"] = fmt_pn(r["part_number"])
+        r["vehicles"] = vehicle_codes(r["diagram_id"])
     return out
 
 
@@ -386,6 +395,8 @@ def part_detail(pn):
     used = rows("""SELECT i.callout, i.description, i.supplement, i.qty, i.from_date, i.to_date, d.id AS diagram_id,
                    d.code AS diagram_code, d.title AS diagram_title FROM diagram_items i JOIN diagrams d ON d.id=i.diagram_id
                    WHERE i.part_number=? ORDER BY d.code""", (pn,))
+    for r in used:
+        r["vehicles"] = vehicle_codes(r["diagram_id"])
     newer, older = supersession_chain(pn)
     for r in newer:
         r["new_pn_fmt"] = fmt_pn(r["new_pn"])

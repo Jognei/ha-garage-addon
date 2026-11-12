@@ -320,6 +320,44 @@ class CatalogTest(unittest.TestCase):
         self.assertEqual(rep.counts.get("diagrams_updated"), 1)
         self.assertEqual([d["title"] for d in epc.rows("SELECT title FROM diagrams WHERE code='83_0647' ORDER BY id")], ["Coolant A", "Coolant B2"])
 
+    def same_code_diagrams(self):
+        for v in ("IMG-A", "IMG-B"):
+            epc_import.import_bundle({"source": {"name": "Same code " + v}, "vehicles": [{"code": v}],
+                                      "diagrams": [{"code": "84_0001", "vehicles": [v], "items": [{"callout": "1", "part_number": "84111234567"}]}]})
+        return [d["id"] for d in epc.rows("SELECT id FROM diagrams WHERE code='84_0001' ORDER BY id")]
+
+    def test_same_code_images_and_vehicles(self):
+        a, b = self.same_code_diagrams()
+        d = tempfile.mkdtemp(dir=self.tmp)
+        make_png(os.path.join(d, "84_0001.png"))
+        rep = epc_import.import_images([d], "Test same-code images")
+        self.assertIn("84_0001.png: 2 diagrams have code 84_0001; choose the vehicle it belongs to", rep.problems)
+        epc_import.import_images([d], "Test same-code images", vehicle="IMG-A")
+        image = lambda did: epc.row("SELECT image_file_id FROM diagrams WHERE id=?", (did,))["image_file_id"]  # noqa: E731
+        self.assertIsNotNone(image(a))
+        self.assertIsNone(image(b))
+        self.assertEqual([r["vehicles"] for r in self.c.get("/api/epc/diagrams").get_json() if r["code"] == "84_0001"], [["IMG-A"], ["IMG-B"]])
+        self.assertEqual(sorted(r["vehicles"] for r in self.c.get("/api/epc/search?q=84111234567").get_json()), [["IMG-A"], ["IMG-B"]])
+        self.assertEqual(sorted(r["vehicles"] for r in self.c.get("/api/epc/parts/84111234567").get_json()["used_in"]), [["IMG-A"], ["IMG-B"]])
+
+    def test_export_same_codes_and_samples(self):
+        a, b = self.same_code_diagrams()
+        d = tempfile.mkdtemp(dir=self.tmp)
+        for did, size in ((a, (400, 300)), (b, (410, 300))):
+            make_png(os.path.join(d, f"{did}.png"), size)
+            epc_import.attach_image(did, epc_import.store_file(epc_import.get_source("Test export images"), os.path.join(d, f"{did}.png"), "image"))
+        out = tempfile.mkdtemp(dir=self.tmp)
+        with open(epc_import.export_bundle(out, include_samples=True), encoding="utf-8") as f:
+            bundle = json.load(f)
+        self.assertIn("images/SAMPLE-11-01.svg", [x.get("image") for x in bundle["diagrams"]])  # a code used once keeps its plain name
+        same = [x["image"] for x in bundle["diagrams"] if x["code"] == "84_0001"]
+        self.assertEqual(len(set(same)), 2)
+        self.assertTrue(all(os.path.exists(os.path.join(out, i)) for i in same))
+        with open(epc_import.export_bundle(tempfile.mkdtemp(dir=self.tmp)), encoding="utf-8") as f:
+            real_only = json.load(f)
+        self.assertNotIn("99999999002", [s["old"] for s in real_only["supersessions"]])
+        self.assertNotIn("SAMPLE-CAR", [e["vehicle"] for e in real_only["expected_diagrams"]])
+
     def test_delete_vehicle_keeps_other_diagrams(self):
         epc_import.import_bundle({"source": {"name": "Del A"}, "vehicles": [{"code": "DEL-A"}, {"code": "DEL-B"}],
                                   "diagrams": [{"code": "DEL_1", "vehicles": ["DEL-A", "DEL-B"], "items": [{"callout": "1", "part_number": "1"}]},

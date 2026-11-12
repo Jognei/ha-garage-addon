@@ -16,6 +16,7 @@ import json
 import os
 import re
 import shutil
+from collections import Counter
 from html.parser import HTMLParser
 
 from . import epc
@@ -441,12 +442,15 @@ def export_bundle(out_dir, include_samples=False):
                                   LEFT JOIN categories p ON p.id=c.parent_id ORDER BY c.sort, c.code""")
     b["parts"] = epc.rows(f"""SELECT p.part_number, p.description, p.notes FROM parts p LEFT JOIN sources s ON s.id=p.source_id WHERE 1=1{skip}""")
     b["diagrams"] = []
-    for d in epc.rows(f"""SELECT d.*, c.code AS category, f.stored_path FROM diagrams d LEFT JOIN categories c ON c.id=d.category_id
-                          LEFT JOIN source_files f ON f.id=d.image_file_id LEFT JOIN sources s ON s.id=d.source_id WHERE 1=1{skip} ORDER BY d.code"""):
+    ds = epc.rows(f"""SELECT d.*, c.code AS category, f.stored_path FROM diagrams d LEFT JOIN categories c ON c.id=d.category_id
+                      LEFT JOIN source_files f ON f.id=d.image_file_id LEFT JOIN sources s ON s.id=d.source_id WHERE 1=1{skip} ORDER BY d.code""")
+    uses = Counter(slug(d["code"]) for d in ds)
+    for d in ds:
         out = {"code": d["code"], "title": d["title"], "category": d["category"], "notes": d["notes"], "sort": d["sort"],
-               "vehicles": [r["code"] for r in epc.rows("SELECT v.code FROM vehicles v JOIN diagram_vehicles dv ON dv.vehicle_id=v.id WHERE dv.diagram_id=?", (d["id"],))]}
+               "vehicles": epc.vehicle_codes(d["id"])}
         if d["stored_path"] and os.path.exists(epc.file_path(d["stored_path"])):
-            fn = slug(d["code"]) + os.path.splitext(d["stored_path"])[1]
+            base = slug(d["code"]) if uses[slug(d["code"])] == 1 else f"{slug(d['code'])}-{d['id']}"
+            fn = base + os.path.splitext(d["stored_path"])[1]
             shutil.copyfile(epc.file_path(d["stored_path"]), os.path.join(out_dir, "images", fn))
             out["image"] = "images/" + fn
         items = epc.rows("SELECT * FROM diagram_items WHERE diagram_id=? ORDER BY sort, id", (d["id"],))
@@ -457,8 +461,10 @@ def export_bundle(out_dir, include_samples=False):
         out["hotspots"] = epc.rows("SELECT callout, x, y, w, h FROM hotspots WHERE diagram_id=?", (d["id"],))
         out["hotspot_units"] = "fraction"
         b["diagrams"].append(out)
-    b["supersessions"] = epc.rows("SELECT old_pn AS old, new_pn AS new, date, note FROM supersessions")
-    b["expected_diagrams"] = epc.rows("SELECT v.code AS vehicle, e.code, e.title FROM expected_diagrams e JOIN vehicles v ON v.id=e.vehicle_id")
+    b["supersessions"] = epc.rows(f"""SELECT x.old_pn AS old, x.new_pn AS new, x.date, x.note FROM supersessions x
+                                      LEFT JOIN sources s ON s.id=x.source_id WHERE 1=1{skip}""")
+    b["expected_diagrams"] = epc.rows(f"""SELECT v.code AS vehicle, e.code, e.title FROM expected_diagrams e JOIN vehicles v ON v.id=e.vehicle_id
+                                          LEFT JOIN sources s ON s.id=e.source_id WHERE 1=1{skip}""")
     with open(os.path.join(out_dir, "catalog.json"), "w", encoding="utf-8") as f:
         json.dump(b, f, indent=1, ensure_ascii=False)
     return os.path.join(out_dir, "catalog.json")
@@ -803,19 +809,31 @@ def import_images(paths, source_name=None, create=False, category=None, vehicle=
         else:
             files.append(p)
     conn = epc.connect()
-    codes = {_code_key(r[1]): r[0] for r in conn.execute("SELECT id, code FROM diagrams")}
+    codes = {}
+    for (code,) in conn.execute("SELECT DISTINCT code FROM diagrams"):
+        codes.setdefault(_code_key(code), set()).add(code)
+    vid = vehicle_id(vehicle, rep) if vehicle else None
     for fp in files:
         stem, ext = os.path.splitext(os.path.basename(fp))
         if ext.lower() not in IMAGE_EXT:
             continue
-        did = codes.get(_code_key(stem))
+        same = codes.get(_code_key(stem), set())
+        if vid:
+            dids = {find_diagram(c, sid, [vid]) for c in same} - {None}
+        else:
+            dids = {r[0] for c in same for r in conn.execute("SELECT id FROM diagrams WHERE code=?", (c,))}
+        if len(dids) > 1:
+            rep.problem(f"{os.path.basename(fp)}: {len(dids)} diagrams have code {stem}; choose the vehicle it belongs to")
+            rep.count("images_unmatched")
+            continue
+        did = next(iter(dids), None)
         if not did:
             if not create:
-                rep.problem(f"{os.path.basename(fp)}: no diagram with code {stem}")
+                rep.problem(f"{os.path.basename(fp)}: no diagram with code {stem}" + (f" for {vehicle}" if vid else ""))
                 rep.count("images_unmatched")
                 continue
             did = upsert_diagram(stem, sid, rep, "", category, [vehicle] if vehicle else [])
-            codes[_code_key(stem)] = did
+            codes.setdefault(_code_key(stem), set()).add(stem)
         attach_image(did, store_file(sid, fp, "image"))
         rep.count("images_attached")
     conn.commit()
