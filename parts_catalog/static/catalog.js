@@ -338,7 +338,9 @@ async function catalogData() {
     } catch (err) { toast(err.message, true); btn.disabled = false; btn.textContent = 'Import'; }
   };
   $$('button.del').forEach((b) => (b.onclick = async () => {
-    if (!confirm(`Remove "${b.dataset.name}" and everything it imported (diagrams, rows, stored files)?`)) return;
+    const shared = ov.sources.find((s) => String(s.id) === b.dataset.id).shared_items || 0;
+    if (!confirm(`Remove "${b.dataset.name}" and everything it imported (diagrams, rows, stored files)?${shared
+      ? `\n\n${shared} ${shared === 1 ? 'row' : 'rows'} from other sources ${shared === 1 ? 'is' : 'are'} on its diagrams and will be removed with them.` : ''}`)) return;
     await api('/epc/sources/' + b.dataset.id, { method: 'DELETE' });
     toast('Source removed'); rerender();
   }));
