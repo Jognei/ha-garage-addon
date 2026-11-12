@@ -684,10 +684,11 @@ class _PageParser(HTMLParser):
             self.title += data
 
 
-def find_parts_table(tables):
+def find_parts_table(tables, rep=None, where=""):
     """The table that looks most like a parts list: part-number and description or callout headers, or a column of 11-digit numbers."""
-    best, best_score = None, 0
+    found = []
     for t in tables:
+        best = None
         for hi in range(min(3, len(t))):
             head, body = t[hi], t[hi + 1:]
             m = map_headers(head, ["callout", "part_number", "description", "supplement", "qty", "from", "to", "fitment_note"])
@@ -700,10 +701,18 @@ def find_parts_table(tables):
                 if h > hits:
                     hits, pn_col = h, col
             score = hits * 2 + len(m)
-            if (hits or "part_number" in m and ("description" in m or "callout" in m)) and score > best_score:
+            if (hits or "part_number" in m and ("description" in m or "callout" in m)) and (not best or score > best[0]):
                 m["part_number"] = pn_col
-                best, best_score = (m, body), score
-    return best
+                best = (score, m, head, body)
+        if best:
+            found.append(best)
+    if not found:
+        return None
+    # a diagram's list has callouts and quantities; a "recently viewed" list beside it usually has neither
+    _, m, head, body = max(found, key=lambda f: ("callout" in f[1] and "qty" in f[1], f[0]))
+    if len(found) > 1 and rep:
+        rep.problem(f"{where}: {len(found)} tables look like a parts list; used the one headed {', '.join(head)} ({len(body)} rows)")
+    return m, body
 
 
 def import_html(path, source_name=None, diagram=None, category=None, vehicle=None, image=None, title=None, is_sample=False, find_upload=None):
@@ -729,7 +738,7 @@ def import_html(path, source_name=None, diagram=None, category=None, vehicle=Non
     p.feed(text)
     code = clean(diagram) or slug(os.path.splitext(os.path.basename(path))[0])
     page_title = clean(title) or clean(p.title)
-    found = find_parts_table(p.tables)
+    found = find_parts_table(p.tables, rep, os.path.basename(path))
     items = []
     if found:
         m, body = found

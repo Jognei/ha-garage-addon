@@ -170,12 +170,15 @@ class CatalogTest(unittest.TestCase):
         self.assertEqual(len(epc.diagram_detail(dg["id"])["items"]), 4)
         self.assertEqual(epc.row("SELECT COUNT(*) AS n FROM source_files WHERE source_id=(SELECT id FROM sources WHERE name='Test HTML')")["n"], 2)
 
-    def html_items(self, code, tables):
+    def html_page(self, code, tables):
         p = os.path.join(tempfile.mkdtemp(dir=self.tmp), code + ".html")
         with open(p, "w", encoding="utf-8") as f:
             f.write("<html><body>" + "".join("<table>" + "".join("<tr>" + "".join(f"<td>{c}</td>" for c in r) + "</tr>" for r in t) + "</table>"
                                              for t in tables) + "</body></html>")
-        epc_import.import_html(p, "Test HTML tables", code)
+        return p
+
+    def html_items(self, code, tables):
+        epc_import.import_html(self.html_page(code, tables), "Test HTML tables", code)
         return [(i["callout"], i["part_number"], i["description"]) for i in epc.diagram_detail(self.diag(code)["id"])["items"]]
 
     def test_html_tables_without_spaced_numbers(self):
@@ -393,6 +396,13 @@ class CatalogTest(unittest.TestCase):
         epc_import.import_bundle({"source": {"name": "Search spaced"}, "diagrams": [{"code": "86_0050", "title": "Front brakes", "items": items}]})
         self.assertEqual([r["part_number"] for r in epc.search("1K0 615 301 AA")], ["1K0615301AA"])
         self.assertEqual([r["part_number"] for r in epc.search("A 000 420 12 20")], ["A0004201220"])
+
+    def test_html_page_with_two_parts_tables(self):
+        recent = [["Part number", "Description"], ["04465-33471", "Brake pads"], ["90915-YZZD1", "Oil filter"], ["17801-0H050", "Air filter"], ["87139-YZZ08", "Cabin filter"]]
+        parts = [["Ref", "Part No.", "Description", "Qty"], ["1", "16100-39466", "Water pump", "1"], ["2", "16271-0H010", "Gasket", "1"]]
+        rep = epc_import.import_html(self.html_page("86_0060", [recent, parts]), "Test HTML tables", "86_0060")
+        self.assertEqual([i["part_number"] for i in epc.diagram_detail(self.diag("86_0060")["id"])["items"]], ["1610039466", "162710H010"])
+        self.assertIn("86_0060.html: 2 tables look like a parts list; used the one headed Ref, Part No., Description, Qty (2 rows)", rep.problems)
 
     def test_same_code_on_two_vehicles(self):
         def bundle(source, vehicle, title, pn):
