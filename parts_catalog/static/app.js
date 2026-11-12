@@ -561,8 +561,9 @@ async function serviceDialog(car, schedules, svc, checked, pre = {}) {
     delete payload.part;
     if (svc) await api('/services/' + svc.id, { method: 'PUT', json: payload });
     else await api(`/cars/${car.id}/services`, { json: payload });
-    if (pre.onSaved) await pre.onSaved();
     toast('Service saved');
+    // the service is in: if what follows fails, the dialog still closes, or Save would post it a second time
+    if (pre.onSaved) { try { await pre.onSaved(); } catch (e) { toast(e.message, true); } }
     rerender();
   });
   $$('input[name=sched]', form).forEach((cb) => (cb.onchange = () => {
@@ -645,7 +646,7 @@ async function projectsTab(el, car) {
       const done = p.tasks.filter((t) => t.done).map((t) => '- ' + t.title);
       serviceDialog(car, car.upcoming, null, [], { title: p.title, notes: [done.join('\n'), p.notes].filter(Boolean).join('\n\n'),
         partIds: p.parts.filter((x) => x.status === 'On hand').map((x) => x.id),
-        onSaved: () => put(p, { status: 'Done' }) });
+        onSaved: () => put(p, { status: 'Done' }).catch((e) => { throw new Error(`Service saved, but the project isn't marked done (${e.message}). Use Edit to set it to Done.`); }) });
     };
     $$('[data-tid]', box).forEach((cb) => (cb.onchange = async () => {
       await api('/project-tasks/' + cb.dataset.tid, { method: 'PUT', json: { done: cb.checked } });
