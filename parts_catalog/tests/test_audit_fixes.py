@@ -228,6 +228,17 @@ class AuditFixesTest(unittest.TestCase):
         self.c.put(f"/api/schedules/{sid}", json={"title": "Wipers", "last_date": ago(300)})
         self.assertIsNone(until())
 
+    def test_a_part_unticked_from_a_service_goes_back_on_hand(self):
+        cid = self.car("DEMO-UNTICK")
+        filt = self.c.post("/api/parts", json={"car_id": cid, "name": "Oil filter", "status": "On hand"}).get_json()["id"]
+        washer = self.c.post("/api/parts", json={"car_id": cid, "name": "Drain plug washer", "status": "On hand"}).get_json()["id"]
+        svc = {"title": "Oil", "date": "2026-10-01", "mileage": 40000}
+        sid = self.c.post(f"/api/cars/{cid}/services", json={**svc, "parts": [{"id": filt}, {"id": washer}]}).get_json()["id"]
+        self.c.put(f"/api/services/{sid}", json={**svc, "parts": [{"id": washer}]})
+        p = self.c.get(f"/api/parts/{filt}").get_json()
+        self.assertEqual((p["status"], p["installed_date"], p["installed_mileage"]), ("On hand", None, None))
+        self.assertEqual(self.c.get(f"/api/parts/{washer}").get_json()["status"], "Installed")
+
 
 if __name__ == "__main__":
     unittest.main()

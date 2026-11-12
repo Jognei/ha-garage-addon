@@ -674,6 +674,9 @@ def save_service(car_id, service_id, b):
         db.execute("""UPDATE parts SET service_id=?, car_id=COALESCE(car_id, ?), status='Installed', installed_date=?,
                       installed_mileage=COALESCE(?, installed_mileage), updated_at=CURRENT_TIMESTAMP WHERE id=?""",
                    (service_id, car_id, date, mileage, pid))
+    for pid in old_parts - {u["id"] for u in uses}:  # unticked while editing: not installed after all
+        db.execute("""UPDATE parts SET status='On hand', installed_date=NULL, installed_mileage=NULL,
+                      updated_at=CURRENT_TIMESTAMP WHERE id=?""", (pid,))
     if mileage is not None:
         record_mileage(car_id, mileage, date, "service")
     return jsonify(id=service_id)
