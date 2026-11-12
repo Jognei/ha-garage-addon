@@ -1283,11 +1283,14 @@ actions:
       <p><b>Summary</b> (mileage, overdue / due-soon counts, next service, parts needed): <code>GET http://${esc(host)}:${port}/api/ha/summary</code></p>
       <p><b>Update mileage</b>: <code>POST http://${esc(host)}:${port}/api/cars/&lt;id&gt;/mileage</code> with <code>{"mileage": 123456}</code></p>
     </div>`}`;
-  const waitForRestart = async () => {
+  // true once the app answers again; when it doesn't, msg says so and the page is left as it is
+  const waitForRestart = async (msg) => {
     await new Promise((res) => setTimeout(res, 1500));
     for (let i = 0; i < 60; i++) {
-      try { await api('/ping'); return; } catch (err) { await new Promise((res) => setTimeout(res, 500)); }
+      try { await api('/ping'); return true; } catch (err) { await new Promise((res) => setTimeout(res, 500)); }
     }
+    msg.textContent = 'Still restarting. Reload this page in a moment.';
+    return false;
   };
   if ($('#dashYaml')) {
     fetch('api/ha/dashboard').then((r) => r.text()).then((t) => { $('#dashYaml').textContent = t; });
@@ -1322,8 +1325,7 @@ actions:
     const r = await api('/settings', { method: 'PUT', json: { lan: e.target.checked } });
     if (r.restarting) {
       $('#lanMsg').textContent = 'Restarting the server…';
-      await waitForRestart();
-      settingsPage();
+      if (await waitForRestart($('#lanMsg'))) settingsPage();
     }
   };
   $('#restoreForm').onsubmit = async (e) => {
@@ -1335,7 +1337,7 @@ actions:
     try {
       await api('/restore', { method: 'POST', body: new FormData(e.target) });
       $('#restoreMsg').textContent = 'Restoring and restarting…';
-      await waitForRestart();
+      if (!(await waitForRestart($('#restoreMsg')))) return;
       toast('Backup restored');
       location.hash = '#/';
       router();
