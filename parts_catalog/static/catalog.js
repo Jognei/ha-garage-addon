@@ -346,7 +346,7 @@ async function catalogData() {
       // each file goes up on its own (in pieces when big), then one import takes them together: a page finds its images among them
       const body = new FormData(e.target);
       body.delete('file');
-      for (const x of files) body.append('upload', await uploadChunked(x, { purpose: 'catalog' }, (t) => { btn.textContent = t; }));
+      for (const x of files) body.append('upload', await uploadChunked(x, { purpose: 'catalog', path: x.webkitRelativePath || '' }, (t) => { btn.textContent = t; }));
       btn.textContent = 'Importing…';
       const data = await api('/epc/import', { method: 'POST', body });
       sessionStorage.setItem('epcLastImport', JSON.stringify(data.reports));
