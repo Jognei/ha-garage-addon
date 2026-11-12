@@ -111,7 +111,7 @@ class AddonTest(unittest.TestCase):
     def test_ui_uses_relative_urls(self):
         """Under HA ingress the app lives at /api/hassio_ingress/<token>/, so the UI must not use root-absolute paths."""
         bad = re.compile(r"""(?:fetch\(|href=|src=)\s*['"`]/(?!/)""")
-        for fn in ("index.html", "app.js", "catalog.js", "workshop.js"):
+        for fn in ("index.html", "app.js", "catalog.js"):
             with open(os.path.join(ROOT, "static", fn), encoding="utf-8") as f:
                 self.assertIsNone(bad.search(f.read()), fn)
 

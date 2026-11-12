@@ -47,21 +47,21 @@ class ProjectsTest(unittest.TestCase):
         return next(c for c in self.c.get("/api/cars").get_json() if c["id"] == self.car)
 
     def test_project_steps_and_parts(self):
-        part = self.c.post("/api/parts", json={"name": "Headers", "status": "On hand"}).get_json()["id"]  # unassigned
+        part = self.c.post("/api/parts", json={"name": "Control arm", "status": "On hand"}).get_json()["id"]  # unassigned
         pid = self.c.post(f"/api/cars/{self.car}/projects", json={
-            "title": "Engine reseal", "tasks": ["Pull drivetrain", "Reseal engine", "Install headers"],
+            "title": "Suspension refresh", "tasks": ["Order parts", "Replace control arms", "Get an alignment"],
             "part_ids": [part]}).get_json()["id"]
         p = self.c.get(f"/api/cars/{self.car}/projects").get_json()[0]
-        self.assertEqual([t["title"] for t in p["tasks"]], ["Pull drivetrain", "Reseal engine", "Install headers"])
-        self.assertEqual(p["parts"][0]["name"], "Headers")
+        self.assertEqual([t["title"] for t in p["tasks"]], ["Order parts", "Replace control arms", "Get an alignment"])
+        self.assertEqual(p["parts"][0]["name"], "Control arm")
         self.assertEqual(self.c.get(f"/api/parts/{part}").get_json()["car_id"], self.car)  # joined the car
         self.c.put(f"/api/project-tasks/{p['tasks'][0]['id']}", json={"done": True})
         # rewriting the list keeps the tick on a step whose text is unchanged
-        self.c.put(f"/api/projects/{pid}", json={"tasks": ["Order gaskets", "Pull drivetrain", "Reseal engine"]})
+        self.c.put(f"/api/projects/{pid}", json={"tasks": ["Buy bushings", "Order parts", "Replace control arms"]})
         tasks = self.c.get(f"/api/cars/{self.car}/projects").get_json()[0]["tasks"]
         self.assertEqual([(t["title"], t["done"]) for t in tasks],
-                         [("Order gaskets", 0), ("Pull drivetrain", 1), ("Reseal engine", 0)])
-        self.assertEqual(self.card()["projects"][0]["title"], "Engine reseal")
+                         [("Buy bushings", 0), ("Order parts", 1), ("Replace control arms", 0)])
+        self.assertEqual(self.card()["projects"][0]["title"], "Suspension refresh")
         self.c.put(f"/api/projects/{pid}", json={"status": "Done"})
         self.assertEqual(self.card()["projects"], [])  # finished projects leave the card
         self.assertEqual(self.c.get(f"/api/cars/{self.car}/projects").get_json()[0]["done_date"], day(0))
@@ -122,10 +122,10 @@ class ProjectsTest(unittest.TestCase):
         self.assertIn("Brake job (pads & rotors, front)", ref["quick_services"])
         self.assertTrue(all(p["group"] for p in ref["presets"]))
         self.c.put("/api/settings", json={"card": {"upcoming_rows": 99, "photo": False, "bogus": 1},
-                                          "quick_services": ["Headers install", " "]})
+                                          "quick_services": ["Control arm install", " "]})
         ref = self.c.get("/api/refdata").get_json()
         self.assertEqual(ref["card"], {**server.CARD_DEFAULTS, "upcoming_rows": 12, "photo": False})
-        self.assertEqual(ref["quick_services"][0], "Headers install")
+        self.assertEqual(ref["quick_services"][0], "Control arm install")
         self.c.put("/api/settings", json={"card": dict(server.CARD_DEFAULTS), "quick_services": []})
 
 

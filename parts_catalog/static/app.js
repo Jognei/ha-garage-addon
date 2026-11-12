@@ -109,7 +109,6 @@ async function router() {
 function applyFeatures() {
   const on = !!(REF && REF.features && REF.features.catalog);
   $$('[data-nav="catalog"]').forEach((a) => { a.hidden = !on; });
-  $$('[data-nav="workshop"]').forEach((a) => { a.hidden = !(REF && REF.features && REF.features.workshop); });
 }
 window.addEventListener('hashchange', () => { router(); window.scrollTo(0, 0); });
 $('#searchForm').addEventListener('submit', (e) => {
@@ -539,7 +538,7 @@ async function projectsTab(el, car) {
   el.innerHTML = `
     <div class="spread"><h2 style="margin-top:0">Projects</h2><button class="primary" id="addProj">＋ New project</button></div>
     ${active.length ? `<div class="proj-list">${active.map(card).join('')}</div>`
-      : '<div class="panel empty">Nothing planned. A project is a bigger job (engine reseal, suspension refresh) with steps to tick off and the parts you have set aside for it. The first one shows on the garage card as “Next project”.</div>'}
+      : '<div class="panel empty">Nothing planned. A project is a bigger job (brake overhaul, suspension refresh) with steps to tick off and the parts you have set aside for it. The first one shows on the garage card as “Next project”.</div>'}
     ${done.length ? `<details class="hidden-cars"><summary>Finished (${done.length})</summary><div class="proj-list" style="margin-top:8px">${done.map(card).join('')}</div></details>` : ''}`;
   $('#addProj').onclick = () => projectDialog(car, null);
   const put = (p, json) => api('/projects/' + p.id, { method: 'PUT', json });
@@ -570,10 +569,10 @@ async function projectDialog(car, p) {
   const parts = await usableParts(car, (x) => mine.has(x.id));
   const form = openDialog(p ? 'Edit project' : 'New project', `
     <div class="form">
-      <label class="wide">Project<input name="title" required value="${esc(p ? p.title : '')}" placeholder="e.g. Pull the drivetrain, reseal the engine, fit headers"></label>
+      <label class="wide">Project<input name="title" required value="${esc(p ? p.title : '')}" placeholder="e.g. Suspension refresh"></label>
       <label>Status<select name="status">${options(REF.project_statuses, p ? p.status : 'Planned')}</select></label>
       <label>Target date<input type="date" name="target_date" value="${esc(p ? p.target_date || '' : '')}"></label>
-      <label class="wide">Steps (one per line)<textarea name="steps" rows="6" placeholder="Pull engine and transmission&#10;Reseal engine&#10;Install headers">${esc(p ? p.tasks.map((t) => t.title).join('\n') : '')}</textarea></label>
+      <label class="wide">Steps (one per line)<textarea name="steps" rows="6" placeholder="Order parts&#10;Replace front control arms&#10;Get an alignment">${esc(p ? p.tasks.map((t) => t.title).join('\n') : '')}</textarea></label>
       <label class="wide">Notes<textarea name="notes" placeholder="Plan, torque specs, things to order…">${esc(p ? p.notes : '')}</textarea></label>
     </div>
     ${parts.length ? `<h3>Parts for this project</h3>
@@ -764,7 +763,7 @@ function purchaseDialog(cars, car) {
   const form = openDialog('Add a purchase', `
     <div class="form">
       <label>Vehicle<select name="car_id">${options(cars.map((c) => [c.id, c.name]), car && car.id, 'Not assigned')}</select></label>
-      <label>Supplier<input name="supplier" placeholder="FCP Euro, RockAuto…"></label>
+      <label>Supplier<input name="supplier" placeholder="Store or website"></label>
       <label>Date<input type="date" name="purchased_date" value="${today()}"></label>
       <label>Order #<input name="order_ref"></label>
       <label>Status<select name="status">${options(['On hand', 'Ordered'], 'On hand')}</select></label>
@@ -953,7 +952,7 @@ async function settingsPage() {
     <h2>Quick services</h2>
     <form class="panel stack" id="quickForm">
       <p class="muted small">Your own one-tap jobs for <b>Log a service</b>, one per line. They show ahead of the built-in ones (brake job, battery, tires…).</p>
-      <textarea name="q" rows="4" placeholder="Headers install&#10;Track day prep">${esc((s.settings.quick_services || []).join('\n'))}</textarea>
+      <textarea name="q" rows="4" placeholder="Winter tire swap&#10;Detailing">${esc((s.settings.quick_services || []).join('\n'))}</textarea>
       <div><button>Save</button></div>
     </form>
     <h2>AI agents</h2>

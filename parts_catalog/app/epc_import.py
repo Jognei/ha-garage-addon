@@ -339,7 +339,7 @@ def add_supersession(old, new, source_id, rep, date=None, note=""):
 # ---------- JSON bundle ----------
 
 def import_bundle(path_or_obj, source_name=None, base_dir=None, is_sample=None):
-    """Import the portable JSON format (see docs/catalog.md). Image paths are relative to the JSON file."""
+    """Import the portable JSON format (see Catalog > Data & import). Image paths are relative to the JSON file."""
     if isinstance(path_or_obj, dict):
         b, raw = path_or_obj, None
     else:

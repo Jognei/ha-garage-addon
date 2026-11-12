@@ -20,7 +20,7 @@ PAGE = """<html><head><title>Test page: water pump</title></head><body>
 <table>
 <tr><th>No.</th><th>Description</th><th>Supplement</th><th>Qty</th><th>From</th><th>Up to</th><th>Part Number</th></tr>
 <tr><td>1</td><td>Water pump</td><td></td><td>1</td><td></td><td>08/1990</td><td>11 51 1 234 567</td></tr>
-<tr><td>2</td><td>Gasket &amp; seal</td><td>M30B35</td><td>1</td><td>09/1990</td><td></td><td>11-51-1-234-568</td></tr>
+<tr><td>2</td><td>Gasket &amp; seal</td><td>ENGINE-A</td><td>1</td><td>09/1990</td><td></td><td>11-51-1-234-568</td></tr>
 <tr><td>3</td><td>Bolt</td><td>M8x25</td><td></td><td></td><td></td><td>07 11 9 900 001</td></tr>
 <tr><td>4</td><td>Not available</td><td></td><td></td><td></td><td></td><td>--</td></tr>
 </table></body></html>"""
@@ -48,7 +48,7 @@ class CatalogTest(unittest.TestCase):
         epc_api.init()
         epc_import.load_sample()
         epc_import.import_bundle({"source": {"name": "Test vehicles"}, "vehicles": [
-            {"code": "E34-535i-USA", "series": "E34", "model": "535i", "engine": "M30B35"}]})
+            {"code": "DEMO-SEDAN", "series": "DEMO", "model": "Sedan", "engine": "ENGINE-A"}]})
         cls.c = app.test_client()
 
     @classmethod
@@ -112,7 +112,7 @@ class CatalogTest(unittest.TestCase):
         make_png(os.path.join(d, "page_files", "logo.png"), (20, 20))
         with open(os.path.join(d, "page.html"), "w", encoding="utf-8") as f:
             f.write(PAGE)
-        rep = epc_import.import_html(os.path.join(d, "page.html"), "Test HTML", "11_0099", "11", "E34-535i-USA")
+        rep = epc_import.import_html(os.path.join(d, "page.html"), "Test HTML", "11_0099", "11", "DEMO-SEDAN")
         self.assertEqual(rep.counts["items_added"], 4)
         self.assertEqual(rep.counts["hotspots_added"], 3)
         self.assertTrue(any("9" in p for p in rep.problems))  # hotspot label not in table
@@ -123,7 +123,7 @@ class CatalogTest(unittest.TestCase):
         self.assertEqual(items["1"]["part_number"], "11511234567")
         self.assertEqual(items["1"]["to_date"], "199008")
         self.assertEqual(items["2"]["description"], "Gasket & seal")
-        self.assertEqual(items["2"]["supplement"], "M30B35")
+        self.assertEqual(items["2"]["supplement"], "ENGINE-A")
         self.assertEqual(items["2"]["from_date"], "199009")
         self.assertIsNone(items["3"]["qty"])
         self.assertEqual((items["4"]["part_number"], items["4"]["part_number_raw"]), ("", "--"))
@@ -135,7 +135,7 @@ class CatalogTest(unittest.TestCase):
         for s in stored:
             self.assertTrue(os.path.exists(epc.file_path(s["stored_path"])))
         # re-import replaces instead of duplicating
-        epc_import.import_html(os.path.join(d, "page.html"), "Test HTML", "11_0099", "11", "E34-535i-USA")
+        epc_import.import_html(os.path.join(d, "page.html"), "Test HTML", "11_0099", "11", "DEMO-SEDAN")
         self.assertEqual(len(epc.diagram_detail(dg["id"])["items"]), 4)
         self.assertEqual(epc.row("SELECT COUNT(*) AS n FROM source_files WHERE source_id=(SELECT id FROM sources WHERE name='Test HTML')")["n"], 2)
 
@@ -146,7 +146,7 @@ class CatalogTest(unittest.TestCase):
             f.write("diagram,callout,part number,description,qty,from,to\n"
                     "17_0001,1,17111234567,Radiator,1,,\n17_0001,2,17111234568,Hose,2,1990-09,\n"
                     "17_0001,2,17111234568,Hose,2,1990-09,\n")
-        rep = epc_import.import_csv(p, "Test CSV", vehicle="E34-535i-USA", category="17")
+        rep = epc_import.import_csv(p, "Test CSV", vehicle="DEMO-SEDAN", category="17")
         self.assertEqual((rep.counts["items_added"], rep.counts["duplicates_skipped"]), (2, 1))
         hp = os.path.join(d, "hot.csv")
         with open(hp, "w", encoding="utf-8") as f:
@@ -209,10 +209,10 @@ class CatalogTest(unittest.TestCase):
         self.assertEqual(next(i for i in d["items"] if i["callout"] == "1")["garage"][0]["status"], "On hand")
         # upload
         csv_bytes = b"diagram,callout,part number,description,qty\n12_0001,1,12311234567,Alternator,1\n"
-        r = self.c.post("/api/epc/import", data={"file": (io.BytesIO(csv_bytes), "alt.csv"), "vehicle": "E34-535i-USA", "category": "12"},
+        r = self.c.post("/api/epc/import", data={"file": (io.BytesIO(csv_bytes), "alt.csv"), "vehicle": "DEMO-SEDAN", "category": "12"},
                         content_type="multipart/form-data")
         self.assertEqual(r.get_json()["reports"][0]["counts"]["items_added"], 1)
-        self.assertEqual(self.c.get(f"/api/epc/diagrams?vehicle={epc.row('SELECT id FROM vehicles WHERE code=?', ('E34-535i-USA',))['id']}&category={epc.row('SELECT id FROM categories WHERE code=?', ('12',))['id']}").get_json()[0]["code"], "12_0001")
+        self.assertEqual(self.c.get(f"/api/epc/diagrams?vehicle={epc.row('SELECT id FROM vehicles WHERE code=?', ('DEMO-SEDAN',))['id']}&category={epc.row('SELECT id FROM categories WHERE code=?', ('12',))['id']}").get_json()[0]["code"], "12_0001")
 
     def test_same_code_on_two_vehicles(self):
         def bundle(source, vehicle, title, pn):
@@ -265,9 +265,9 @@ class CatalogTest(unittest.TestCase):
         sid = epc.row("SELECT id FROM sources WHERE is_sample=1 AND name='SAMPLE DATA (not real)'")["id"]
         epc.delete_source(sid)
         self.assertIsNone(self.diag("SAMPLE-11-01"))
-        self.assertIsNone(epc.row("SELECT 1 FROM vehicles WHERE code='SAMPLE-E34'"))
+        self.assertIsNone(epc.row("SELECT 1 FROM vehicles WHERE code='SAMPLE-CAR'"))
         self.assertIsNone(epc.row("SELECT 1 FROM parts WHERE part_number='99999999001'"))
-        self.assertIsNotNone(epc.row("SELECT 1 FROM vehicles WHERE code='E34-535i-USA'"))
+        self.assertIsNotNone(epc.row("SELECT 1 FROM vehicles WHERE code='DEMO-SEDAN'"))
 
 
 if __name__ == "__main__":

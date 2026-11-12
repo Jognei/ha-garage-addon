@@ -10,8 +10,6 @@ A Home Assistant add-on for keeping track of your vehicles:
 - **Projects:** bigger jobs with steps to tick off and parts set aside; the next one shows on the vehicle's card
 - **Offline parts catalog** (optional, off by default): main groups, diagrams with clickable callouts, OEM part numbers, quantities,
   fitment and supersessions, imported from your own files (JSON, CSV, saved HTML pages, images)
-- **3D workshop** (optional): import a 3D model of a vehicle built from simple shapes, pull it apart section by
-  section, click a part for its number, fastener thread, torque and tightening order, and its repair steps
 - **Home Assistant sensors** for odometer, next service and overdue counts, plus a ready-made dashboard tab
 - **AI agent access (MCP):** let Claude or another MCP-capable assistant check what's due, log services and add parts
 
@@ -27,7 +25,7 @@ away, and it needs no separate login.
 Home Assistant OS or Supervised is required (add-ons aren't available on Container/Core installs).
 Supported: amd64 and aarch64 (e.g. Home Assistant Green/Yellow, Raspberry Pi 4/5 64-bit).
 
-More: [add-on documentation](parts_catalog/DOCS.md), [catalog import formats](docs/catalog.md).
+More: [add-on documentation](parts_catalog/DOCS.md).
 
 ## Notes
 - All data stays in your Home Assistant (included in HA backups). Nothing is sent anywhere.

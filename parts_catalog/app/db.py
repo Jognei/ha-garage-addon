@@ -142,13 +142,12 @@ def apply_pending_restore():
         return False
     epc = os.path.join(DATA_DIR, "epc")
     for p in (DB_PATH, DB_PATH + "-wal", DB_PATH + "-shm", DOC_DIR, os.path.join(epc, "epc.db"),
-              os.path.join(epc, "epc.db-wal"), os.path.join(epc, "epc.db-shm"), os.path.join(epc, "files"),
-              os.path.join(DATA_DIR, "workshop")):
+              os.path.join(epc, "epc.db-wal"), os.path.join(epc, "epc.db-shm"), os.path.join(epc, "files")):
         if os.path.isdir(p):
             shutil.rmtree(p)
         elif os.path.exists(p):
             os.remove(p)
-    for name in ("garage.db", "documents", os.path.join("epc", "epc.db"), os.path.join("epc", "files"), "workshop"):
+    for name in ("garage.db", "documents", os.path.join("epc", "epc.db"), os.path.join("epc", "files")):
         src = os.path.join(pending, name)
         if os.path.exists(src):
             os.makedirs(os.path.dirname(os.path.join(DATA_DIR, name)), exist_ok=True)

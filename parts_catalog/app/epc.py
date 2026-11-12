@@ -6,7 +6,7 @@ Data comes only from imports (JSON bundle, CSV, saved HTML pages, local images);
 Model (works for any BMW model, or any make):
   sources          where each record came from; is_sample=1 marks sample data
   source_files     original files (HTML, CSV, JSON, images) copied in, kept for reprocessing
-  vehicles         one catalog variant, e.g. E34 535i sedan USA
+  vehicles         one catalog variant, e.g. one model for one market
   categories       main groups ("11 Engine") and optional subgroups (parent_id)
   diagrams         one illustration; code is unique (e.g. "11_0050"); image is a stored file
   diagram_vehicles which vehicles a diagram applies to
@@ -68,8 +68,8 @@ CREATE TABLE IF NOT EXISTS vehicles (
   id INTEGER PRIMARY KEY,
   code TEXT NOT NULL UNIQUE,
   make TEXT DEFAULT 'BMW',
-  series TEXT DEFAULT '',          -- chassis, e.g. E34
-  model TEXT DEFAULT '',           -- e.g. 535i
+  series TEXT DEFAULT '',          -- chassis, e.g. DEMO
+  model TEXT DEFAULT '',           -- e.g. Sedan
   body TEXT DEFAULT '',
   market TEXT DEFAULT '',
   engine TEXT DEFAULT '',
@@ -107,7 +107,7 @@ CREATE TABLE IF NOT EXISTS diagram_items (
   part_number TEXT DEFAULT '',     -- normalized; '' when the row has none (e.g. "not available")
   part_number_raw TEXT DEFAULT '', -- exactly as in the source
   description TEXT DEFAULT '',
-  supplement TEXT DEFAULT '',      -- e.g. "M30B35", "For vehicles with A/C"
+  supplement TEXT DEFAULT '',      -- e.g. "ENGINE-A", "For vehicles with A/C"
   qty TEXT,                        -- original text ("1", "6", "X"); NULL = not given in the source
   qty_num REAL,
   from_date TEXT, to_date TEXT,    -- YYYYMM production range

@@ -19,7 +19,6 @@ from flask import Flask, jsonify, request, send_from_directory, send_file
 from . import db
 from .epc_api import bp as epc_bp
 from .mcp_server import bp as mcp_bp, INTERNAL
-from . import workshop
 
 STATIC = os.path.join(db.ROOT, "static")
 SETTINGS_PATH = os.path.join(db.DATA_DIR, "settings.json")
@@ -34,7 +33,6 @@ app = Flask(__name__, static_folder=None)
 app.config["MAX_CONTENT_LENGTH"] = 500 * 1024 * 1024  # service manuals are big
 app.register_blueprint(epc_bp)
 app.register_blueprint(mcp_bp)
-app.register_blueprint(workshop.bp)
 
 # Common service intervals offered as one-click presets: (title, miles, months, group).
 PRESETS = [
@@ -176,7 +174,7 @@ def ping():
 @app.route("/api/refdata")
 def api_refdata():
     return jsonify(statuses=db.STATUSES, kinds=db.KINDS, doc_kinds=db.DOC_KINDS,
-                   features={"catalog": bool(load_settings().get("catalog")), "workshop": workshop.has_packs()},
+                   features={"catalog": bool(load_settings().get("catalog"))},
                    project_statuses=db.PROJECT_STATUSES, card=card_settings(), quick_services=quick_services(),
                    presets=[{"title": t, "interval_miles": m, "interval_months": mo, "group": g} for t, m, mo, g in PRESETS])
 
@@ -1059,7 +1057,7 @@ def write_backup(out):
                 epc.connect().backup(edst)
                 edst.close()
                 z.write(esnap, "epc/epc.db")
-            for folder in (db.DOC_DIR, epc.FILES_DIR, workshop.DIR):
+            for folder in (db.DOC_DIR, epc.FILES_DIR):
                 for dirpath, _, files in os.walk(folder):
                     for fn in files:
                         full = os.path.join(dirpath, fn)
@@ -1082,7 +1080,7 @@ def api_backup():
         shutil.rmtree(tmp, ignore_errors=True)
 
 
-RESTORE_PATHS = ("garage.db", "epc/epc.db", "documents/", "epc/files/", "workshop/")
+RESTORE_PATHS = ("garage.db", "epc/epc.db", "documents/", "epc/files/")
 
 
 @app.route("/api/restore", methods=["POST"])

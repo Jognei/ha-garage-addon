@@ -76,7 +76,7 @@ class GarageTest(unittest.TestCase):
 
     def test_purchase_with_receipt_and_documents(self):
         car1 = self.c.post("/api/cars", json={"name": "Doc car"}).get_json()["id"]
-        data = {"car_id": car1, "supplier": "FCP Euro", "items": [
+        data = {"car_id": car1, "supplier": "Parts Store", "items": [
             {"name": "Thermostat", "part_number": "11531740996", "qty": 1, "price": "$24.99"},
             {"name": "", "part_number": ""}]}
         r = self.c.post("/api/purchases", data={"data": json.dumps(data),
