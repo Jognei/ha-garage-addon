@@ -1,6 +1,7 @@
 name: Add-on images
-# Builds the add-on for each architecture and, on main, publishes ghcr.io/<owner>/<arch>-parts-catalog:<version>
-# (the `image:` in parts_catalog/config.yaml), so Home Assistant downloads a ready image instead of building.
+# Runs the tests (tests.yaml), then builds the add-on for each architecture and, on main, publishes
+# ghcr.io/<owner>/<arch>-parts-catalog:<version> (the `image:` in parts_catalog/config.yaml), so Home Assistant
+# downloads a ready image instead of building.
 on:
   push:
     branches: [main]
@@ -11,7 +12,10 @@ permissions:
   contents: read
   packages: write
 jobs:
+  test:
+    uses: ./.github/workflows/tests.yaml
   image:
+    needs: test
     runs-on: ubuntu-latest
     strategy:
       matrix:
