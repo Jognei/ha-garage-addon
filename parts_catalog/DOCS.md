@@ -22,7 +22,7 @@ works, and Home Assistant handles sign-in.
 - **Export CSV:** service history (vehicle › Services) and parts (Parts › ⬇ CSV), for a spreadsheet or a buyer.
 
 ## Home Assistant sensors
-The add-on keeps these up to date (turn off with **publish_sensors**):
+The add-on keeps these up to date (turn off with **Publish sensors**):
 - `sensor.garage_overdue`, `sensor.garage_due_soon`, `sensor.garage_parts_to_get`: totals
 - per vehicle, `sensor.garage_<vehicle>_odometer`, `_status`, `_next_service`, `_next_service_due`, `_parts_to_get`,
   where `<vehicle>` is the vehicle's name in lower case with `_` for spaces (renaming a vehicle renames its sensors)
@@ -37,7 +37,7 @@ your dashboard choose **Edit dashboard › ⋮ › Raw configuration editor**, a
 Let an AI assistant such as Claude, or any app that supports MCP, work with your garage. It can list vehicles,
 check what's due, read service history, record odometer readings, log services, and add or update parts.
 1. In the add-on, go to **Settings › AI agents** and click **Turn on: create an agent key**.
-2. Turn on **direct_access** and set a host port under **Network**, so the agent can reach the add-on.
+2. Turn on **Direct network access** and set a host port under **Network**, so the agent can reach the add-on.
 3. In the agent app, add an MCP server of type **HTTP**: `http://<home-assistant-ip>:<port>/mcp`, with the header
    `Authorization: Bearer <agent key>`.
 
@@ -55,7 +55,8 @@ Home Assistant backups include the add-on's data. You can also download everythi
 data between installs.
 
 ## Options
-- **direct_access** (off): only Home Assistant can reach the add-on. Turn it on, and set a host port under
-  **Network**, to reach it directly at `http://<home-assistant-ip>:<port>`. There's no password on that port, so
-  only use it on a trusted network.
-- **publish_sensors** (on): create the Home Assistant sensors above.
+- **Direct network access** (`direct_access`, off): only Home Assistant can reach the add-on. Turn it on, and set a
+  host port under **Network**, to reach it directly at `http://<home-assistant-ip>:<port>`. There's no password on
+  that port, so only use it on a trusted network.
+- **Publish sensors** (`publish_sensors`, on): create the Home Assistant sensors above. When it's off, the add-on
+  removes them at its next start.

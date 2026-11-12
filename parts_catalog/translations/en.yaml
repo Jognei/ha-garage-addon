@@ -1,0 +1,14 @@
+configuration:
+  direct_access:
+    name: Direct network access
+    description: >-
+      Off: only Home Assistant can reach the add-on. On: other devices on your network, such as an AI agent,
+      can open it at http://<home-assistant-ip>:<port>, with the port set under Network. That port has no
+      password, so only turn this on for a trusted network.
+  publish_sensors:
+    name: Publish sensors
+    description: >-
+      Keep the Garage sensors up to date in Home Assistant: overdue, due soon and parts to get, and each
+      vehicle's odometer, status and next service. When off, the add-on removes them at its next start.
+network:
+  8765/tcp: Direct access from other devices, only used when "Direct network access" is on. It has no password.
