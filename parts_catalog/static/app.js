@@ -993,6 +993,7 @@ async function documentsTab(el, car) {
         <td class="num" style="white-space:nowrap"><a class="btn" href="${fileUrl(d)}?download=1">⬇</a> <button class="link edit">Edit</button></td></tr>`).join('')}
     </tbody></table>` : `<div class="empty">${car ? 'No manuals or files yet.' : 'No files without a vehicle.'}</div>`}</div>`;
   if (car) $('#upBtn', el).onclick = () => {
+    const stored = new Set();  // files this dialog already stored: a retry after a failure partway skips them
     const form = openDialog('Upload files', `<div class="form">
         <label class="wide">Files<input type="file" name="file" multiple required></label>
         <label>Type<select name="kind">${options(REF.doc_kinds, docFilter || 'Manual')}</select></label>
@@ -1001,6 +1002,7 @@ async function documentsTab(el, car) {
       const files = Array.from(f.elements.file.files);
       const title = files.length === 1 ? data.title : '';
       for (const x of files) {  // one file per request: small ones together could go over Ingress's limit
+        if (stored.has(x)) continue;
         if (x.size <= CHUNK) {
           okText(`Uploading ${x.name}…`);
           const fd = new FormData();
@@ -1011,6 +1013,7 @@ async function documentsTab(el, car) {
           const id = await uploadChunked(x, { car_id: car.id, kind: data.kind, title }, okText);
           await api(`/documents/chunked/${id}/finish`, { method: 'POST', json: {} });
         }
+        stored.add(x);
       }
       toast(files.length === 1 ? 'Uploaded' : `Uploaded ${files.length} files`);
       docFilter = data.kind;  // show what was just added
