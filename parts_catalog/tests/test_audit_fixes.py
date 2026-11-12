@@ -823,12 +823,16 @@ class AuditFixesTest(unittest.TestCase):
         self.assertEqual(p["project_title"], "Suspension refresh")
 
     def test_every_file_but_a_vehicle_photo_is_listed(self):
+        from PIL import Image
         cid = self.car("DEMO-FILES")
         upload = lambda kind, car="": self.c.post("/api/documents", data={  # noqa: E731
             "file": (io.BytesIO(b"x"), "a.jpg"), "kind": kind, "car_id": car}, content_type="multipart/form-data").get_json()["ids"][0]
         saved_as_photo = upload("Photo", cid)  # as older versions let you
         loose = upload("Receipt")
-        self.c.post(f"/api/cars/{cid}/photo", data={"photo": (io.BytesIO(b"x"), "car.jpg")}, content_type="multipart/form-data")
+        png = io.BytesIO()
+        Image.new("RGB", (40, 30), "red").save(png, "PNG")
+        r = self.c.post(f"/api/cars/{cid}/photo", data={"photo": (io.BytesIO(png.getvalue()), "car.png")}, content_type="multipart/form-data")
+        self.assertEqual(r.status_code, 200, r.get_json())
         self.assertEqual([d["id"] for d in self.c.get(f"/api/documents?car_id={cid}").get_json()], [saved_as_photo])
         self.assertEqual(next(c for c in self.c.get("/api/cars").get_json() if c["id"] == cid)["documents"], 1)
         r = self.c.get("/api/documents?car_id=none")
