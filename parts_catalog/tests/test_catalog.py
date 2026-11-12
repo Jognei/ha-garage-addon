@@ -388,6 +388,12 @@ class CatalogTest(unittest.TestCase):
         self.assertFalse(os.path.exists(os.path.join(base, "86_0040.png")))
         self.assertIsNotNone(self.diag("86_0040")["image_file_id"])
 
+    def test_search_spaced_number_with_letters(self):
+        items = [{"callout": str(n), "part_number": pn} for n, pn in enumerate(("1K0 615 301 AA", "5K0 301 615", "3C0 615 301", "A 000 420 12 20", "A 000 421 12 12"))]
+        epc_import.import_bundle({"source": {"name": "Search spaced"}, "diagrams": [{"code": "86_0050", "title": "Front brakes", "items": items}]})
+        self.assertEqual([r["part_number"] for r in epc.search("1K0 615 301 AA")], ["1K0615301AA"])
+        self.assertEqual([r["part_number"] for r in epc.search("A 000 420 12 20")], ["A0004201220"])
+
     def test_same_code_on_two_vehicles(self):
         def bundle(source, vehicle, title, pn):
             return {"source": {"name": source}, "vehicles": [{"code": vehicle, "series": vehicle[:3], "model": "x"}],

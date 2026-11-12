@@ -367,8 +367,12 @@ def search(q, vehicle_id=None, limit=200):
     q = (q or "").strip()
     if not q:
         return []
-    # a number typed with spaces ("11 53 1 740 996") is one token
-    tokens = [q] if re.match(r"^[\d\s\-./]+$", q) else q.split()
+    # a number typed with spaces ("11 53 1 740 996", or "1K0 615 301 AA" when the catalog has it) is one token
+    known = f"%{norm_pn(q)}%"
+    whole = re.match(r"^[\d\s\-./]+$", q) or looks_like_pn(q) and row(
+        "SELECT 1 FROM diagram_items WHERE part_number LIKE ? UNION ALL SELECT 1 FROM supersessions WHERE old_pn LIKE ? OR new_pn LIKE ?",
+        (known, known, known))
+    tokens = [q] if whole else q.split()
     in_vehicle, vargs = (" AND d.id IN (SELECT diagram_id FROM diagram_vehicles WHERE vehicle_id=?)", [vehicle_id]) if vehicle_id else ("", [])
     items = """SELECT i.id, i.callout, i.part_number, i.description, i.supplement, i.qty, i.from_date, i.to_date,
                d.id AS diagram_id, d.code AS diagram_code, d.title AS diagram_title, c.code AS category_code, s.is_sample
