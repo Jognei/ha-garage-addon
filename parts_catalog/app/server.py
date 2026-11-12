@@ -3,6 +3,7 @@ import calendar
 import datetime as dt
 import io
 import json
+import math
 import os
 import re
 import shutil
@@ -147,7 +148,7 @@ NUMBER = re.compile(r"-?\$?(\d{1,3}(,\d{3})+|\d+)(\.\d+)?( ?mi)?", re.IGNORECASE
 
 def to_number(v, field):
     """None for blank; else 400 naming `field` unless `v` is cleanly a number."""
-    if isinstance(v, (int, float)):
+    if isinstance(v, int) or (isinstance(v, float) and math.isfinite(v)):  # JSON's Infinity, NaN, 1e400: refused as text below
         return v
     s = "" if v is None else str(v).strip()
     if not s:

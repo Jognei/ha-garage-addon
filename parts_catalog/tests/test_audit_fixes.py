@@ -190,6 +190,17 @@ class AuditFixesTest(unittest.TestCase):
         self.assertEqual(self.c.get(f"/api/cars/{cid}/services").get_json(), [])
         self.assertNotIn("DEMO-BAD-MILES", [c["name"] for c in self.c.get("/api/cars").get_json()])
 
+    def test_numbers_that_are_not_finite_are_refused(self):
+        cid = self.car("DEMO-INFINITE", 1000)
+        try:
+            app.config["PROPAGATE_EXCEPTIONS"] = False  # as in production; tests otherwise re-raise
+            for raw in ("Infinity", "NaN", "1e400"):
+                r = self.c.post(f"/api/cars/{cid}/mileage", data=f'{{"mileage": {raw}}}', content_type="application/json")
+                self.assertEqual(r.status_code, 400, raw)
+                self.assertIn("Mileage", r.get_json()["error"])
+        finally:
+            app.config["PROPAGATE_EXCEPTIONS"] = None
+
     def test_a_hand_edited_card_setting_does_not_take_the_garage_down(self):
         saved = server.load_settings()
         try:
