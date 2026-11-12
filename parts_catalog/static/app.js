@@ -388,7 +388,7 @@ function cardOptionsDialog() {
 
 // ---------- car ----------
 
-async function carPage(id, tab = 'services') {
+async function carPage(id, tab = 'services', params) {
   const car = await api('/cars/' + id);
   const tabs = [['services', 'Services'], ['projects', 'Projects'], ['parts', 'Parts'], ['documents', 'Manuals & files'], ['details', 'Details']];
   view.innerHTML = `
@@ -407,7 +407,7 @@ async function carPage(id, tab = 'services') {
   carNotes($('#carNotes'), car);
   const el = $('#tab');
   if (tab === 'projects') return projectsTab(el, car);
-  if (tab === 'parts') return partsSection(el, { car });
+  if (tab === 'parts') return partsSection(el, { car, params });
   if (tab === 'documents') return documentsTab(el, car);
   if (tab === 'details') return carDetails(el, car);
   return servicesTab(el, car);
@@ -716,6 +716,15 @@ async function partsSection(el, { car = null, params = new URLSearchParams() } =
   if (groups[filter]) qs.push('status=' + encodeURIComponent(groups[filter]));
   const parts = await api('/parts?' + qs.join('&'));
   const total = parts.filter((p) => ['Needed', 'Check', 'Ordered'].includes(p.status)).reduce((n, p) => n + (p.price || 0) * (p.qty || 1), 0);
+  const filtered = !!groups[filter] || (!car && !!carFilter);
+  const carName = (cars.find((c) => String(c.id) === carFilter) || {}).name || 'this vehicle';
+  const none = !filtered && !q ? 'No parts here yet.' : [
+    `No ${!car && carFilter === 'none' ? 'unassigned ' : ''}parts`,
+    { get: ' to get', onhand: ' on hand', installed: ' installed' }[filter] || '',
+    !car && carFilter && carFilter !== 'none' ? ' for ' + esc(carName) : '',
+    q ? ` matching “${esc(q)}”.` : '.',
+    filtered ? ' <button class="link" id="showAll">Show all</button>' : '',
+  ].join('');
   el.innerHTML = `
     <div class="spread" style="margin-bottom:12px">
       <div class="row">
@@ -739,10 +748,17 @@ async function partsSection(el, { car = null, params = new URLSearchParams() } =
         <td><input class="inline loc" value="${esc(p.location)}" placeholder="Garage > Shelf A"></td>
         <td class="small">${[esc(p.supplier), money(p.price), esc(p.purchased_date || '')].filter(Boolean).join(' · ')}${p.url ? ` <a href="${esc(p.url)}" target="_blank" rel="noopener">↗</a>` : ''}${p.document_id ? `<div><a href="${fileUrl({ id: p.document_id, original_name: p.document_file })}" target="_blank">receipt</a></div>` : ''}</td>
         <td class="num"><button class="link edit">Edit</button></td></tr>`).join('')}
-    </tbody></table>` : '<div class="empty">No parts here yet.</div>'}</div>`;
+    </tbody></table>` : `<div class="empty">${none}</div>`}</div>`;
 
-  $$('[data-f]', el).forEach((b) => (b.onclick = () => { localStorage.setItem('partsFilter', b.dataset.f); partsSection(el, { car, params: withParam(params, 'status', b.dataset.f) }); }));
-  if (!car) $('#carF').onchange = (e) => partsSection(el, { params: withParam(params, 'car', e.target.value) });
+  // filters go into the address, replaced rather than added so Back still leaves the page
+  const refilter = (next) => {
+    history.replaceState(null, '', `#${car ? '/car/' + car.id : ''}/parts${String(next) ? '?' + next : ''}`);
+    partsSection(el, { car, params: next });
+  };
+  const pick = (f) => { localStorage.setItem('partsFilter', f); return withParam(params, 'status', f); };
+  $$('[data-f]', el).forEach((b) => (b.onclick = () => refilter(pick(b.dataset.f))));
+  if (!car) $('#carF').onchange = (e) => refilter(withParam(params, 'car', e.target.value));
+  if ($('#showAll', el)) $('#showAll', el).onclick = () => refilter(withParam(pick('all'), 'car', ''));
   $('#addPart').onclick = () => partDialog(null, cars, car);
   $('#addPurchase').onclick = () => purchaseDialog(cars, car);
   const reload = () => partsSection(el, { car, params });
