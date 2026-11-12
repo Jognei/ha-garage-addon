@@ -78,6 +78,49 @@ class AuditFixesTest(unittest.TestCase):
         self.assertEqual(self.c.get("/api/cars").status_code, 200)
         self.assertEqual(self.c.get(f"/api/cars/{cid}").status_code, 200)
 
+    def test_dates_and_intervals_out_of_range_are_refused(self):
+        cid = self.car("DEMO-RANGE")
+        for item, field in (({"title": "Oil", "interval_months": 12, "last_date": "9999-12-31"}, "Last done"),
+                            ({"title": "Oil", "interval_months": 100000}, "Every (months)"),
+                            ({"title": "Oil", "interval_miles": -5000}, "Every (miles)")):
+            r = self.c.post(f"/api/cars/{cid}/schedules", json={"items": [item]})
+            self.assertEqual(r.status_code, 400, item)
+            self.assertIn(field, r.get_json()["error"])
+
+    def test_a_schedule_that_cannot_be_counted_reads_unknown(self):
+        cid = self.car("DEMO-UNCOUNTABLE", 1000)
+        for title, months, last in (("Year 9999", 12, "9999-12-31"), ("Huge interval", 100000, "2026-01-01")):
+            db.execute("INSERT INTO schedules (car_id, title, interval_months, last_date) VALUES (?,?,?,?)", (cid, title, months, last))
+        self.assertEqual(self.c.get("/api/cars").status_code, 200)
+        for u in self.c.get(f"/api/cars/{cid}").get_json()["upcoming"]:
+            self.assertEqual((u["state"], u["due_date"], u["days_left"]), ("unknown", None, None), u["title"])
+
+    def test_slow_driving_gives_no_estimate_instead_of_a_crash(self):
+        cid = self.car("DEMO-GARAGE-QUEEN")
+        server.record_mileage(cid, 1000, (dt.date.today() - dt.timedelta(days=100)).isoformat())
+        server.record_mileage(cid, 1001)  # one mile in 100 days
+        self.c.post(f"/api/cars/{cid}/schedules", json={"items": [{"title": "Timing belt", "interval_miles": 60000, "last_mileage": 1000}]})
+        self.assertEqual(self.c.get("/api/cars").status_code, 200)
+        u = self.c.get(f"/api/cars/{cid}").get_json()["upcoming"][0]
+        self.assertEqual((u["miles_left"], u["est_date"], u["state"]), (59999, None, "ok"))
+
+    def test_purchase_with_a_bad_item_stores_nothing(self):
+        cid = self.car("DEMO-PURCHASE")
+        data = {"car_id": cid, "supplier": "Parts Store", "items": [{"name": "Pads"}, {"name": "Rotor", "purchased_date": "yesterday"}]}
+        r = self.c.post("/api/purchases", data={"data": json.dumps(data), "receipt": (io.BytesIO(b"\x89PNG fake"), "order.png")},
+                        content_type="multipart/form-data")
+        self.assertEqual(r.status_code, 400)
+        self.assertIn("like 2026-11-12", r.get_json()["error"])
+        self.assertIsNone(db.row("SELECT id FROM documents WHERE car_id=?", (cid,)))
+        self.assertIsNone(db.row("SELECT id FROM parts WHERE car_id=?", (cid,)))
+
+    def test_adding_schedules_with_a_bad_one_stores_none(self):
+        cid = self.car("DEMO-SCHED-BATCH")
+        r = self.c.post(f"/api/cars/{cid}/schedules", json={"items": [{"title": "Oil", "interval_months": 12},
+                                                                      {"title": "Coolant", "interval_months": 24, "last_date": "yesterday"}]})
+        self.assertEqual(r.status_code, 400)
+        self.assertIsNone(db.row("SELECT id FROM schedules WHERE car_id=?", (cid,)))
+
     def test_service_without_mileage_keeps_the_last_known_mileage(self):
         cid = self.car("DEMO-MILES", 200000)
         sid = self.c.post(f"/api/cars/{cid}/schedules", json={"items": [

@@ -174,9 +174,12 @@ def to_date(v, field="Date"):
     if v in (None, ""):
         return None
     try:
-        return dt.date.fromisoformat(str(v).strip()[:10]).isoformat()
+        d = dt.date.fromisoformat(str(v).strip()[:10])
     except ValueError:
         raise BadInput(f"{field} must be a date like 2026-11-12, not {str(v)[:30]!r}") from None
+    if not 1900 <= d.year <= 2100:
+        raise BadInput(f"{field} must be a date between 1900 and 2100, not {d.isoformat()!r}")
+    return d.isoformat()
 
 
 def parse_date(v):
@@ -499,11 +502,16 @@ def upcoming(car, manual=False):
     rate = miles_per_day(car["id"])
     for s in db.rows("""SELECT s.*, d.title AS doc_title FROM schedules s LEFT JOIN documents d ON d.id=s.doc_id
                         WHERE s.car_id=? AND s.active=1""", (car["id"],)):
-        due_m = (s["last_mileage"] + s["interval_miles"]) if (s["interval_miles"] and s["last_mileage"] is not None) else None
-        due_d = add_months(s["last_date"], s["interval_months"]) if (s["interval_months"] and s["last_date"]) else None
+        try:
+            due_m = (s["last_mileage"] + s["interval_miles"]) if (s["interval_miles"] and s["last_mileage"] is not None) else None
+            due_d = add_months(s["last_date"], s["interval_months"]) if (s["interval_months"] and s["last_date"]) else None
+            counted = True
+        except (OverflowError, TypeError, ValueError):  # stored values it can't count from (e.g. past the year 9999)
+            due_m = due_d = None
+            counted = False
         miles_left = (due_m - car["mileage"]) if (due_m is not None and car.get("mileage") is not None) else None
         days_left = (parse_date(due_d) - today_d).days if due_d else None
-        if s["last_date"] is None and s["last_mileage"] is None:
+        if not counted or (s["last_date"] is None and s["last_mileage"] is None):
             state = "unknown"
         elif (miles_left is not None and miles_left < 0) or (days_left is not None and days_left < 0):
             state = "overdue"
@@ -523,8 +531,11 @@ def upcoming(car, manual=False):
         # when the mileage limit comes first (or is the only one), estimate when from average driving
         est = None
         if rate and miles_left is not None and miles_left > 0:
-            est_d = today_d + dt.timedelta(days=round(miles_left / rate))
-            if not due_d or est_d.isoformat() < due_d:
+            try:
+                est_d = today_d + dt.timedelta(days=round(miles_left / rate))
+            except OverflowError:  # driven so little it lands past the year 9999: no estimate
+                est_d = None
+            if est_d and (not due_d or est_d.isoformat() < due_d):
                 est = est_d.isoformat()
         out.append({**s, "due_mileage": due_m, "due_date": due_d, "miles_left": miles_left,
                     "days_left": days_left, "est_date": est, "state": state, "rank": min(fracs) if fracs else 9e9})
@@ -545,6 +556,9 @@ def schedule_values(b, cur=None):
     for k in ("interval_miles", "interval_months", "last_mileage", "doc_id", "doc_page", "active"):
         if k in vals:
             vals[k] = to_int(vals[k])
+    for k, label, top in (("interval_miles", "Every (miles)", 1_000_000), ("interval_months", "Every (months)", 1200)):
+        if vals.get(k) is not None and not 0 <= vals[k] <= top:
+            raise BadInput(f"{label} must be from 0 to {top:,}")
     for k in ("last_date", "snoozed_until"):
         if k in vals:
             vals[k] = to_date(vals[k], "Last done" if k == "last_date" else "Dismiss until")
@@ -563,10 +577,9 @@ def schedule_values(b, cur=None):
 @app.route("/api/cars/<int:car_id>/schedules", methods=["POST"])
 def api_schedules_add(car_id):
     b = body()
-    items = b.get("items") or [b]
+    rows = [schedule_values(it) for it in b.get("items") or [b]]  # every item checked before any is stored
     ids = []
-    for it in items:
-        vals = schedule_values(it)
+    for vals in rows:
         if not vals.get("title"):
             continue
         vals["car_id"] = car_id
@@ -899,19 +912,22 @@ def api_purchase():
     items = data.get("items") or []
     if not items:
         return err("No items")
+    common = {k: data.get(k) for k in ("car_id", "supplier", "purchased_date", "order_ref", "status", "location") if data.get(k)}
+    common.setdefault("status", "On hand")
+    common.setdefault("purchased_date", today())
+    rows = [{**common, **{k: v for k, v in it.items() if v not in (None, "")}} for it in items]
+    for r in rows:
+        part_values(r)  # a bad value answers 400 before the receipt or any part is stored
     doc_id = None
     f = request.files.get("receipt")
     if f and f.filename:
         doc_id = store_document(f, data.get("car_id"), "Receipt",
                                 data.get("receipt_title") or f"{data.get('supplier') or 'Purchase'} {data.get('purchased_date') or today()}")
-    common = {k: data.get(k) for k in ("car_id", "supplier", "purchased_date", "order_ref", "status", "location") if data.get(k)}
-    common.setdefault("status", "On hand")
-    common.setdefault("purchased_date", today())
     ids = []
-    for it in items:
+    for r in rows:
         try:
-            ids.append(insert_part({**common, **{k: v for k, v in it.items() if v not in (None, "")}, "document_id": doc_id}))
-        except ValueError:
+            ids.append(insert_part({**r, "document_id": doc_id}))
+        except ValueError:  # a blank row
             continue
     return jsonify(ids=ids, document_id=doc_id)
 
