@@ -145,13 +145,13 @@ class AddonTest(unittest.TestCase):
             with open(os.path.join(ROOT, "static", fn), encoding="utf-8") as f:
                 self.assertIsNone(bad.search(f.read()), fn)
 
-    def test_ui_sends_only_upload_purposes_the_server_takes(self):
+    def test_ui_sends_the_upload_purposes_the_server_takes(self):
         sent = set()
         for fn in ("app.js", "catalog.js"):
             with open(os.path.join(ROOT, "static", fn), encoding="utf-8") as f:
-                sent |= set(re.findall(r"purpose: '(\w+)'", f.read()))
-        self.assertTrue(sent)
-        self.assertEqual(sent - set(server.UPLOAD_PURPOSES), set())
+                # uploadChunked(file, { purpose: 'restore' }, ...) or attachFile(fd, field, file, 'photo', ...)
+                sent |= {a or b for a, b in re.findall(r"purpose: '(\w+)'|attachFile\((?:[^,]+,){3}\s*'(\w+)'", f.read())}
+        self.assertEqual(sent, set(server.UPLOAD_PURPOSES) - {"document"})  # sent without a purpose, a file is a document
 
 
 if __name__ == "__main__":
