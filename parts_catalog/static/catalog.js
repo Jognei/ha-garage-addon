@@ -257,6 +257,10 @@ async function catalogSearch(params) {
   $$('button.add').forEach((b) => (b.onclick = () => { const r = res.find((x) => String(x.id) === b.dataset.id); addToGarage({ code: r.diagram_code }, r); }));
 }
 
+const IMPORT_ACCEPT = '.json,.csv,.tsv,.txt,.html,.htm,image/*';
+// a chosen folder also holds a saved page's scripts and styles: send only what the file picker would offer
+const importable = (f) => IMPORT_ACCEPT.split(',').some((t) => (t.endsWith('/*') ? f.type.startsWith(t.slice(0, -1)) : f.name.toLowerCase().endsWith(t)));
+
 async function catalogData() {
   const [ov, val, tree, set] = await Promise.all([api('/epc/overview'), api('/epc/validation'), api('/epc/categories'), api('/settings')]);
   const sev = { error: 0, warning: 1, info: 2 };
@@ -273,7 +277,9 @@ async function catalogData() {
     <h2>Import local files</h2>
     <form class="panel form" id="impForm">
       <label class="wide">Files: JSON bundle, CSV, saved HTML pages (with their image), or diagram images
-        <input type="file" name="file" multiple required accept=".json,.csv,.tsv,.txt,.html,.htm,image/*"></label>
+        <input type="file" name="file" multiple required accept="${IMPORT_ACCEPT}"></label>
+      <label class="wide">…or choose a folder; all of it is imported (a saved page with its files folder, a bundle with its images)
+        <input type="file" id="impFolder" webkitdirectory></label>
       <label>Link to vehicle<select name="vehicle">${options(ov.vehicles.map((v) => [v.code, v.code]), impVehicle, 'None')}</select></label>
       <label>Main group for new diagrams<select name="category">${options(groups, last.category, 'None')}</select></label>
       <label>Diagram code (one HTML page)<input name="diagram" placeholder="default: file name"></label>
@@ -322,13 +328,19 @@ async function catalogData() {
     <p class="row"><a class="btn" href="api/epc/export">⬇ Export catalog (zip)</a>${sample ? '<a class="btn" href="api/epc/export?samples=1">⬇ With sample data</a>' : ''}</p>
     ${sample ? '' : '<p><button id="loadSample">Load sample data</button> <span class="small muted">(made-up records, clearly marked, for trying the catalog)</span></p>'}`;
   wireHeader();
+  const folder = $('#impFolder');
+  folder.onchange = () => { $('#impForm').elements.file.required = !folder.files.length; };
   $('#impForm').onsubmit = async (e) => {
     e.preventDefault();
     const f = e.target.elements;
+    const body = new FormData(e.target);
+    body.delete('file');  // an empty picker would send a blank file
+    [...f.file.files, ...[...folder.files].filter(importable)].forEach((x) => body.append('file', x));
+    if (!body.has('file')) return toast('Nothing to import in that folder', true);
     saved.set('epcImport', JSON.stringify({ header: EPC.vehicle, vehicle: f.vehicle.value, category: f.category.value, source: f.source.value.trim() }));
     const btn = $('button.primary', e.target); btn.disabled = true; btn.textContent = 'Importing…';
     try {
-      const r = await fetch('api/epc/import', { method: 'POST', body: new FormData(e.target) });
+      const r = await fetch('api/epc/import', { method: 'POST', body });
       const data = await r.json();
       if (!r.ok) throw new Error(data.error || 'Import failed');
       sessionStorage.setItem('epcLastImport', JSON.stringify(data.reports));
