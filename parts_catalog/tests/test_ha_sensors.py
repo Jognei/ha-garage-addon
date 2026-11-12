@@ -13,7 +13,7 @@ def summary(cars):
 
 CAR = {"id": 3, "name": "Blue Wagon", "mileage": 119800, "mileage_date": "2026-11-09", "overdue": 1, "due_soon": 1,
        "parts_needed": 2, "next_service": {"title": "Engine oil & filter", "due_mileage": 118734, "due_date": "2026-12-28",
-                                            "miles_left": -1066, "days_left": 49, "state": "overdue"}}
+                                            "miles_left": -1066, "days_left": 49, "est_date": None, "state": "overdue"}}
 TRUCK = {"id": 4, "name": "Work Truck", "mileage": None, "mileage_date": None, "overdue": 0, "due_soon": 0,
          "parts_needed": 0, "next_service": None}
 
@@ -54,6 +54,11 @@ class SensorTest(unittest.TestCase):
         self.assertEqual(st["sensor.garage_work_truck_odometer"]["state"], "unknown")
         self.assertEqual(st["sensor.garage_work_truck_status"]["state"], "No schedule")
         self.assertEqual(st["sensor.garage_work_truck_next_service_due"]["state"], "—")
+
+    def test_next_service_due_carries_the_estimated_date(self):
+        ns = dict(CAR["next_service"], miles_left=900, days_left=200, est_date="2027-03-01", state="ok")
+        st = ha_sensors.build_states(summary([dict(CAR, next_service=ns)]))
+        self.assertEqual(st["sensor.garage_blue_wagon_next_service_due"]["attributes"]["estimated_date"], "2027-03-01")
 
     def test_duplicate_names_get_unique_ids(self):
         st = ha_sensors.build_states(summary([dict(TRUCK, id=1), dict(TRUCK, id=2)]))

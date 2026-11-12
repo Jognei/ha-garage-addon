@@ -104,7 +104,7 @@ def vehicle(ref):
 
 
 def due_row(u):
-    return {k: u.get(k) for k in ("id", "title", "state", "due_mileage", "due_date", "miles_left", "days_left",
+    return {k: u.get(k) for k in ("id", "title", "state", "due_mileage", "due_date", "miles_left", "days_left", "est_date",
                                   "interval_miles", "interval_months", "last_date", "last_mileage", "snoozed_until")}
 
 

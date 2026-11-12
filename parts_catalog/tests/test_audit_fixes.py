@@ -113,6 +113,21 @@ class AuditFixesTest(unittest.TestCase):
         p = next(x for x in self.c.get(f"/api/cars/{cid}/projects").get_json() if x["id"] == pid)
         self.assertEqual(p["done_date"], "2026-10-01")
 
+    def test_estimated_due_date_reaches_home_assistant_and_agents(self):
+        cid = self.car("DEMO-EST", 10000)
+        self.c.post(f"/api/cars/{cid}/mileage", json={"mileage": 9000, "date": (dt.date.today() - dt.timedelta(days=100)).isoformat()})
+        self.c.post(f"/api/cars/{cid}/schedules", json={"items": [{"title": "Oil", "interval_miles": 5000, "last_mileage": 9500}]})
+        est = self.c.get(f"/api/cars/{cid}").get_json()["upcoming"][0]["est_date"]
+        self.assertIsNotNone(est)  # what the UI shows as "≈ <month>"
+        summary = next(c for c in self.c.get("/api/ha/summary").get_json()["cars"] if c["id"] == cid)
+        self.assertEqual(summary["next_service"]["est_date"], est)
+        self.c.put("/api/settings", json={"agent_key": "new"})
+        key = self.c.get("/api/settings").get_json()["settings"]["agent_key"]
+        r = self.c.post("/mcp", json={"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                                      "params": {"name": "get_vehicle", "arguments": {"vehicle": "DEMO-EST"}}},
+                        headers={"Authorization": f"Bearer {key}"}).get_json()["result"]
+        self.assertEqual(json.loads(r["content"][0]["text"])["upcoming"][0]["est_date"], est)
+
     def test_agent_list_arguments(self):
         cid = self.car("DEMO-AGENT", 10000)
         self.c.post(f"/api/cars/{cid}/schedules", json={"items": [{"title": "Spark plugs", "interval_miles": 60000},

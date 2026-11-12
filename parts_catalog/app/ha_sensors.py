@@ -91,7 +91,8 @@ def build_states(summary):
             **({"due_mileage": ns["due_mileage"], "due_date": ns["due_date"], "miles_left": ns["miles_left"],
                 "days_left": ns["days_left"], "state": ns["state"]} if ns else {})}}
         out[f"{base}_next_service_due"] = {"state": due_text(ns), "attributes": {
-            **common, "friendly_name": f"{nm} next service due", "icon": "mdi:calendar-arrow-right"}}
+            **common, "friendly_name": f"{nm} next service due", "icon": "mdi:calendar-arrow-right",
+            **({"estimated_date": ns["est_date"]} if ns else {})}}
         out[f"{base}_parts_to_get"] = {"state": c["parts_needed"], "attributes": {
             **common, "friendly_name": f"{nm} parts to get", "icon": "mdi:package-variant", "state_class": "measurement"}}
     return out
