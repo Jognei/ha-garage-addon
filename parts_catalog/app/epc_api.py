@@ -129,9 +129,10 @@ def import_files():
     """Form: "upload" once per file (JSON / CSV / HTML / images), each sent on its own first, with its path in a chosen
     folder if any, + optional source, vehicle, category, diagram, create."""
     from .server import finished_upload
-    files = [finished_upload(uid, "catalog") for uid in request.form.getlist("upload") if uid]
-    if not files:
-        return err("No files")
+    uids = list(dict.fromkeys(uid for uid in request.form.getlist("upload") if uid))  # an id named twice is one upload
+    if not uids:  # files posted directly come from a page loaded before uploads went up on their own
+        return err("Reload the page and try again." if request.files else "No files")
+    files = [finished_upload(uid, "catalog") for uid in uids]
     f = request.form
     opts = dict(source_name=(f.get("source") or "").strip() or None, vehicle=f.get("vehicle") or None,
                 category=f.get("category") or None, diagram=(f.get("diagram") or "").strip() or None,

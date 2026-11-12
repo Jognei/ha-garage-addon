@@ -322,6 +322,16 @@ class CatalogTest(unittest.TestCase):
         r = self.c.post("/api/epc/import", data={**form, "upload": uploads})
         return r.get_json()["reports"]
 
+    def test_import_takes_an_upload_once_and_tells_an_old_page_to_reload(self):
+        csv_bytes = b"code,name\n97,Twice group\n"
+        uid = self.c.post("/api/documents/chunked", json={"filename": "twice.csv", "size": len(csv_bytes), "purpose": "catalog"}).get_json()["upload_id"]
+        self.c.put(f"/api/documents/chunked/{uid}?offset=0", data=csv_bytes, content_type="application/octet-stream")
+        r = self.c.post("/api/epc/import", data={"upload": [uid, uid]})
+        self.assertEqual((r.status_code, [rep["source"] for rep in r.get_json()["reports"]]), (200, ["twice.csv"]))
+        r = self.c.post("/api/epc/import", data={"file": (io.BytesIO(csv_bytes), "old-page.csv")}, content_type="multipart/form-data")
+        self.assertEqual(r.status_code, 400)
+        self.assertIn("Reload", r.get_json()["error"])
+
     def assert_not_locked(self):
         other = sqlite3.connect(epc.EPC_DB, timeout=0.2)
         try:
