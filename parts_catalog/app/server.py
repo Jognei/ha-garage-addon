@@ -1112,8 +1112,9 @@ def api_settings():
             # The PC launcher (not part of this repository) relaunches us with the new bind address.
             threading.Timer(0.5, lambda: os._exit(RESTART_CODE)).start()
         return jsonify(ok=True, restarting=restart, settings=s)
+    from . import ha_sensors
     return jsonify(settings=s, lan_addresses=lan_addresses(), data_dir=db.DATA_DIR, addon=ADDON,
-                   lan_active=app.config.get("BIND_HOST") == "0.0.0.0" and not ADDON)
+                   lan_active=app.config.get("BIND_HOST") == "0.0.0.0" and not ADDON, publish_sensors=ha_sensors.enabled())
 
 
 # ---------- car wash weather (app/wash.py) ----------

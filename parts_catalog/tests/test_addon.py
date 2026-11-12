@@ -7,6 +7,7 @@ import sqlite3
 import tempfile
 import unittest
 import zipfile
+from unittest import mock
 
 os.environ.setdefault("PARTS_CATALOG_DATA", tempfile.mkdtemp())
 
@@ -122,6 +123,12 @@ class AddonTest(unittest.TestCase):
             self.assertEqual(self.c.put("/api/settings", json={"lan": True}).status_code, 400)
         finally:
             server.ADDON = False
+
+    def test_settings_say_whether_sensors_are_published(self):
+        with mock.patch.dict(os.environ, {"SUPERVISOR_TOKEN": "tok", "PARTS_CATALOG_SENSORS": "0"}):
+            self.assertFalse(self.c.get("/api/settings").get_json()["publish_sensors"])
+        with mock.patch.dict(os.environ, {"SUPERVISOR_TOKEN": "tok", "PARTS_CATALOG_SENSORS": "1"}):
+            self.assertTrue(self.c.get("/api/settings").get_json()["publish_sensors"])
 
     def test_ui_uses_relative_urls(self):
         """Under HA ingress the app lives at /api/hassio_ingress/<token>/, so the UI must not use root-absolute paths."""

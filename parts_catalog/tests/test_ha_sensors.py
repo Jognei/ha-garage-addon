@@ -93,9 +93,22 @@ class SensorTest(unittest.TestCase):
 
     def test_dashboard_yaml(self):
         y = ha_sensors.dashboard_yaml(summary([CAR, TRUCK]))
-        self.assertTrue(y.startswith("- title: Garage\n"))
+        self.assertTrue(y.startswith("  - title: Garage\n"))
         self.assertIn("entity: sensor.garage_blue_wagon_odometer", y)
         self.assertIn('heading: "Work Truck"', y)
+
+    def test_dashboard_yaml_pastes_under_views(self):
+        """Home Assistant's raw configuration editor shows the views indented two spaces."""
+        y = ha_sensors.dashboard_yaml(summary([CAR, TRUCK]))
+        try:
+            import yaml
+        except ImportError:
+            yaml = None
+        if yaml:
+            views = yaml.safe_load("views:\n  - title: Home\n    cards: []\n" + y)["views"]
+            self.assertEqual([v["title"] for v in views], ["Home", "Garage"])
+        else:
+            self.assertEqual([ln for ln in y.splitlines() if not ln.startswith("  ")], [])
 
     def test_disabled_without_token(self):
         self.assertIsNone(ha_sensors.start(lambda: {"cars": []}))

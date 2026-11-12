@@ -98,7 +98,7 @@ def build_states(summary):
 
 
 def dashboard_yaml(summary, app_path="/local_parts_catalog"):
-    """A ready-to-paste sections view (Edit dashboard > ⋮ > Raw configuration editor, under views:)."""
+    """A sections view to paste on a new line under views: (Raw configuration editor), indented two like the views there."""
     cars = summary["cars"]
     used = set()
     lines = [
@@ -131,7 +131,7 @@ def dashboard_yaml(summary, app_path="/local_parts_catalog"):
         "        - {type: heading, heading: Garage app, icon: mdi:car-wrench}",
         f"        - {{type: button, name: Open the Garage app, icon: mdi:open-in-app, show_state: false, tap_action: {{action: navigate, navigation_path: {app_path}}}}}",
     ]
-    return "\n".join(lines) + "\n"
+    return "".join(f"  {ln}\n" for ln in lines)
 
 
 class Publisher:
@@ -187,11 +187,14 @@ class Publisher:
             time.sleep(PUSH_EVERY)
 
 
+def enabled():
+    return bool(os.environ.get("SUPERVISOR_TOKEN")) and os.environ.get("PARTS_CATALOG_SENSORS", "1") != "0"
+
+
 def start(get_summary):
-    token = os.environ.get("SUPERVISOR_TOKEN")
-    if not token or os.environ.get("PARTS_CATALOG_SENSORS", "1") == "0":
+    if not enabled():
         return None
-    p = Publisher(get_summary, token)
+    p = Publisher(get_summary, os.environ["SUPERVISOR_TOKEN"])
     threading.Thread(target=p.run, name="ha-sensors", daemon=True).start()
     log.info("Publishing Home Assistant sensors")
     return p

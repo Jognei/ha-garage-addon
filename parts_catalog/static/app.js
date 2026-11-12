@@ -1142,13 +1142,14 @@ async function settingsPage() {
       <div id="restoreMsg" class="small"></div>
     </form>
     ${s.addon ? `<h2>Home Assistant dashboard</h2>
-    <div class="panel stack small">
+    <div class="panel stack small">${s.publish_sensors ? `
       <p>The add-on keeps these sensors up to date in Home Assistant (turn off with the <b>publish_sensors</b> option):
         <code>sensor.garage_overdue</code>, <code>sensor.garage_due_soon</code>, <code>sensor.garage_parts_to_get</code>, and per vehicle
         <code>sensor.garage_&lt;vehicle&gt;_odometer</code> / <code>_status</code> / <code>_next_service</code> / <code>_next_service_due</code> / <code>_parts_to_get</code>.</p>
       <p>To add a <b>Garage</b> tab: open your dashboard, <b>Edit dashboard › ⋮ › Raw configuration editor</b>, and paste this under <code>views:</code>.</p>
       <pre class="code" id="dashYaml">Loading…</pre>
-      <div><button type="button" id="copyDash">Copy</button></div>
+      <div><button type="button" id="copyDash">Copy</button></div>`
+      : '<p>Sensors are off (the <b>publish_sensors</b> option in the add-on\'s Configuration tab), so there is no dashboard to add.</p>'}
     </div>` : `<h2>Home Assistant</h2>
     <div class="panel stack small">
       <p>Ready for later. Home Assistant needs phone access turned on (so it can reach this PC). Vehicle ids: ${cars.map((c) => `<b>${c.id}</b> = ${esc(c.name)}`).join(', ')}.</p>
