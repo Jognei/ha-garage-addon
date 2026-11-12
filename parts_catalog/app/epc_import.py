@@ -361,13 +361,16 @@ def add_supersession(old, new, source_id, rep, date=None, note=""):
 
 # ---------- JSON bundle ----------
 
-BUNDLE_LISTS = {"vehicles": {}, "categories": {}, "parts": {}, "diagrams": {"items": {}, "hotspots": {}}, "supersessions": {}, "expected_diagrams": {}}
+# hotspots aren't checked: replace_hotspots skips a bad one and reports it
+BUNDLE_LISTS = {"vehicles": {}, "categories": {}, "parts": {}, "diagrams": {"items": {}}, "supersessions": {}, "expected_diagrams": {}}
 
 
 def check_lists(obj, lists=BUNDLE_LISTS, path=""):
-    """ValueError naming the first list or entry that isn't shaped like the bundle format."""
+    """ValueError naming the first list or entry that isn't shaped like the bundle format; a null list is empty."""
     for key, inner in lists.items():
-        entries = obj.get(key, [])
+        entries = obj.get(key)
+        if entries is None:
+            continue
         if not isinstance(entries, list):
             raise ValueError(f"{path}{key} must be a list")
         for i, e in enumerate(entries):
@@ -399,14 +402,14 @@ def import_bundle(path_or_obj, source_name=None, base_dir=None, is_sample=None, 
     sid = get_source(name, src.get("kind") or "json", sample, src.get("note", ""))
     rep = Report(name)
     fid = store_file(sid, path_or_obj, "json", data=raw) if raw else None
-    for v in b.get("vehicles", []):
+    for v in b.get("vehicles") or []:
         upsert_vehicle(v, sid, rep)
-    for c in b.get("categories", []):
+    for c in b.get("categories") or []:
         get_category(c.get("code"), c.get("name"), c.get("parent"), c.get("sort"), sid)
         rep.count("categories")
-    for p in b.get("parts", []):
+    for p in b.get("parts") or []:
         upsert_part(p.get("part_number"), p.get("description"), p.get("notes"), sid, rep)
-    for d in b.get("diagrams", []):
+    for d in b.get("diagrams") or []:
         if not clean(d.get("code")):
             rep.problem(f"Diagram without code skipped: {d.get('title')}")
             continue
@@ -422,12 +425,12 @@ def import_bundle(path_or_obj, source_name=None, base_dir=None, is_sample=None, 
                 rep.problem(f"Diagram {d['code']}: image {d['image']} not found")
         did = upsert_diagram(d["code"], sid, rep, d.get("title"), d.get("category"), d.get("vehicles", []), d.get("notes"), img_fid, d.get("sort"))
         if "items" in d:
-            replace_items(did, d["items"], sid, rep, fid)
+            replace_items(did, d["items"] or [], sid, rep, fid)
         if d.get("hotspots"):
             replace_hotspots(did, d["hotspots"], sid, rep, d.get("hotspot_units", "auto"))
-    for s in b.get("supersessions", []):
+    for s in b.get("supersessions") or []:
         add_supersession(s.get("old"), s.get("new"), sid, rep, s.get("date"), s.get("note", ""))
-    for e in b.get("expected_diagrams", []):
+    for e in b.get("expected_diagrams") or []:
         vid = vehicle_id(e.get("vehicle"), rep)
         if vid:
             conn.execute("INSERT OR REPLACE INTO expected_diagrams (vehicle_id, code, title, source_id) VALUES (?,?,?,?)",

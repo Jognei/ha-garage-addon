@@ -422,6 +422,17 @@ class CatalogTest(unittest.TestCase):
             epc.close()
         self.assertEqual(dates, ["199009", "199102", "soon", None])
 
+    def test_bundle_nulls_and_odd_hotspots(self):
+        epc_import.import_bundle({"source": {"name": "Odd shapes"}, "diagrams": None})
+        rep = epc_import.import_bundle({"source": {"name": "Odd shapes"}, "vehicles": None, "categories": None, "parts": None,
+                                        "supersessions": None, "expected_diagrams": None, "diagrams": [
+            {"code": "86_0080", "hotspots": None, "items": None},
+            {"code": "86_0081", "hotspots": {}, "items": [{"callout": "1", "part_number": "86111230081"}]},
+            {"code": "86_0082", "items": [{"callout": "1", "part_number": "86111230082"}],
+             "hotspots": [{"callout": "1", "x": 0.1, "y": 0.1, "w": 0.1, "h": 0.1}, [0.2, 0.2, 0.1, 0.1]]}]})
+        self.assertEqual((rep.counts["diagrams_added"], rep.counts["hotspots_added"]), (3, 1))
+        self.assertEqual(rep.problems, ["Hotspot with bad coordinates skipped: [0.2, 0.2, 0.1, 0.1]"])
+
     def test_same_code_on_two_vehicles(self):
         def bundle(source, vehicle, title, pn):
             return {"source": {"name": source}, "vehicles": [{"code": vehicle, "series": vehicle[:3], "model": "x"}],
