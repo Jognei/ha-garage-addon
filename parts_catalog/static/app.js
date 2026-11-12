@@ -5,6 +5,8 @@ const $ = (s, el = document) => el.querySelector(s);
 const $$ = (s, el = document) => Array.from(el.querySelectorAll(s));
 const view = $('#view');
 let REF = null;
+// router() numbers each navigation; drawn is the newest one whose page is done. Only the newest draws into #view.
+let navSeq = 0, drawn = 0;
 
 const esc = (v) => String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const money = (v) => (v == null || v === '' ? '' : '$' + Number(v).toFixed(2));
@@ -28,8 +30,11 @@ async function api(path, opts = {}) {
     init.headers = { 'Content-Type': 'application/json' };
     init.body = JSON.stringify(opts.json);
   }
-  const r = await fetch('api' + path, init).catch(() => { throw new Error(OFFLINE); });
-  const data = await r.json().catch(() => ({}));
+  const n = navSeq, loading = n !== drawn;  // asked while navigation n is drawing its page
+  const r = await fetch('api' + path, init).catch(() => null);
+  const data = r ? await r.json().catch(() => ({})) : {};
+  if (loading && n !== navSeq) return new Promise(() => {});  // a newer navigation started: page n stops here, not over the new one
+  if (!r) throw new Error(OFFLINE);
   if (!r.ok) throw new Error(failMessage(r, data));
   return data;
 }
@@ -132,6 +137,12 @@ const routes = [
 ];
 
 async function router() {
+  const mine = ++navSeq;
+  view.setAttribute('aria-busy', 'true');
+  try { await route(); } finally { if (mine === navSeq) { drawn = mine; view.removeAttribute('aria-busy'); } }
+}
+
+async function route() {
   const hash = location.hash.slice(1) || '/';
   const [path, qs] = hash.split('?');
   const params = new URLSearchParams(qs || '');

@@ -37,6 +37,8 @@ code { font-family: ui-monospace, Consolas, monospace; background: var(--accent-
 .nav a { padding: 6px 10px; border-radius: 8px; color: var(--muted); font-weight: 500; }
 .nav a.active, .nav a:hover { background: var(--accent-soft); color: var(--accent); text-decoration: none; }
 main { padding: 20px; max-width: 1500px; margin: 0 auto; }
+/* a page loading: #view is aria-busy until the new page is drawn, and dims only when that takes a moment */
+#view[aria-busy="true"] { opacity: .55; transition: opacity .2s .3s; }
 
 input, select, textarea, button { font: inherit; color: inherit; }
 input[type=text], input[type=search], input[type=number], input[type=url], input:not([type]), select, textarea {
