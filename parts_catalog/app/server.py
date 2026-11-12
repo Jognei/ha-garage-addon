@@ -242,6 +242,8 @@ CAR_FIELDS = ["name", "kind", "year", "make", "model", "engine", "transmission",
 
 
 CAR_ORDER = "COALESCE(c.sort_order, c.id), c.id"
+# a vehicle's own picture shows on its card, not among its files
+NOT_CAR_PHOTO = "NOT EXISTS (SELECT 1 FROM cars pc WHERE pc.photo_id=d.id)"
 
 
 def car_values(b):
@@ -310,7 +312,7 @@ def api_cars():
     cars = db.rows("""SELECT c.*,
         (SELECT COUNT(*) FROM parts p WHERE p.car_id=c.id AND p.status IN ('Needed','Check','Ordered')) AS parts_open,
         (SELECT COUNT(*) FROM parts p WHERE p.car_id=c.id AND p.status='On hand') AS parts_on_hand,
-        (SELECT COUNT(*) FROM documents d WHERE d.car_id=c.id AND d.kind<>'Photo') AS documents,
+        (SELECT COUNT(*) FROM documents d WHERE d.car_id=c.id AND """ + NOT_CAR_PHOTO + """) AS documents,
         (SELECT MAX(date) FROM services s WHERE s.car_id=c.id) AS last_service,
         ph.filename AS photo_file, ph.original_name AS photo_name
         FROM cars c LEFT JOIN documents ph ON ph.id=c.photo_id
@@ -1024,12 +1026,15 @@ def api_documents():
             ids.append(store_document(f, request.form.get("car_id"), request.form.get("kind") or "Manual",
                                       title, request.form.get("notes") or ""))
         return jsonify(ids=ids)
-    where, args = "WHERE d.kind<>'Photo'", []
-    if request.args.get("car_id"):
-        where, args = "WHERE d.kind<>'Photo' AND d.car_id=?", [int(request.args["car_id"])]
+    where, args = [NOT_CAR_PHOTO], []
+    if request.args.get("car_id") == "none":
+        where.append("d.car_id IS NULL")
+    elif request.args.get("car_id"):
+        where.append("d.car_id=?")
+        args.append(int(request.args["car_id"]))
     return jsonify(db.rows(f"""SELECT d.*, c.name AS car,
                                (SELECT COUNT(*) FROM parts p WHERE p.document_id=d.id) AS parts
-                               FROM documents d LEFT JOIN cars c ON c.id=d.car_id {where}
+                               FROM documents d LEFT JOIN cars c ON c.id=d.car_id WHERE {' AND '.join(where)}
                                ORDER BY d.kind, d.title COLLATE NOCASE""", args))
 
 

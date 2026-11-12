@@ -11,7 +11,7 @@ DOC_DIR = os.path.join(DATA_DIR, "documents")
 
 STATUSES = ["Needed", "Check", "Ordered", "On hand", "Installed"]
 KINDS = ["Car", "Truck", "Motorcycle", "Other"]
-DOC_KINDS = ["Manual", "Receipt", "Part photo", "Photo", "Other"]  # "Photo" = a vehicle's own picture (hidden from file lists)
+DOC_KINDS = ["Manual", "Receipt", "Part photo", "Photo", "Other"]  # "Photo" = what a vehicle's own picture is saved as
 UPLOAD_DOC_KINDS = [k for k in DOC_KINDS if k != "Photo"]
 PROJECT_STATUSES = ["Planned", "In progress", "Done"]
 

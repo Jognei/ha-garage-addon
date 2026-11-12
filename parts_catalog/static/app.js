@@ -782,7 +782,8 @@ async function partsSection(el, { car = null, params = new URLSearchParams() } =
         <td class="hide-sm"><input class="inline loc" value="${esc(p.location)}" placeholder="Garage > Shelf A"></td>
         <td class="small hide-sm">${[esc(p.supplier), money(p.price), esc(p.purchased_date || '')].filter(Boolean).join(' · ')}${p.url ? ` <a href="${esc(p.url)}" target="_blank" rel="noopener">↗</a>` : ''}${p.document_id ? `<div><a href="${fileUrl({ id: p.document_id, original_name: p.document_file })}" target="_blank">receipt</a></div>` : ''}</td>
         <td class="num"><button class="link edit">Edit</button></td></tr>`).join('')}
-    </tbody></table>` : `<div class="empty">${none}</div>`}</div>`;
+    </tbody></table>` : `<div class="empty">${none}</div>`}</div>
+    ${carFilter === 'none' ? '<h2>Unassigned files</h2><div id="looseFiles"></div>' : ''}`;
 
   // filters go into the address, replaced rather than added so Back still leaves the page
   const refilter = (next) => {
@@ -818,6 +819,7 @@ async function partsSection(el, { car = null, params = new URLSearchParams() } =
     $('.loc', tr).onchange = (e) => save({ location: e.target.value }, 'Location saved');
     $('.edit', tr).onclick = () => partDialog(p, cars, car);
   });
+  if (carFilter === 'none') await documentsTab($('#looseFiles', el), null);
 }
 
 function withParam(params, k, v) {
@@ -901,28 +903,31 @@ async function allPartsPage(params) {
 // ----- documents -----
 
 let docFilter = '';  // file type shown in "Manuals & files" ('' = all); kept while moving between vehicles
+// the upload types, then any type uploads no longer offer that these files still have (Photo, from older versions)
+const docKinds = (have) => [...REF.doc_kinds, ...have.filter((k) => !REF.doc_kinds.includes(k))];
 
+// car = null lists the files that have no vehicle (All parts › Not assigned)
 async function documentsTab(el, car) {
-  const all = await api(`/documents?car_id=${car.id}`);
+  const all = await api(`/documents?car_id=${car ? car.id : 'none'}`);
   const counts = {};
   all.forEach((d) => (counts[d.kind] = (counts[d.kind] || 0) + 1));
   if (docFilter && !counts[docFilter]) docFilter = '';
   const docs = docFilter ? all.filter((d) => d.kind === docFilter) : all;
-  const kinds = REF.doc_kinds.filter((k) => counts[k]);
+  const kinds = docKinds(Object.keys(counts)).filter((k) => counts[k]);
   const linked = (d) => !d.parts ? '' : `<div class="small muted">${d.parts} linked part${d.parts === 1 ? '' : 's'}${d.kind === 'Receipt' ? ' from this receipt' : ''}</div>`;
   el.innerHTML = `
     <div class="doc-head">
       <div class="doc-filter">${kinds.length > 1 ? `
         <button type="button" class="${docFilter ? '' : 'active'}" data-kind="">All <span class="muted">${all.length}</span></button>
         ${kinds.map((k) => `<button type="button" class="${k === docFilter ? 'active' : ''}" data-kind="${esc(k)}">${esc(k)} <span class="muted">${counts[k]}</span></button>`).join('')}` : ''}</div>
-      <button type="button" class="primary" id="upBtn">＋ Upload</button>
+      ${car ? '<button type="button" class="primary" id="upBtn">＋ Upload</button>' : ''}
     </div>
     <div class="panel table-wrap" style="padding:0">${docs.length ? `<table class="doc-table"><thead><tr><th>Title</th><th>Type</th><th>File</th><th class="num">Size</th><th>Added</th><th></th></tr></thead><tbody>
       ${docs.map((d) => `<tr data-did="${d.id}"><td><a href="${fileUrl(d)}" target="_blank"><b>${esc(d.title)}</b></a>${d.notes ? `<div class="small muted">${esc(d.notes)}</div>` : ''}${linked(d)}</td>
         <td>${esc(d.kind)}</td><td class="small muted">${esc(d.original_name)}</td><td class="num small">${fmtSize(d.size || 0)}</td><td class="small muted">${esc((d.uploaded_at || '').slice(0, 10))}</td>
         <td class="num" style="white-space:nowrap"><a class="btn" href="${fileUrl(d)}?download=1">⬇</a> <button class="link edit">Edit</button></td></tr>`).join('')}
-    </tbody></table>` : '<div class="empty">No manuals or files yet.</div>'}</div>`;
-  $('#upBtn', el).onclick = () => {
+    </tbody></table>` : `<div class="empty">${car ? 'No manuals or files yet.' : 'No files without a vehicle.'}</div>`}</div>`;
+  if (car) $('#upBtn', el).onclick = () => {
     const form = openDialog('Upload files', `<div class="form">
         <label class="wide">Files<input type="file" name="file" multiple required></label>
         <label>Type<select name="kind">${options(REF.doc_kinds, docFilter || 'Manual')}</select></label>
@@ -954,10 +959,12 @@ async function documentsTab(el, car) {
   $$('.doc-filter button', el).forEach((b) => (b.onclick = () => { docFilter = b.dataset.kind; documentsTab(el, car); }));
   $$('tr[data-did]', el).forEach((tr) => {
     const d = docs.find((x) => x.id === +tr.dataset.did);
-    $('.edit', tr).onclick = () => {
+    $('.edit', tr).onclick = async () => {
+      const cars = await api('/cars');
       const f = openDialog('Edit file', `<div class="form">
           <label class="wide">Title<input name="title" value="${esc(d.title)}" required></label>
-          <label>Type<select name="kind">${options(REF.doc_kinds, d.kind)}</select></label>
+          <label>Type<select name="kind">${options(docKinds([d.kind]), d.kind)}</select></label>
+          <label>Vehicle<select name="car_id">${options(cars.map((c) => [c.id, c.name]), d.car_id, 'Not assigned')}</select></label>
           <label class="wide">Notes<textarea name="notes">${esc(d.notes)}</textarea></label></div>
           <button type="button" class="danger" id="delDoc">Delete file</button>`,
       async (data) => { await api('/documents/' + d.id, { method: 'PUT', json: data }); documentsTab(el, car); });
@@ -1030,7 +1037,7 @@ function carDetails(el, car) {
     };
   });
   $('#delCar').onclick = async () => {
-    if (!confirm(`Delete ${car.name} with its services and schedules? Its parts and files are kept, unassigned.`)) return;
+    if (!confirm(`Delete ${car.name} with its service history, schedules, projects, odometer history and photo? Its parts and files are kept: find them under All parts › Not assigned.`)) return;
     await api('/cars/' + car.id, { method: 'DELETE' });
     location.hash = '#/';
   };
