@@ -52,13 +52,14 @@ def diagrams():
 
 def garage_status(pns):
     """Which of these part numbers are already in the garage parts list, and their status."""
-    pns = [p for p in set(pns) if p]
+    pns = {p for p in pns if p}
     if not pns:
         return {}
     out = {}
-    for r in db.rows(f"""SELECT p.id, p.part_number, p.status, p.name, c.name AS car FROM parts p LEFT JOIN cars c ON c.id=p.car_id
-                         WHERE REPLACE(REPLACE(p.part_number,' ',''),'-','') IN ({','.join('?' * len(pns))})""", pns):
-        out.setdefault(epc.norm_pn(r["part_number"]), []).append(r)
+    for r in db.rows("""SELECT p.id, p.part_number, p.status, p.name, c.name AS car FROM parts p LEFT JOIN cars c ON c.id=p.car_id
+                        WHERE p.part_number<>''"""):
+        if epc.norm_pn(r["part_number"]) in pns:
+            out.setdefault(epc.norm_pn(r["part_number"]), []).append(r)
     return out
 
 

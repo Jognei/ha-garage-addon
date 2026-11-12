@@ -301,6 +301,10 @@ class CatalogTest(unittest.TestCase):
         self.assertEqual(r.get_json()["reports"][0]["counts"]["items_added"], 1)
         self.assertEqual(self.c.get(f"/api/epc/diagrams?vehicle={epc.row('SELECT id FROM vehicles WHERE code=?', ('DEMO-SEDAN',))['id']}&category={epc.row('SELECT id FROM categories WHERE code=?', ('12',))['id']}").get_json()[0]["code"], "12_0001")
 
+    def test_garage_number_typed_with_dots(self):
+        self.c.post("/api/parts", json={"name": "Sample bolt", "part_number": "99.99.9.999.003"})
+        self.assertEqual([g["name"] for g in self.c.get("/api/epc/parts/99999999003").get_json()["garage"]], ["Sample bolt"])
+
     def post_import(self, *files):
         r = self.c.post("/api/epc/import", data={"file": [(io.BytesIO(b), n) for n, b in files]}, content_type="multipart/form-data")
         return r.get_json()["reports"]
