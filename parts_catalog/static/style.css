@@ -219,6 +219,8 @@ tr.nofit td { opacity: .5; }
   .epc-viewer, .epc-viewer.big { grid-template-columns: 1fr; height: auto; }
   .epc-pane + .epc-pane { border-left: none; border-top: 1px solid var(--line); }
   .epc-pane-body { overflow: visible; }
+  .epc-pane-body.epc-table { overflow-x: auto; }
+  #enlarge { display: none; }  /* one column here, so .big changes nothing */
 }
 
 /* ---- cards: upcoming list, projects, logging ---- */
