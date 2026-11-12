@@ -135,6 +135,15 @@ class QolTest(unittest.TestCase):
         used = export(f"car_id={a}")["Brake pads front"]
         self.assertEqual((used["Service"], used["Service date"]), ("Brake job", "2026-02-03"))
 
+    def test_service_csv_shows_quantities(self):
+        c = self.ids[2]
+        plugs = self.c.post("/api/parts", json={"car_id": c, "name": "Spark plug", "part_number": "12120037244", "qty": 4}).get_json()["id"]
+        oil = self.c.post("/api/parts", json={"car_id": c, "name": "Oil filter", "qty": 1}).get_json()["id"]
+        self.c.post(f"/api/cars/{c}/services", json={"date": "2026-03-04", "title": "Tune-up", "part_ids": [plugs, oil]})
+        text = self.c.get(f"/api/cars/{c}/export/services.csv").data.decode("utf-8-sig")
+        used = next(r for r in csv.DictReader(io.StringIO(text)) if r["Work"] == "Tune-up")["Parts used"]
+        self.assertEqual(sorted(used.split("; ")), ["4× Spark plug (12120037244)", "Oil filter"])
+
 
 if __name__ == "__main__":
     unittest.main()

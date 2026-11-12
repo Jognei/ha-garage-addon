@@ -433,7 +433,8 @@ def api_export_services(car_id):
     car = db.row("SELECT * FROM cars WHERE id=?", (car_id,))
     if not car:
         return err("No such car", 404)
-    rows = db.rows("""SELECT s.*, (SELECT GROUP_CONCAT(p.name || CASE WHEN p.part_number<>'' THEN ' (' || p.part_number || ')' ELSE '' END, '; ')
+    rows = db.rows("""SELECT s.*, (SELECT GROUP_CONCAT(CASE WHEN p.qty > 1 THEN p.qty || '× ' ELSE '' END || p.name
+                                                       || CASE WHEN p.part_number<>'' THEN ' (' || p.part_number || ')' ELSE '' END, '; ')
                                   FROM parts p WHERE p.service_id=s.id) AS parts_used
                       FROM services s WHERE s.car_id=? ORDER BY s.date, s.id""", (car_id,))
     cols = [("date", "Date"), ("mileage", "Mileage"), ("title", "Work"), ("parts_used", "Parts used"),
