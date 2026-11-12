@@ -824,6 +824,8 @@ def save_project(car_id, pid, b):
         vals["target_date"] = to_date(b["target_date"], "Target date")
     if "title" in vals and not vals["title"]:
         return err("Give the project a name.")
+    # the steps' ids are checked before anything is written
+    tasks = [t if isinstance(t, str) else {**t, "id": to_int(t.get("id"))} for t in b.get("tasks") or []]
     if pid is None:
         if not vals.get("title"):
             return err("Give the project a name.")
@@ -838,13 +840,13 @@ def save_project(car_id, pid, b):
         by_id, by_title = {t["id"]: t for t in old}, {t["title"].lower(): t for t in old}
         db.execute("DELETE FROM project_tasks WHERE project_id=?", (pid,))
         n = 0
-        for t in b["tasks"] or []:
+        for t in tasks:
             text = isinstance(t, str)
             t = {"title": t} if text else t
             title = (t.get("title") or "").strip()
             if not title:
                 continue
-            prev = (by_title.get(title.lower()) if text else by_id.get(to_int(t.get("id")))) or {}
+            prev = (by_title.get(title.lower()) if text else by_id.get(t["id"])) or {}
             done = t["done"] if "done" in t else prev.get("done", 0)
             n += 1
             db.execute("INSERT INTO project_tasks (project_id, title, done, sort_order) VALUES (?,?,?,?)",

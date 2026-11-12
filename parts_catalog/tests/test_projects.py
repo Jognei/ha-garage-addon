@@ -86,6 +86,14 @@ class ProjectsTest(unittest.TestCase):
                                                           {"id": ticked["id"], "title": "Torque bolts"}]})
         self.assertEqual([t["done"] for t in tasks()], [0, 1])
 
+    def test_a_step_id_that_is_not_a_number_changes_nothing(self):
+        car = self.c.post("/api/cars", json={"name": "Bad step car"}).get_json()["id"]
+        pid = self.c.post(f"/api/cars/{car}/projects", json={"title": "Brakes", "tasks": ["Order pads", "Fit pads"]}).get_json()["id"]
+        r = self.c.put(f"/api/projects/{pid}", json={"title": "Brake job", "tasks": [{"id": "t1", "title": "Order pads"}, {"title": "Fit pads"}]})
+        self.assertEqual(r.status_code, 400)
+        p = self.c.get(f"/api/cars/{car}/projects").get_json()[0]
+        self.assertEqual((p["title"], [t["title"] for t in p["tasks"]]), ("Brakes", ["Order pads", "Fit pads"]))
+
     def test_dismiss_and_order(self):
         ids = self.c.post(f"/api/cars/{self.car}/schedules", json={"items": [
             {"title": "Wipers", "interval_months": 12, "last_date": day(-400)},      # overdue
