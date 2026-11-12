@@ -795,6 +795,33 @@ class AuditFixesTest(unittest.TestCase):
         self.c.delete(f"/api/services/{svc}")
         self.assertEqual(self.stock("Plug used up"), [(2, "Installed", "2026-10-08", 40100), (4, "On hand", None, None)])
 
+    def test_a_partly_used_row_no_longer_on_hand_stays_apart(self):
+        cid = self.car("DEMO-MERGE-NOT-ON-HAND")
+        for name, edit, kept in (("Plug needed", {"status": "Needed"}, (2, "Needed", None, None)),
+                                 ("Plug dated", {"installed_date": "2026-09-01"}, (2, "On hand", "2026-09-01", None)),
+                                 ("Plug at a mileage", {"installed_mileage": 39000}, (2, "On hand", None, 39000))):
+            pid, svc = self.use_four_of_six(cid, name, car_id=cid)
+            self.c.put(f"/api/parts/{pid}", json=edit)
+            self.c.delete(f"/api/services/{svc}")
+            self.assertEqual(self.stock(name), [kept, (4, "On hand", None, None)], name)
+        # the rest used whole by a later service, then unticked by hand in the Parts table: still that service's
+        pid, svc = self.use_four_of_six(cid, "Plug unticked by hand", car_id=cid)
+        rest = self.c.post(f"/api/cars/{cid}/services", json={"title": "Plugs", "date": "2026-10-08", "mileage": 40100,
+                                                              "parts": [{"id": pid}]}).get_json()["id"]
+        self.c.put(f"/api/parts/{pid}", json={"status": "On hand", "installed_mileage": None, "installed_date": None})
+        self.c.delete(f"/api/services/{svc}")
+        self.assertEqual(self.stock("Plug unticked by hand"), [(2, "On hand", None, None), (4, "On hand", None, None)])
+        self.assertEqual([p["qty"] for s in self.c.get(f"/api/cars/{cid}/services").get_json() if s["id"] == rest for p in s["parts"]], [2])
+
+    def test_a_service_that_used_a_row_and_its_copy_gives_one_row_back(self):
+        cid = self.car("DEMO-MERGE-BOTH")
+        pid, svc = self.use_four_of_six(cid, "Plug all used", car_id=cid)
+        copy = next(p["id"] for p in self.c.get(f"/api/cars/{cid}/services").get_json()[0]["parts"])
+        self.c.put(f"/api/services/{svc}", json={"title": "Plugs", "date": "2026-10-01", "mileage": 40000,
+                                                 "parts": [{"id": copy}, {"id": pid}]})
+        self.c.delete(f"/api/services/{svc}")
+        self.assertEqual(self.stock("Plug all used"), [(6, "On hand", None, None)])
+
     def test_deleting_a_service_puts_its_parts_back_on_hand(self):
         cid = self.car("DEMO-DELETE-PARTS")
         filt = self.c.post("/api/parts", json={"car_id": cid, "name": "Oil filter", "status": "On hand"}).get_json()["id"]

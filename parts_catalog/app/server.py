@@ -707,12 +707,16 @@ def refresh_schedule(sid):
     db.execute("UPDATE schedules SET last_date=?, last_mileage=? WHERE id=?", (date, mileage, sid))
 
 
+def mergeable(r):
+    return r["status"] == "On hand" and r["service_id"] is None and r["installed_date"] is None and r["installed_mileage"] is None
+
+
 def back_on_hand(pid, car_id):
     """A part its service on `car_id` stopped using: back onto the row it was split from if neither was edited, else On hand by itself."""
     p = db.row("SELECT * FROM parts WHERE id=?", (pid,))
     src = db.row("SELECT * FROM parts WHERE id=?", (p["split_from"],))
     # using it set the quantity and the install fields, and gave a part with no vehicle the service's
-    same = src and src["status"] != "Installed" and all(
+    same = src and mergeable(src) and all(
         p[k] == src[k] or (k == "car_id" and src[k] is None and p[k] == car_id)
         for k in PART_FIELDS if k not in ("qty", "status", "installed_mileage", "installed_date", "service_id"))
     if same:
@@ -720,8 +724,8 @@ def back_on_hand(pid, car_id):
             conn.execute("UPDATE parts SET qty=?, updated_at=CURRENT_TIMESTAMP WHERE id=?",
                          ((src["qty"] or 1) + (p["qty"] or 1), src["id"]))
             conn.execute("DELETE FROM parts WHERE id=?", (pid,))
-    else:
-        db.execute("""UPDATE parts SET status='On hand', installed_date=NULL, installed_mileage=NULL,
+    else:  # off its service now, so a copy of it that service also used can still rejoin it
+        db.execute("""UPDATE parts SET status='On hand', installed_date=NULL, installed_mileage=NULL, service_id=NULL,
                       updated_at=CURRENT_TIMESTAMP WHERE id=?""", (pid,))
 
 
