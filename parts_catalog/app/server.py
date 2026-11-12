@@ -1444,6 +1444,8 @@ def api_restore():
     The zip is unpacked and checked, the current data is saved as data/before-restore-<time>.zip, the backup
     becomes data/restore-pending/, swapped in at the next start (db.apply_pending_restore), and we restart."""
     f = finished_upload(request.form.get("upload"), "restore")
+    if not f and request.files:  # sent whole, by a page loaded before uploads went up in pieces
+        return err("The add-on was updated: reload the page and try again.")
     if not f:
         return err("Choose a backup zip")
     tmp = tempfile.mkdtemp()

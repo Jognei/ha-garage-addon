@@ -336,6 +336,11 @@ class AuditFixesTest(unittest.TestCase):
         r.close()
         self.assertFalse(os.path.exists(made[0]))
 
+    def test_restore_from_a_page_loaded_before_the_update_asks_for_a_reload(self):
+        r = self.c.post("/api/restore", data={"backup": (io.BytesIO(self.backup()), "backup.zip")}, content_type="multipart/form-data")
+        self.assertEqual((r.status_code, r.get_json()["error"]), (400, "The add-on was updated: reload the page and try again."))
+        self.assertFalse(os.path.exists(os.path.join(self.tmp, "restore-pending")))
+
     def test_restore_keeps_only_the_newest_safety_copy(self):
         for old in ("before-restore-20200101-000000.zip", "before-restore-20200102-000000.zip.part"):
             with open(os.path.join(self.tmp, old), "wb") as f:
