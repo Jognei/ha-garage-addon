@@ -827,10 +827,9 @@ def import_images(paths, source_name=None, create=False, category=None, vehicle=
         if ext.lower() not in IMAGE_EXT:
             continue
         same = codes.get(_code_key(stem), set())
-        if vid:
+        dids = {r[0] for c in same for r in conn.execute("SELECT id FROM diagrams WHERE code=?", (c,))}
+        if vid and len(dids) > 1:
             dids = {find_diagram(c, sid, [vid]) for c in same} - {None}
-        else:
-            dids = {r[0] for c in same for r in conn.execute("SELECT id FROM diagrams WHERE code=?", (c,))}
         if len(dids) > 1:
             rep.problem(f"{os.path.basename(fp)}: {len(dids)} diagrams have code {stem}; choose the vehicle it belongs to")
             rep.count("images_unmatched")

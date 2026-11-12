@@ -356,6 +356,14 @@ class CatalogTest(unittest.TestCase):
         self.assertIsNotNone(self.diag("98_0021")["image_file_id"])
         self.assertEqual(reports[1]["counts"], {"images_unmatched": 1})
 
+    def test_image_for_a_vehicle_finds_the_only_diagram_with_its_code(self):
+        self.write_csv("vehicle_images.csv", "diagram,callout,part number,description\n86_0001,1,86111234567,Pump\n")
+        d = tempfile.mkdtemp(dir=self.tmp)
+        make_png(os.path.join(d, "86_0001.png"))
+        rep = epc_import.import_images([d], "Test vehicle images", create=True, vehicle="DEMO-SEDAN")
+        self.assertEqual(rep.counts, {"images_attached": 1})
+        self.assertEqual([r["image_file_id"] is not None for r in epc.rows("SELECT image_file_id FROM diagrams WHERE code='86_0001'")], [True])
+
     def test_same_code_on_two_vehicles(self):
         def bundle(source, vehicle, title, pn):
             return {"source": {"name": source}, "vehicles": [{"code": vehicle, "series": vehicle[:3], "model": "x"}],
