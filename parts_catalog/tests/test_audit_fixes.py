@@ -324,6 +324,31 @@ class AuditFixesTest(unittest.TestCase):
         finally:
             server.save_settings(saved)
 
+    def test_restore_takes_the_layout_a_backup_left_at_its_defaults(self):
+        saved = server.load_settings()
+        try:
+            for theirs, quick in ((["Chain lube"], ["Chain lube"] + server.QUICK_DEFAULT),  # older quick services, cards never changed
+                                  (None, server.QUICK_DEFAULT)):  # settings never changed: no settings.json in the backup
+                with self.subTest(theirs=theirs):
+                    if os.path.exists(server.SETTINGS_PATH):
+                        os.remove(server.SETTINGS_PATH)
+                    if theirs:
+                        self.c.put("/api/settings", json={"quick_services": theirs})
+                    backup = self.backup()
+                    server.save_settings({**saved, "card": {**server.CARD_DEFAULTS, "hide_ok": True}, "quick_list": ["Fuel fill-up"],
+                                          "catalog": True})
+                    self.assertEqual(self.restore(backup).status_code, 200)
+                    db.connect().close()
+                    db._local.conn = None
+                    epc.close()
+                    self.assertTrue(db.apply_pending_restore())
+                    db.init()
+                    epc_api.init()
+                    ref = self.c.get("/api/refdata").get_json()
+                    self.assertEqual((ref["card"], ref["quick_services"], ref["features"]["catalog"]), (server.CARD_DEFAULTS, quick, False))
+        finally:
+            server.save_settings(saved)
+
     def test_service_without_mileage_keeps_the_last_known_mileage(self):
         cid = self.car("DEMO-MILES", 200000)
         sid = self.c.post(f"/api/cars/{cid}/schedules", json={"items": [

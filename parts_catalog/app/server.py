@@ -1433,10 +1433,10 @@ def api_restore():
                 os.makedirs(os.path.dirname(target), exist_ok=True)
                 with z.open(n) as src, open(target, "wb") as dst:
                     shutil.copyfileobj(src, dst)
-            if "settings.json" in names:  # merged into this install's settings with the data (db.apply_pending_restore)
-                theirs = json.loads(z.read("settings.json"))
-                with open(os.path.join(staging, "settings.json"), "w", encoding="utf-8") as out:
-                    json.dump({k: theirs[k] for k in RESTORE_SETTINGS if k in theirs}, out)
+            # merged into this install's settings with the data (db.apply_pending_restore); one the backup never set goes unset
+            theirs = json.loads(z.read("settings.json")) if "settings.json" in names else {}
+            with open(os.path.join(staging, "settings.json"), "w", encoding="utf-8") as out:
+                json.dump({k: theirs.get(k) for k in RESTORE_SETTINGS}, out)
         if not database_ok(os.path.join(staging, "garage.db"), "cars"):
             return err("The database in that backup is damaged")
         epc_db = os.path.join(staging, "epc", "epc.db")
