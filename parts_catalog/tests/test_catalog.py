@@ -400,6 +400,13 @@ class CatalogTest(unittest.TestCase):
         self.assertNotIn("99999999002", [s["old"] for s in real_only["supersessions"]])
         self.assertNotIn("SAMPLE-CAR", [e["vehicle"] for e in real_only["expected_diagrams"]])
 
+    def test_source_counts_other_sources_rows(self):
+        epc_import.import_bundle({"source": {"name": "Shared A"}, "diagrams": [{"code": "93_0001", "items": [{"callout": "1", "part_number": "93111234561"}]}]})
+        epc_import.import_bundle({"source": {"name": "Shared B"}, "diagrams": [{"code": "93_0001", "items": [
+            {"callout": "2", "part_number": "93111234562"}, {"callout": "3", "part_number": "93111234563"}]}]})
+        shared = {s["name"]: s["shared_items"] for s in self.c.get("/api/epc/overview").get_json()["sources"]}
+        self.assertEqual((shared["Shared A"], shared["Shared B"]), (2, 0))
+
     def test_delete_vehicle_keeps_other_diagrams(self):
         epc_import.import_bundle({"source": {"name": "Del A"}, "vehicles": [{"code": "DEL-A"}, {"code": "DEL-B"}],
                                   "diagrams": [{"code": "DEL_1", "vehicles": ["DEL-A", "DEL-B"], "items": [{"callout": "1", "part_number": "1"}]},

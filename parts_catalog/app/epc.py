@@ -443,6 +443,7 @@ def sources():
     return rows("""SELECT s.*,
         (SELECT COUNT(*) FROM diagrams WHERE source_id=s.id) AS diagrams,
         (SELECT COUNT(*) FROM diagram_items WHERE source_id=s.id) AS items,
+        (SELECT COUNT(*) FROM diagram_items i JOIN diagrams d ON d.id=i.diagram_id WHERE d.source_id=s.id AND i.source_id IS NOT s.id) AS shared_items,
         (SELECT COUNT(*) FROM source_files WHERE source_id=s.id) AS files
         FROM sources s ORDER BY s.imported_at, s.id""")
 
