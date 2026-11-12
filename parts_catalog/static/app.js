@@ -56,12 +56,18 @@ $('#dlg').addEventListener('close', (e) => {
 const CHUNK = 4 * 1024 * 1024;
 async function uploadChunked(file, fields, onProgress) {
   const start = await api('/documents/chunked', { json: { ...fields, filename: file.name, size: file.size } });
-  let sent = 0;
+  let sent = 0, tries = 0;
   while (sent < file.size) {
-    const r = await fetch(`api/documents/chunked/${start.upload_id}?offset=${sent}`, { method: 'PUT', body: file.slice(sent, sent + CHUNK) });
-    const d = await r.json().catch(() => ({}));
-    if (r.status === 409 && d.received != null) { sent = d.received; continue; } // resume where the server is
-    if (!r.ok) throw new Error(failMessage(r, d));
+    const r = await fetch(`api/documents/chunked/${start.upload_id}?offset=${sent}`, { method: 'PUT', body: file.slice(sent, sent + CHUNK) }).catch(() => null);
+    const d = r ? await r.json().catch(() => ({})) : {};
+    if (r && r.status === 409 && d.received != null) { sent = d.received; continue; } // resume where the server is
+    if (!r || !r.ok) {
+      // a dropped connection or a failed piece: send it again a moment later (the 409 above finds where the server got to)
+      if (++tries > 3) throw new Error(r ? failMessage(r, d) : OFFLINE);
+      await new Promise((res) => setTimeout(res, 1000 * tries));
+      continue;
+    }
+    tries = 0;
     sent = d.received;
     onProgress(Math.floor((100 * sent) / file.size));
   }
