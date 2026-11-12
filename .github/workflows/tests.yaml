@@ -1,5 +1,5 @@
 name: Tests
-# build.yaml runs these before it builds the image (pull requests, and pushes to main that change the add-on).
+# build.yaml runs these before it builds the image (pull requests, and pushes to main that change the add-on or these workflows).
 on:
   push:
     branches-ignore: [main]

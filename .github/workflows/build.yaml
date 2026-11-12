@@ -5,7 +5,7 @@ name: Add-on images
 on:
   push:
     branches: [main]
-    paths: ["parts_catalog/**", ".github/workflows/build.yaml"]
+    paths: ["parts_catalog/**", ".github/workflows/build.yaml", ".github/workflows/tests.yaml"]
   pull_request:
   workflow_dispatch:
 permissions:
