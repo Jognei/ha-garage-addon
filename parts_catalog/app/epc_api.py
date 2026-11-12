@@ -1,6 +1,5 @@
 """Catalog (EPC) JSON API under /api/epc and stored files under /epc-files/."""
 import functools
-import io
 import os
 import shutil
 import tempfile
@@ -202,17 +201,20 @@ def export():
     """The catalog in the portable format as a zip (catalog.json + images/); sample data only with samples=1."""
     tmp = tempfile.mkdtemp()
     try:
-        epc_import.export_bundle(tmp, include_samples=request.args.get("samples") == "1")
-        data = io.BytesIO()
-        with zipfile.ZipFile(data, "w", zipfile.ZIP_DEFLATED) as z:
-            for dirpath, _, fns in os.walk(tmp):
-                for fn in fns:
-                    full = os.path.join(dirpath, fn)
-                    z.write(full, os.path.relpath(full, tmp).replace(os.sep, "/"))
-        data.seek(0)
-        return send_file(data, mimetype="application/zip", as_attachment=True, download_name="catalog-export.zip")
-    finally:
+        src, out = os.path.join(tmp, "export"), os.path.join(tmp, "catalog-export.zip")
+        epc_import.export_bundle(src, include_samples=request.args.get("samples") == "1")
+        with zipfile.ZipFile(out, "w") as z:
+            z.write(os.path.join(src, "catalog.json"), "catalog.json", zipfile.ZIP_DEFLATED)
+            for fn in sorted(os.listdir(os.path.join(src, "images"))):
+                z.write(os.path.join(src, "images", fn), "images/" + fn)  # stored: images are compressed already
+        resp = send_file(out, mimetype="application/zip", as_attachment=True, download_name="catalog-export.zip")
+    except Exception:
         shutil.rmtree(tmp, ignore_errors=True)
+        raise
+    # sent from disk, so removed once it's sent; a passed-through file would skip Response.close and this with it
+    resp.direct_passthrough = False
+    resp.call_on_close(lambda: shutil.rmtree(tmp, ignore_errors=True))
+    return resp
 
 
 @bp.route("/epc-files/<path:p>")

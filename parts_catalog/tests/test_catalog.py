@@ -433,6 +433,22 @@ class CatalogTest(unittest.TestCase):
         self.assertEqual((rep.counts["diagrams_added"], rep.counts["hotspots_added"]), (3, 1))
         self.assertEqual(rep.problems, ["Hotspot with bad coordinates skipped: [0.2, 0.2, 0.1, 0.1]"])
 
+    def test_export_is_sent_from_disk_and_removed_once_sent(self):
+        made, real = [], tempfile.mkdtemp
+
+        def mkdtemp(*a, **k):
+            made.append(real(*a, **k))
+            return made[-1]
+        with mock.patch("tempfile.mkdtemp", mkdtemp):
+            r = self.c.get("/api/epc/export?samples=1")
+        with open(os.path.join(made[0], "catalog-export.zip"), "ab") as f:
+            f.write(b"read from disk")  # only a response reading the file as it sends sees this
+        self.assertTrue(r.data.endswith(b"read from disk"))
+        r.close()
+        self.assertFalse(os.path.exists(made[0]))
+        with self.c.get("/api/epc/export?samples=1") as r, zipfile.ZipFile(io.BytesIO(r.data)) as z:
+            self.assertEqual({i.compress_type for i in z.infolist() if i.filename.startswith("images/")}, {zipfile.ZIP_STORED})
+
     def test_same_code_on_two_vehicles(self):
         def bundle(source, vehicle, title, pn):
             return {"source": {"name": source}, "vehicles": [{"code": vehicle, "series": vehicle[:3], "model": "x"}],
@@ -559,11 +575,10 @@ class CatalogTest(unittest.TestCase):
         self.assertEqual(names & {"Broken CLI", "b_items.tsv", "c_items.txt"}, {"b_items.tsv", "c_items.txt"})
 
     def test_api_export(self):
-        r = self.c.get("/api/epc/export")
-        self.assertIn("filename=catalog-export.zip", r.headers["Content-Disposition"])
-        with zipfile.ZipFile(io.BytesIO(r.data)) as z:
+        with self.c.get("/api/epc/export") as r, zipfile.ZipFile(io.BytesIO(r.data)) as z:
+            self.assertIn("filename=catalog-export.zip", r.headers["Content-Disposition"])
             self.assertNotIn("SAMPLE-11-01", [x["code"] for x in json.loads(z.read("catalog.json"))["diagrams"]])
-        with zipfile.ZipFile(io.BytesIO(self.c.get("/api/epc/export?samples=1").data)) as z:
+        with self.c.get("/api/epc/export?samples=1") as r, zipfile.ZipFile(io.BytesIO(r.data)) as z:
             sample = next(x for x in json.loads(z.read("catalog.json"))["diagrams"] if x["code"] == "SAMPLE-11-01")
             self.assertIn(sample["image"], z.namelist())
 
