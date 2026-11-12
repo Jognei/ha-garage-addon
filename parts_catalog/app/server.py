@@ -732,10 +732,17 @@ def back_on_hand(pid, car_id):
         # copies of it that came back while it was in use rejoin it now
         copies = [c for c in db.rows("SELECT * FROM parts WHERE split_from=?", (pid,))
                   if mergeable(c) and same_part(c, into, car_id)] if mergeable(into) else []
+    joining = list(copies)
+    while joining:  # a row that joins another takes its own copies already back on hand with it
+        joining = [c for j in joining for c in db.rows("SELECT * FROM parts WHERE split_from=?", (j["id"],))
+                   if mergeable(c) and same_part(c, into, car_id)]
+        copies += joining
     if copies:
         with db.connect() as conn:  # one write: stopped halfway, a copy would count twice or not at all
             conn.execute("UPDATE parts SET qty=?, updated_at=CURRENT_TIMESTAMP WHERE id=?",
                          ((into["qty"] or 1) + sum(c["qty"] or 1 for c in copies), into["id"]))
+            # the copies left behind are split from `into` now, so they can still rejoin it when they come back
+            conn.executemany("UPDATE parts SET split_from=? WHERE split_from=?", [(into["id"], c["id"]) for c in copies])
             conn.executemany("DELETE FROM parts WHERE id=?", [(c["id"],) for c in copies])
 
 

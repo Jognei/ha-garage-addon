@@ -876,6 +876,33 @@ class AuditFixesTest(unittest.TestCase):
             self.c.delete(f"/api/services/{rest}")
             self.assertEqual(self.stock(name), stock, name)
 
+    def test_parts_split_from_parts_that_came_back_rejoin_the_row_too(self):
+        cid = self.car("DEMO-MERGE-CHAIN")
+        log = lambda use, day: self.c.post(f"/api/cars/{cid}/services", json={  # noqa: E731
+            "title": "Plugs", "date": f"2026-10-0{day}", "mileage": 40000 + day, "parts": [use]}).get_json()["id"]
+        delete = lambda *svcs: [self.c.delete(f"/api/services/{s}") for s in svcs]  # noqa: E731
+        others = lambda name, *ids: [p["id"] for p in self.c.get("/api/parts").get_json() if p["name"] == name and p["id"] not in ids]  # noqa: E731
+        whole = [(4, "On hand", None, None)]
+        for name, back_first, edit, stock in (
+                ("Plug, 1 of 2 still in use", False, None, whole),
+                ("Plug, 1 of 2 back before the 2", True, None, whole),
+                ("Plug, 1 of 2 back and set to Needed", True, {"status": "Needed"}, [(1, "Needed", None, None), (3, "On hand", None, None)]),
+                ("Plug, 1 of 2 back and repriced", True, {"price": 5.10}, [(1, "On hand", None, None), (3, "On hand", None, None)])):
+            row = self.c.post("/api/parts", json={"car_id": cid, "name": name, "qty": 4, "status": "On hand"}).get_json()["id"]
+            took_2, took_rest = log({"id": row, "qty": 2}, 1), log({"id": row}, 2)
+            delete(took_2)  # the 2 come back by themselves: the row is in use
+            two, = others(name, row)
+            took_1 = log({"id": two, "qty": 1}, 3)
+            if back_first:
+                took_last = log({"id": two}, 4)
+                delete(took_1)  # the 1 comes back by itself: the 2 it came from are in use
+                if edit:
+                    self.c.put(f"/api/parts/{others(name, row, two)[0]}", json=edit)
+                delete(took_rest, took_last)
+            else:
+                delete(took_rest, took_1)
+            self.assertEqual(self.stock(name), stock, name)
+
     def test_deleting_a_service_puts_its_parts_back_on_hand(self):
         cid = self.car("DEMO-DELETE-PARTS")
         filt = self.c.post("/api/parts", json={"car_id": cid, "name": "Oil filter", "status": "On hand"}).get_json()["id"]
