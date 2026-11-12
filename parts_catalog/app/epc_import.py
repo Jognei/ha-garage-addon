@@ -428,7 +428,7 @@ def export_bundle(out_dir, include_samples=False):
 # ---------- CSV ----------
 
 ALIASES = {
-    "diagram": ["diagram", "diagram_code", "diagram id", "diagid", "illustration", "bildtafel"],
+    "diagram": ["diagram", "diagram_code", "diagram code", "diagram id", "diagid", "illustration", "bildtafel"],
     "callout": ["callout", "ref", "ref no", "no", "no.", "nr", "#", "item", "pos", "position", "key"],
     "part_number": ["part_number", "part number", "part no", "part no.", "partno", "part #", "p/n", "pn", "oem", "oem number", "number", "part"],
     "description": ["description", "desc", "name", "designation", "part name", "title"],
@@ -450,12 +450,24 @@ ALIASES = {
     "parent": ["parent", "parent_code"],
 }
 
+CSV_FIELDS = {
+    "items": ["diagram", "callout", "part_number", "description", "supplement", "qty", "from", "to", "fitment_note", "vehicles", "category", "title"],
+    "hotspots": ["diagram", "callout", "x", "y", "w", "h"],
+    "supersessions": ["old", "new", "date", "fitment_note"],
+    "parts": ["part_number", "description", "fitment_note"],
+    "vehicles": ["code", *VEHICLE_FIELDS, "prod_from", "prod_to"],
+    "categories": ["code", "name", "parent"],
+    "diagrams": ["diagram", "title", "category"],
+}
+
 
 def map_headers(headers, wanted):
-    """Header text -> canonical field, for the fields in `wanted` (first alias match wins)."""
+    """Header text -> canonical field, for the fields in `wanted`: a field's own name first, then the first alias match."""
     norm = [re.sub(r"\s+", " ", h.strip().lower()) for h in headers]
-    out = {}
+    out = {f: norm.index(f) for f in wanted if f in norm}
     for field in wanted:
+        if field in out:
+            continue
         for i, h in enumerate(norm):
             if i in out.values():
                 continue
@@ -507,8 +519,12 @@ def import_csv(path, source_name=None, kind=None, vehicle=None, category=None, i
     rep = Report(name)
     rep.count("kind_" + kind)
     fid = store_file(sid, path, "csv", data=raw)
-    m = map_headers(headers, list(ALIASES))
+    m = map_headers(headers, CSV_FIELDS[kind])
     val = lambda r, k: r[m[k]] if k in m and m[k] < len(r) else None  # noqa: E731
+    col_field = {i: f for f, i in m.items()}
+    used = [h.strip() + ("" if h.strip().lower() == col_field[i] else f" ({col_field[i]})") for i, h in enumerate(headers) if i in col_field]
+    ignored = [h.strip() for i, h in enumerate(headers) if i not in col_field and h.strip()]
+    rep.problem(f"Columns used: {', '.join(used) or 'none'}; ignored: {', '.join(ignored) or 'none'}")
     conn = epc.connect()
     if kind == "items":
         by_diag = {}
@@ -543,7 +559,7 @@ def import_csv(path, source_name=None, kind=None, vehicle=None, category=None, i
             upsert_part(val(r, "part_number"), val(r, "description"), val(r, "fitment_note"), sid, rep)
     elif kind == "vehicles":
         for r in data:
-            upsert_vehicle({h.strip().lower(): r[i] for i, h in enumerate(headers) if i < len(r)}, sid, rep)
+            upsert_vehicle({k: val(r, k) for k in m}, sid, rep)
     elif kind == "categories":
         for r in data:
             get_category(val(r, "code"), val(r, "name"), clean(val(r, "parent")) or None, None, sid)

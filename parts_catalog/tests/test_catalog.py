@@ -166,6 +166,26 @@ class CatalogTest(unittest.TestCase):
         epc.delete_source(epc.row("SELECT id FROM sources WHERE name='Another CSV'")["id"])
         self.assertNotIn("duplicate_item", self.checks())
 
+    def write_csv(self, name, text, **kw):
+        p = os.path.join(tempfile.mkdtemp(dir=self.tmp), name)
+        with open(p, "w", encoding="utf-8") as f:
+            f.write(text)
+        return epc_import.import_csv(p, "Test headers", **kw)
+
+    def test_csv_header_names(self):
+        self.write_csv("cats.csv", "code,name,parent\n95,Test group,\n95.1,Test subgroup,95\n")
+        self.assertEqual(epc.row("SELECT name FROM categories WHERE code='95.1'")["name"], "Test subgroup")
+        self.write_csv("diagrams.csv", "diagram,title,category\n95_0001,Test diagram,95\n")
+        self.assertEqual(self.diag("95_0001")["title"], "Test diagram")
+        rep = self.write_csv("items.csv", "diagram,title,callout,part number,description,qty,colour\n95_0002,Pump group,1,95111234567,Pump,1,red\n")
+        self.assertEqual(self.diag("95_0002")["title"], "Pump group")
+        self.assertEqual(epc.row("SELECT description FROM diagram_items WHERE part_number='95111234567'")["description"], "Pump")
+        self.assertIn("Columns used: diagram, title, callout, part number (part_number), description, qty; ignored: colour", rep.problems)
+        # "Name" still means the description in an items file
+        rep = self.write_csv("spaced.csv", "Diagram code,Ref,Part number,Name\n95_0003,1,95111234568,Hose\n")
+        self.assertEqual(rep.counts.get("kind_items"), 1)
+        self.assertEqual(epc.row("SELECT description FROM diagram_items WHERE part_number='95111234568'")["description"], "Hose")
+
     def test_images_import(self):
         d = tempfile.mkdtemp(dir=self.tmp)
         make_png(os.path.join(d, "SAMPLE_17_01.png"))
