@@ -831,6 +831,33 @@ class AuditFixesTest(unittest.TestCase):
         self.c.delete(f"/api/services/{svc}")
         self.assertEqual(self.stock("Plug all used"), [(6, "On hand", None, None)])
 
+    def test_deleting_services_in_either_order_gives_one_row_back(self):
+        cid = self.car("DEMO-MERGE-ORDER")
+        for name, oldest_first in (("Plug, oldest service deleted first", True), ("Plug, newest service deleted first", False)):
+            pid = self.c.post("/api/parts", json={"car_id": cid, "name": name, "qty": 6, "status": "On hand"}).get_json()["id"]
+            svcs = [self.c.post(f"/api/cars/{cid}/services", json={"title": "Plugs", "date": f"2026-10-0{n}", "mileage": 40000 + n,
+                                                                   "parts": [{"id": pid, "qty": qty}]}).get_json()["id"]
+                    for n, qty in ((1, 1), (2, 2), (3, None))]  # 1, then 2, then the other 3
+            for svc in svcs if oldest_first else svcs[::-1]:
+                self.c.delete(f"/api/services/{svc}")
+            self.assertEqual(self.stock(name), [(6, "On hand", None, None)], name)
+
+    def test_a_row_back_on_hand_takes_back_only_copies_neither_edited_since(self):
+        cid = self.car("DEMO-MERGE-LATER-APART")
+        for name, row_edit, copy_edit, stock in (
+                ("Plug copy repriced", {}, {"price": 5.10}, [(2, "On hand", None, None), (4, "On hand", None, None)]),
+                ("Plug copy needed", {}, {"status": "Needed"}, [(2, "On hand", None, None), (4, "Needed", None, None)]),
+                ("Plug row set to 0", {"qty": 0}, {}, [(0, "On hand", None, None), (4, "On hand", None, None)])):
+            pid, svc = self.use_four_of_six(cid, name, car_id=cid)
+            rest = self.c.post(f"/api/cars/{cid}/services", json={"title": "Plugs", "date": "2026-10-08", "mileage": 40100,
+                                                                  "parts": [{"id": pid}]}).get_json()["id"]
+            self.c.delete(f"/api/services/{svc}")  # the 4 come back by themselves: their row is in use
+            copy = next(p["id"] for p in self.c.get("/api/parts").get_json() if p["name"] == name and p["id"] != pid)
+            self.c.put(f"/api/parts/{pid}", json=row_edit)
+            self.c.put(f"/api/parts/{copy}", json=copy_edit)
+            self.c.delete(f"/api/services/{rest}")
+            self.assertEqual(self.stock(name), stock, name)
+
     def test_deleting_a_service_puts_its_parts_back_on_hand(self):
         cid = self.car("DEMO-DELETE-PARTS")
         filt = self.c.post("/api/parts", json={"car_id": cid, "name": "Oil filter", "status": "On hand"}).get_json()["id"]

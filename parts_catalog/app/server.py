@@ -713,22 +713,30 @@ def mergeable(r):
             and (r["qty"] is None or r["qty"] > 0))
 
 
+def same_part(copy, src, car_id):
+    # using it set the quantity and the install fields, and gave a part with no vehicle the service's
+    return all(copy[k] == src[k] or (k == "car_id" and src[k] is None and copy[k] == car_id)
+               for k in PART_FIELDS if k not in ("qty", "status", "installed_mileage", "installed_date", "service_id"))
+
+
 def back_on_hand(pid, car_id):
     """A part its service on `car_id` stopped using: back onto the row it was split from if neither was edited, else On hand by itself."""
     p = db.row("SELECT * FROM parts WHERE id=?", (pid,))
     src = db.row("SELECT * FROM parts WHERE id=?", (p["split_from"],))
-    # using it set the quantity and the install fields, and gave a part with no vehicle the service's
-    same = src and mergeable(src) and all(
-        p[k] == src[k] or (k == "car_id" and src[k] is None and p[k] == car_id)
-        for k in PART_FIELDS if k not in ("qty", "status", "installed_mileage", "installed_date", "service_id"))
-    if same:
-        with db.connect() as conn:  # one write: stopped halfway, the copy would count twice or not at all
-            conn.execute("UPDATE parts SET qty=?, updated_at=CURRENT_TIMESTAMP WHERE id=?",
-                         ((src["qty"] or 1) + (p["qty"] or 1), src["id"]))
-            conn.execute("DELETE FROM parts WHERE id=?", (pid,))
+    if src and mergeable(src) and same_part(p, src, car_id):
+        into, copies = src, [p]
     else:  # off its service now, so a copy of it that service also used can still rejoin it
         db.execute("""UPDATE parts SET status='On hand', installed_date=NULL, installed_mileage=NULL, service_id=NULL,
                       updated_at=CURRENT_TIMESTAMP WHERE id=?""", (pid,))
+        into = db.row("SELECT * FROM parts WHERE id=?", (pid,))
+        # copies of it that came back while it was in use rejoin it now
+        copies = [c for c in db.rows("SELECT * FROM parts WHERE split_from=?", (pid,))
+                  if mergeable(c) and same_part(c, into, car_id)] if mergeable(into) else []
+    if copies:
+        with db.connect() as conn:  # one write: stopped halfway, a copy would count twice or not at all
+            conn.execute("UPDATE parts SET qty=?, updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                         ((into["qty"] or 1) + sum(c["qty"] or 1 for c in copies), into["id"]))
+            conn.executemany("DELETE FROM parts WHERE id=?", [(c["id"],) for c in copies])
 
 
 def save_service(car_id, service_id, b):
