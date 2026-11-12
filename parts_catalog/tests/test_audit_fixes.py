@@ -529,9 +529,9 @@ class AuditFixesTest(unittest.TestCase):
         self.car("DEMO-SLUG-OTHER")
         self.assertEqual(self.odometers(cid)[cid][0], "sensor.garage_demo_slug_odometer")
         put = lambda s: self.c.put(f"/api/cars/{cid}", json={"name": "DEMO-SLUG", "ha_slug": s})  # noqa: E731
-        for bad in ("Demo Slug", "demo-slug", "demo_slug_other"):
+        for bad in ("Demo Slug", "demo-slug", "demo_slug_other", "_demo_slug", "demo_slug_", "demo__slug"):  # the last 3: HA refuses
             self.assertEqual(put(bad).status_code, 400, bad)
-        self.assertIn("lower-case letters, digits and _", put("demo-slug").get_json()["error"])
+        self.assertIn("lower-case letters and digits, with single _ between them", put("demo_slug_").get_json()["error"])
         self.assertIn("DEMO-SLUG-OTHER", put("demo_slug_other").get_json()["error"])
         self.assertEqual(put("demo_slug").status_code, 200)  # Details sends it back unchanged on every save
         self.assertEqual(put("my_car").status_code, 200)

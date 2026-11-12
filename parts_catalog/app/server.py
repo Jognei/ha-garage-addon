@@ -275,8 +275,9 @@ def car_values(b, car_id=None):
     if "archived" in b:  # hidden from the garage and HA sensors (sold, stored...) but kept with its history
         vals["archived"] = 1 if b["archived"] in (True, 1, "1", "true", "on") else 0
     if vals.get("ha_slug"):  # the middle of its sensors' ids, sensor.garage_<ha_slug>_odometer; blank = from the name
-        if not re.fullmatch(r"[a-z0-9_]+", vals["ha_slug"]):
-            raise BadInput(f"The sensor id takes only lower-case letters, digits and _, like blue_wagon, not {vals['ha_slug']!r}")
+        if not re.fullmatch(r"[a-z0-9]+(_[a-z0-9]+)*", vals["ha_slug"]):  # what Home Assistant takes in an entity id
+            raise BadInput("The sensor id takes lower-case letters and digits, with single _ between them, like blue_wagon, "
+                           f"not {vals['ha_slug']!r}")
         other = db.row("SELECT name FROM cars WHERE ha_slug=? AND id IS NOT ?", (vals["ha_slug"], car_id))
         if other:
             raise BadInput(f"{other['name']} already has the sensor id {vals['ha_slug']}")
