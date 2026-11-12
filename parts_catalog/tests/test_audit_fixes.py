@@ -642,6 +642,20 @@ class AuditFixesTest(unittest.TestCase):
         car = self.c.get(f"/api/cars/{cid}").get_json()
         self.assertEqual((car["mileage"], car["mileage_date"]), (50900, "2026-11-01"))
 
+    def test_deleting_a_service_takes_its_reading_off_the_odometer(self):
+        cid = self.car("DEMO-ODO-WRONG-CAR")
+        self.c.post(f"/api/cars/{cid}/mileage", json={"mileage": 30000, "date": "2026-09-01"})
+        svc = self.c.post(f"/api/cars/{cid}/services", json={"title": "Oil change", "date": "2026-10-01", "mileage": 120500}).get_json()["id"]
+        db.execute("INSERT INTO mileage_log (car_id, date, mileage, source) VALUES (?, '2026-10-01', 120500, 'service')", (cid,))  # saved again by an older version
+        self.c.delete(f"/api/services/{svc}")
+        car = self.c.get(f"/api/cars/{cid}").get_json()
+        self.assertEqual((car["mileage"], car["mileage_date"], self.log(cid)), (30000, "2026-09-01", [("2026-09-01", 30000)]))
+        # two services logged together share one reading: it stays while either does
+        _, tires = [self.c.post(f"/api/cars/{cid}/services", json={"title": t, "date": "2026-10-02", "mileage": 30200}).get_json()["id"]
+                    for t in ("Oil", "Tire rotation")]
+        self.c.delete(f"/api/services/{tires}")
+        self.assertEqual(self.c.get(f"/api/cars/{cid}").get_json()["mileage"], 30200)
+
     def last_done(self, cid, sid):
         u = next(u for u in self.c.get(f"/api/cars/{cid}").get_json()["upcoming"] if u["id"] == sid)
         return u["last_date"], u["last_mileage"]

@@ -326,6 +326,21 @@ def record_mileage(car_id, mileage, date=None, source="manual"):
                (mileage, date, car_id, mileage))
 
 
+def delete_reading(car_id, log_id):
+    """False if the car has no reading `log_id`; an odometer that showed it falls back to the newest reading left."""
+    gone = db.row("SELECT * FROM mileage_log WHERE id=? AND car_id=?", (log_id, car_id))
+    if not gone:
+        return False
+    newest = newest_reading(car_id)
+    car = db.row("SELECT mileage, mileage_date FROM cars WHERE id=?", (car_id,))
+    db.execute("DELETE FROM mileage_log WHERE id=?", (log_id,))
+    # the newest reading, or the one the odometer shows (older versions logged out of order): back to the newest one left
+    if newest["id"] == log_id or (gone["mileage"], gone["date"]) == (car["mileage"], car["mileage_date"]):
+        r = newest_reading(car_id) or {}
+        db.execute("UPDATE cars SET mileage=?, mileage_date=? WHERE id=?", (r.get("mileage"), r.get("date"), car_id))
+    return True
+
+
 @app.route("/api/cars", methods=["GET", "POST"])
 def api_cars():
     if request.method == "POST":
@@ -517,16 +532,8 @@ def api_mileage(car_id):
 
 @app.route("/api/cars/<int:car_id>/mileage/<int:log_id>", methods=["DELETE"])
 def api_mileage_reading(car_id, log_id):
-    gone = db.row("SELECT * FROM mileage_log WHERE id=? AND car_id=?", (log_id, car_id))
-    if not gone:
+    if not delete_reading(car_id, log_id):
         return err("No such reading", 404)
-    newest = newest_reading(car_id)
-    car = db.row("SELECT mileage, mileage_date FROM cars WHERE id=?", (car_id,))
-    db.execute("DELETE FROM mileage_log WHERE id=?", (log_id,))
-    # the newest reading, or the one the odometer shows (older versions logged out of order): back to the newest one left
-    if newest["id"] == log_id or (gone["mileage"], gone["date"]) == (car["mileage"], car["mileage_date"]):
-        r = newest_reading(car_id) or {}
-        db.execute("UPDATE cars SET mileage=?, mileage_date=? WHERE id=?", (r.get("mileage"), r.get("date"), car_id))
     return jsonify(ok=True, mileage=db.row("SELECT mileage FROM cars WHERE id=?", (car_id,))["mileage"])
 
 
@@ -780,6 +787,11 @@ def api_service(service_id):
         db.execute("DELETE FROM services WHERE id=?", (service_id,))
         for sid in scheds:
             refresh_schedule(sid)
+        # the reading it logged (older versions logged one on every save), unless another service there stands on it too
+        for r in db.rows("""SELECT id FROM mileage_log m WHERE car_id=? AND date=? AND mileage=? AND source='service' AND NOT EXISTS
+                            (SELECT 1 FROM services s WHERE s.car_id=m.car_id AND s.date=m.date AND s.mileage=m.mileage)""",
+                         (s["car_id"], s["date"], s["mileage"])):
+            delete_reading(s["car_id"], r["id"])
         return jsonify(ok=True)
     return save_service(s["car_id"], service_id, body())
 

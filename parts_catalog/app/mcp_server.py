@@ -47,7 +47,8 @@ TOOLS = [
            "done_by": {"type": "string", "description": "DIY or shop name"}},
           ["service_id"]),
     _tool("delete_service", "Delete a logged service, e.g. one logged on the wrong vehicle (id from list_services). The schedules "
-                            "it reset go back to when they were last done before it; the parts it used go back to On hand, "
+                            "it reset go back to when they were last done before it, and the odometer reading it logged is "
+                            "removed; the parts it used go back to On hand, "
                             "and the ones it took from a larger row go back onto that row unless either was edited since.",
           {"service_id": {"type": "integer"}}, ["service_id"]),
     _tool("update_mileage", "Record an odometer reading. The odometer only moves forward unless correct=true.",
