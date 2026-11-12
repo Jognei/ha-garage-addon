@@ -121,6 +121,27 @@ class AuditFixesTest(unittest.TestCase):
         self.assertEqual(r.status_code, 400)
         self.assertIsNone(db.row("SELECT id FROM schedules WHERE car_id=?", (cid,)))
 
+    def test_a_schedule_without_a_due_point_reads_unknown(self):
+        cid = self.car("DEMO-NO-DUE", 200000)
+        cases = [({"title": "Valve adjustment", "interval_miles": 15000, "last_date": "2026-01-01"}, "unknown"),
+                 ({"title": "Wiper blades", "interval_months": 12, "last_mileage": 190000}, "unknown"),
+                 ({"title": "Differential fluid", "interval_miles": 60000}, "unknown"),
+                 ({"title": "Detail", "last_date": "2026-01-01"}, "ok")]  # no interval: nothing to count, nothing missing
+        ids = self.c.post(f"/api/cars/{cid}/schedules", json={"items": [i for i, _ in cases]}).get_json()["ids"]
+        self.c.post(f"/api/cars/{cid}/services", json={"title": "Differential fluid", "date": "2026-01-01", "schedule_ids": [ids[2]]})
+        up = {u["id"]: u for u in self.c.get(f"/api/cars/{cid}").get_json()["upcoming"]}
+        for sid, (item, state) in zip(ids, cases):
+            self.assertEqual(up[sid]["state"], state, item["title"])
+
+    def test_a_newer_baseline_beats_an_older_service_mileage(self):
+        cid = self.car("DEMO-BASELINE", 103000)
+        sid = self.c.post(f"/api/cars/{cid}/schedules", json={"items": [
+            {"title": "Engine oil & filter", "interval_miles": 5000, "last_date": "2026-06-01", "last_mileage": 100000}]}).get_json()["ids"][0]
+        self.c.post(f"/api/cars/{cid}/services", json={"title": "Oil change", "date": "2026-01-01", "mileage": 90000, "schedule_ids": [sid]})
+        self.c.post(f"/api/cars/{cid}/services", json={"title": "Oil top-up", "schedule_ids": [sid]})
+        up = next(u for u in self.c.get(f"/api/cars/{cid}").get_json()["upcoming"] if u["id"] == sid)
+        self.assertEqual((up["last_mileage"], up["state"]), (100000, "ok"))
+
     def test_service_without_mileage_keeps_the_last_known_mileage(self):
         cid = self.car("DEMO-MILES", 200000)
         sid = self.c.post(f"/api/cars/{cid}/schedules", json={"items": [

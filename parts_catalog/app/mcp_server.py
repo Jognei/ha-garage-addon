@@ -43,7 +43,8 @@ TOOLS = [
     _tool("update_mileage", "Record an odometer reading. The odometer only moves forward unless correct=true.",
           {"vehicle": VEHICLE, "mileage": {"type": "integer"}, "date": {"type": "string", "description": "YYYY-MM-DD, default today"},
            "correct": {"type": "boolean", "description": "Allow a lower reading (fixing a typo)"}}, ["vehicle", "mileage"]),
-    _tool("log_service", "Log a completed service. Matching schedules reset; listed parts become Installed at that mileage.",
+    _tool("log_service", "Log a completed service. Mileage defaults to the current odometer when the service is dated today. "
+                         "Matching schedules reset; listed parts become Installed at that mileage.",
           {"vehicle": VEHICLE, "title": {"type": "string"}, "date": {"type": "string", "description": "YYYY-MM-DD, default today"},
            "mileage": {"type": "integer"}, "cost": {"type": "number"}, "notes": {"type": "string"},
            "done_by": {"type": "string", "description": "DIY or shop name"},
@@ -160,11 +161,12 @@ def run_tool(name, a):
                 (hits.append(m[0]) if m else unmatched.append(t))
         sched_ids = [u["id"] for u in hits]
         payload = {k: a.get(k) for k in ("title", "date", "mileage", "cost", "notes", "done_by") if a.get(k) is not None}
-        if payload.get("mileage") is None and c.get("mileage") is not None:
-            payload["mileage"] = c["mileage"]  # as the UI does: default to the current odometer
+        from .server import today
+        if payload.get("mileage") is None and c.get("mileage") is not None and payload.get("date") in (None, today()):
+            payload["mileage"] = c["mileage"]  # as the UI does: default to the current odometer, which is today's
         payload.update(schedule_ids=sched_ids, part_ids=a.get("part_ids") or [])
         r = call("POST", f"/cars/{c['id']}/services", payload)
-        return {"logged": r, "vehicle": c["name"], "schedules_reset": len(hits),
+        return {"logged": r, "vehicle": c["name"], "mileage": payload.get("mileage"), "schedules_reset": len(hits),
                 "schedules_reset_titles": [u["title"] for u in hits], "schedules_not_found": unmatched}
     if name == "add_schedule":
         c = vehicle(a["vehicle"])

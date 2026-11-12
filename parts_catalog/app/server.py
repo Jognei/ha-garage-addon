@@ -505,13 +505,13 @@ def upcoming(car, manual=False):
         try:
             due_m = (s["last_mileage"] + s["interval_miles"]) if (s["interval_miles"] and s["last_mileage"] is not None) else None
             due_d = add_months(s["last_date"], s["interval_months"]) if (s["interval_months"] and s["last_date"]) else None
-            counted = True
         except (OverflowError, TypeError, ValueError):  # stored values it can't count from (e.g. past the year 9999)
             due_m = due_d = None
-            counted = False
         miles_left = (due_m - car["mileage"]) if (due_m is not None and car.get("mileage") is not None) else None
         days_left = (parse_date(due_d) - today_d).days if due_d else None
-        if not counted or (s["last_date"] is None and s["last_mileage"] is None):
+        # never done, or done with nothing its intervals can count from (only a date for a mileage interval)
+        if ((s["last_date"] is None and s["last_mileage"] is None)
+                or (due_m is None and due_d is None and (s["interval_miles"] or s["interval_months"]))):
             state = "unknown"
         elif (miles_left is not None and miles_left < 0) or (days_left is not None and days_left < 0):
             state = "overdue"
@@ -638,10 +638,13 @@ def refresh_schedule(sid):
                      WHERE ss.schedule_id=? ORDER BY s.date DESC, s.mileage DESC LIMIT 1""", (sid,))
     if last and (sched["base_date"] is None or last["date"] >= sched["base_date"]):
         date, mileage = last["date"], last["mileage"]
-        if mileage is None:  # logged without mileage: keep the newest known one, or mileage intervals stop counting
-            known = db.row("""SELECT s.mileage FROM services s JOIN service_schedules ss ON ss.service_id=s.id
+        if mileage is None:  # logged without mileage: the newer of the last service with one and the baseline
+            known = db.row("""SELECT s.date, s.mileage FROM services s JOIN service_schedules ss ON ss.service_id=s.id
                               WHERE ss.schedule_id=? AND s.mileage IS NOT NULL ORDER BY s.date DESC, s.mileage DESC LIMIT 1""", (sid,))
-            mileage = known["mileage"] if known else sched["base_mileage"]
+            if known and (sched["base_date"] is None or known["date"] >= sched["base_date"]):
+                mileage = known["mileage"]
+            else:
+                mileage = sched["base_mileage"]
     else:
         date, mileage = sched["base_date"], sched["base_mileage"]
     db.execute("UPDATE schedules SET last_date=?, last_mileage=? WHERE id=?", (date, mileage, sid))

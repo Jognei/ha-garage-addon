@@ -110,6 +110,15 @@ class McpTest(unittest.TestCase):
         self.assertEqual(r["notes"], "Bought used\nNew clutch")
         self.assertEqual(self.tool("get_vehicle", vehicle="wagon")[0]["notes"], "Bought used\nNew clutch")
 
+    def test_log_service_mileage_defaults_to_the_odometer_only_for_today(self):
+        cid = self.c.post("/api/cars", json={"name": "Grey Hatchback", "mileage": 42000}).get_json()["id"]
+        for date, used in ((None, 42000), (dt.date.today().isoformat(), 42000), ("2025-03-01", None)):
+            logged, err = self.tool("log_service", vehicle="hatchback", title="Wash", **({"date": date} if date else {}))
+            self.assertFalse(err, logged)
+            self.assertEqual(logged["mileage"], used, date)
+            svc = next(s for s in self.c.get(f"/api/cars/{cid}/services").get_json() if s["id"] == logged["logged"]["id"])
+            self.assertEqual(svc["mileage"], used, date)
+
     def test_tool_errors(self):
         msg, err = self.tool("get_vehicle", vehicle="nonexistent")
         self.assertTrue(err)
