@@ -142,6 +142,43 @@ class AuditFixesTest(unittest.TestCase):
         up = next(u for u in self.c.get(f"/api/cars/{cid}").get_json()["upcoming"] if u["id"] == sid)
         self.assertEqual((up["last_mileage"], up["state"]), (100000, "ok"))
 
+    def test_values_that_are_not_clean_are_refused(self):
+        cid = self.car("DEMO-NUMBERS", 1000)
+        pid = self.c.post("/api/parts", json={"name": "Pads", "status": "On hand"}).get_json()["id"]
+        for method, path, payload, field in (
+                ("POST", f"/api/cars/{cid}/schedules", {"title": "Oil", "interval_miles": "5k"}, "Every (miles)"),
+                ("POST", f"/api/cars/{cid}/services", {"title": "Oil", "mileage": "150.000"}, "Mileage"),
+                ("POST", f"/api/cars/{cid}/services", {"title": "Oil", "cost": "1.234,56"}, "Cost"),
+                ("PUT", f"/api/parts/{pid}", {"qty": "7.500"}, "Qty"),
+                ("PUT", f"/api/parts/{pid}", {"price": "abc"}, "Price"),
+                ("PUT", f"/api/parts/{pid}", {"status": "installed"}, "Status"),
+                ("PUT", f"/api/cars/{cid}", {"name": "  "}, "Name is required"),
+                ("POST", "/api/cars", {"name": "DEMO-BAD-MILES", "mileage": "5k"}, "Current mileage")):
+            r = self.c.open(path, method=method, json=payload)
+            self.assertEqual(r.status_code, 400, payload)
+            self.assertIn(field, r.get_json()["error"])
+        p = self.c.get(f"/api/parts/{pid}").get_json()
+        self.assertEqual((p["qty"], p["price"], p["status"]), (1, None, "On hand"))
+        self.assertEqual(self.c.get(f"/api/cars/{cid}/services").get_json(), [])
+        self.assertNotIn("DEMO-BAD-MILES", [c["name"] for c in self.c.get("/api/cars").get_json()])
+
+    def test_a_hand_edited_card_setting_does_not_take_the_garage_down(self):
+        saved = server.load_settings()
+        try:
+            server.save_settings({**saved, "card": {"upcoming_rows": "lots"}})
+            self.assertEqual(self.c.get("/api/cars").status_code, 200)
+        finally:
+            server.save_settings(saved)
+
+    def test_numbers_as_people_type_them(self):
+        cid = self.car("DEMO-TYPED", " 150,000 mi ")
+        self.assertEqual(self.c.get(f"/api/cars/{cid}").get_json()["mileage"], 150000)
+        self.c.post(f"/api/cars/{cid}/services", json={"title": "Brake pads", "cost": "24,99"})
+        self.assertEqual(self.c.get(f"/api/cars/{cid}/services").get_json()[0]["cost"], 24.99)
+        pid = self.c.post("/api/parts", json={"name": "Rotor", "price": " $1,234.50 ", "qty": "2"}).get_json()["id"]
+        p = self.c.get(f"/api/parts/{pid}").get_json()
+        self.assertEqual((p["price"], p["qty"]), (1234.5, 2))
+
     def test_service_without_mileage_keeps_the_last_known_mileage(self):
         cid = self.car("DEMO-MILES", 200000)
         sid = self.c.post(f"/api/cars/{cid}/schedules", json={"items": [

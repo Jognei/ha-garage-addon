@@ -86,7 +86,10 @@ CARD_DEFAULTS = {"photo": True, "mileage": True, "upcoming_rows": 3, "hide_ok": 
 def card_settings(s=None):
     """How garage cards look (Garage > Customize cards)."""
     c = {**CARD_DEFAULTS, **((load_settings() if s is None else s).get("card") or {})}
-    rows = to_int(c["upcoming_rows"])
+    try:
+        rows = to_int(c["upcoming_rows"])
+    except BadInput:  # read on every page: a hand-edited settings.json must not take them down
+        rows = None
     c["upcoming_rows"] = max(0, min(12, 3 if rows is None else rows))
     return {k: (c[k] if k == "upcoming_rows" else bool(c[k])) for k in CARD_DEFAULTS}
 
@@ -138,22 +141,34 @@ def err(msg, code=400):
     return jsonify(error=msg), code
 
 
-def to_int(v):
-    if v in (None, ""):
-        return None
-    try:
-        return int(float(re.sub(r"[^\d.\-]", "", str(v))))
-    except ValueError:
-        return None
+# A number as people type it: spaces around, a leading $, thousands as 1,234, a trailing " mi".
+NUMBER = re.compile(r"-?\$?(\d{1,3}(,\d{3})+|\d+)(\.\d+)?( ?mi)?", re.IGNORECASE)
 
 
-def to_money(v):
-    if v in (None, ""):
+def to_number(v, field):
+    """None for blank; else 400 naming `field` unless `v` is cleanly a number."""
+    if isinstance(v, (int, float)):
+        return v
+    s = "" if v is None else str(v).strip()
+    if not s:
         return None
-    try:
-        return round(float(re.sub(r"[^\d.\-]", "", str(v))), 2)
-    except ValueError:
-        return None
+    if not NUMBER.fullmatch(s):
+        raise BadInput(f"{field} must be a number, not {str(v)[:30]!r}")
+    return float(re.sub(r"[^\d.\-]", "", s))
+
+
+def to_int(v, field="Value"):
+    n = to_number(v, field)
+    if n is not None and (n != int(n) or isinstance(v, str) and "." in v):  # "7.500" may mean 7500: don't guess
+        raise BadInput(f"{field} must be a whole number, not {str(v)[:30]!r}")
+    return None if n is None else int(n)
+
+
+def to_money(v, field="Amount"):
+    if isinstance(v, str) and re.fullmatch(r"\s*-?\$?\d+,\d\d?\s*", v):
+        v = v.replace(",", ".")  # 24,99: a decimal comma
+    n = to_number(v, field)
+    return None if n is None else round(n, 2)
 
 
 def today():
@@ -252,7 +267,7 @@ NOT_CAR_PHOTO = "NOT EXISTS (SELECT 1 FROM cars pc WHERE pc.photo_id=d.id)"
 def car_values(b):
     vals = {k: (str(b[k]).strip() or None) if b.get(k) is not None else None for k in CAR_FIELDS if k in b}
     if "year" in vals:
-        vals["year"] = to_int(vals["year"])
+        vals["year"] = to_int(vals["year"], "Year")
     if "archived" in b:  # hidden from the garage and HA sensors (sold, stored...) but kept with its history
         vals["archived"] = 1 if b["archived"] in (True, 1, "1", "true", "on") else 0
     return vals
@@ -284,7 +299,7 @@ def newest_reading(car_id, until=None):
 
 def record_mileage(car_id, mileage, date=None, source="manual"):
     """Log an odometer reading if the log stays in mileage order by date and it isn't a repeat; the car's mileage only moves forward."""
-    mileage = to_int(mileage)
+    mileage = to_int(mileage, "Mileage")
     if mileage is None:
         return
     date = to_date(date) or today()
@@ -307,10 +322,11 @@ def api_cars():
         vals = car_values(b)
         if not vals.get("name"):
             return err("Name is required.")
+        mileage = to_int(b.get("mileage"), "Current mileage")
         cur = db.execute(f"INSERT INTO cars ({','.join(vals)}) VALUES ({','.join('?' * len(vals))})",
                          list(vals.values()))
-        if b.get("mileage"):
-            record_mileage(cur.lastrowid, b["mileage"])
+        if mileage:
+            record_mileage(cur.lastrowid, mileage)
         return jsonify(id=cur.lastrowid)
     cars = db.rows("""SELECT c.*,
         (SELECT COUNT(*) FROM parts p WHERE p.car_id=c.id AND p.status IN ('Needed','Check','Ordered')) AS parts_open,
@@ -446,6 +462,8 @@ def api_car(car_id):
     if request.method == "PUT":
         b = body()
         vals = car_values(b)
+        if "name" in vals and not vals["name"]:
+            return err("Name is required.")
         if vals:
             db.execute(f"UPDATE cars SET {','.join(k + '=?' for k in vals)} WHERE id=?",
                        list(vals.values()) + [car_id])
@@ -465,7 +483,7 @@ def api_car(car_id):
 def api_mileage(car_id):
     """Also the Home Assistant hook: POST {"mileage": 123456}."""
     b = body() or request.form
-    m = to_int(b.get("mileage"))
+    m = to_int(b.get("mileage"), "Mileage")
     if m is None:
         return err("mileage required")
     car = db.row("SELECT mileage FROM cars WHERE id=?", (car_id,))
@@ -549,16 +567,19 @@ def upcoming(car, manual=False):
 
 SCHEDULE_FIELDS = ["title", "interval_miles", "interval_months", "last_date", "last_mileage", "doc_id", "doc_page",
                    "notes", "active", "snoozed_until"]
+# the schedule form's name for each of its numbers, for error messages
+SCHEDULE_NUMBERS = {"interval_miles": "Every (miles)", "interval_months": "Every (months)", "last_mileage": "Last done (mileage)",
+                    "doc_id": "Manual", "doc_page": "Page", "active": "Active"}
 
 
 def schedule_values(b, cur=None):
     vals = {k: b[k] for k in SCHEDULE_FIELDS if k in b}
-    for k in ("interval_miles", "interval_months", "last_mileage", "doc_id", "doc_page", "active"):
+    for k, label in SCHEDULE_NUMBERS.items():
         if k in vals:
-            vals[k] = to_int(vals[k])
-    for k, label, top in (("interval_miles", "Every (miles)", 1_000_000), ("interval_months", "Every (months)", 1200)):
+            vals[k] = to_int(vals[k], label)
+    for k, top in (("interval_miles", 1_000_000), ("interval_months", 1200)):
         if vals.get(k) is not None and not 0 <= vals[k] <= top:
-            raise BadInput(f"{label} must be from 0 to {top:,}")
+            raise BadInput(f"{SCHEDULE_NUMBERS[k]} must be from 0 to {top:,}")
     for k in ("last_date", "snoozed_until"):
         if k in vals:
             vals[k] = to_date(vals[k], "Last done" if k == "last_date" else "Dismiss until")
@@ -660,9 +681,9 @@ def save_service(car_id, service_id, b):
     if any(u["qty"] is not None and u["qty"] < 1 for u in uses):
         return err("Use at least 1 of each ticked part.")
     date = to_date(b.get("date")) or today()
-    mileage = to_int(b.get("mileage"))
+    mileage = to_int(b.get("mileage"), "Mileage")
     vals = dict(date=date, mileage=mileage, title=b["title"].strip(), notes=b.get("notes") or "",
-                cost=to_money(b.get("cost")), done_by=b.get("done_by") or "DIY")
+                cost=to_money(b.get("cost"), "Cost"), done_by=b.get("done_by") or "DIY")
     if service_id:
         db.execute(f"UPDATE services SET {','.join(k + '=?' for k in vals)} WHERE id=?", list(vals.values()) + [service_id])
         old_scheds = [r["schedule_id"] for r in db.rows("SELECT schedule_id FROM service_schedules WHERE service_id=?", (service_id,))]
@@ -818,11 +839,12 @@ PART_FIELDS = ["car_id", "name", "category", "part_number", "brand", "qty", "sta
 
 def part_values(b):
     vals = {k: b[k] for k in PART_FIELDS if k in b}
-    for k in ("car_id", "qty", "installed_mileage", "service_id", "document_id", "project_id"):
+    for k, label in (("car_id", "Vehicle"), ("qty", "Qty"), ("installed_mileage", "Installed at (miles)"), ("service_id", "Service"),
+                     ("document_id", "File"), ("project_id", "Project")):
         if k in vals:
-            vals[k] = to_int(vals[k])
+            vals[k] = to_int(vals[k], label)
     if "price" in vals:
-        vals["price"] = to_money(vals["price"])
+        vals["price"] = to_money(vals["price"], "Price (each)")
     for k in ("purchased_date", "installed_date"):
         if k in vals:
             vals[k] = to_date(vals[k], "Purchased" if k == "purchased_date" else "Installed on")
@@ -830,7 +852,7 @@ def part_values(b):
         if k in vals:
             vals[k] = (vals[k] or "").strip()
     if "status" in vals and vals["status"] not in db.STATUSES:
-        vals["status"] = "Needed"
+        raise BadInput(f"Status must be one of {', '.join(db.STATUSES)}, not {str(vals['status'])[:30]!r}")
     return vals
 
 
