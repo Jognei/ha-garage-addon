@@ -315,7 +315,7 @@ async function catalogData() {
         The diagram image is the one image sent with a single page, else the largest image saved with the page; its <code>&lt;map&gt;</code> areas become clickable numbers.
         The file name without .html is the diagram code (unless Diagram code is filled in for a single page), and the page title is the diagram title.</p>
       <p><b>Diagram images</b>: an image named after a diagram's code is attached to it, ignoring case and anything but letters and digits (<code>11-0050.PNG</code> fits <code>11_0050</code>).
-        With a vehicle under Link to vehicle only its diagrams count; with none, an image whose code several diagrams share is reported.
+        When several diagrams share a code, the vehicle under Link to vehicle picks among them; with none chosen, the image is reported and not attached.
         Images with no such diagram are reported, or become new diagrams when the box above is ticked.</p>
     </details>
     <h2>Validation report</h2>
