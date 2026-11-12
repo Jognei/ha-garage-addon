@@ -122,6 +122,13 @@ function openDialog(title, html, onSubmit, { ok = 'Save', wide = false } = {}) {
   return form;
 }
 
+// A dialog's Delete button: the dialog closes once the delete is done, unless another one was opened meanwhile.
+async function deleteInDialog(path) {
+  const seq = dlgSeq;
+  await api(path, { method: 'DELETE' });
+  if (seq === dlgSeq) $('#dlg').close();
+}
+
 // A form outside a dialog: its button is off (and reads busyText) while the request runs, so a double tap can't send it twice.
 async function submitting(form, work, busyText) {
   const btn = $('button:not([type=button])', form), idle = btn.textContent;
@@ -631,8 +638,8 @@ async function serviceDialog(car, schedules, svc, checked, pre = {}) {
   };
   if (svc) $('#delSvc').onclick = async () => {
     if (!confirm('Delete this service record?')) return;
-    await api('/services/' + svc.id, { method: 'DELETE' });
-    $('#dlg').close(); rerender();
+    await deleteInDialog('/services/' + svc.id);
+    rerender();
   };
 }
 
@@ -734,8 +741,8 @@ async function projectDialog(car, p) {
   };
   if (p) $('#delProj', form).onclick = async () => {
     if (!confirm(`Delete the project “${p.title}”? Its parts stay in your parts list.`)) return;
-    await api('/projects/' + p.id, { method: 'DELETE' });
-    $('#dlg').close(); rerender();
+    await deleteInDialog('/projects/' + p.id);
+    rerender();
   };
 }
 
@@ -761,8 +768,8 @@ function scheduleDialog(car, docs, s) {
   });
   if (s) $('#delSched', form).onclick = async () => {
     if (!confirm(`Delete the “${s.title}” schedule? Service history stays.`)) return;
-    await api('/schedules/' + s.id, { method: 'DELETE' });
-    $('#dlg').close(); rerender();
+    await deleteInDialog('/schedules/' + s.id);
+    rerender();
   };
 }
 
@@ -916,8 +923,8 @@ function partDialog(p, cars, car) {
   });
   if (p) $('#delPart', form).onclick = async () => {
     if (!confirm(`Delete ${p.name}?`)) return;
-    await api('/parts/' + p.id, { method: 'DELETE' });
-    $('#dlg').close(); rerender();
+    await deleteInDialog('/parts/' + p.id);
+    rerender();
   };
 }
 
@@ -1025,8 +1032,8 @@ async function documentsTab(el, car) {
       async (data) => { await api('/documents/' + d.id, { method: 'PUT', json: data }); documentsTab(el, car); });
       $('#delDoc', f).onclick = async () => {
         if (!confirm(`Delete ${d.title}? The file is removed from the app (backups keep a copy).`)) return;
-        await api('/documents/' + d.id, { method: 'DELETE' });
-        $('#dlg').close(); documentsTab(el, car);
+        await deleteInDialog('/documents/' + d.id);
+        documentsTab(el, car);
       };
     };
   });
