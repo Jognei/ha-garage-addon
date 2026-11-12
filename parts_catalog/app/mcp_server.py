@@ -38,8 +38,17 @@ TOOLS = [
     _tool("whats_due", "Services that are overdue or due soon (and schedules never done or dismissed until a date), for one vehicle "
                        "or all that aren't hidden.",
           {"vehicle": VEHICLE}),
-    _tool("list_services", "Service history of a vehicle, newest first.",
+    _tool("list_services", "Service history of a vehicle, newest first, each with its id.",
           {"vehicle": VEHICLE, "limit": {"type": "integer", "default": 20}}, ["vehicle"]),
+    _tool("update_service", "Correct a logged service (id from list_services): its title, date, mileage, cost, notes or who did it. "
+                            "Fields left out stay as they are, and so do the schedules it reset and the parts it used.",
+          {"service_id": {"type": "integer"}, "title": {"type": "string"}, "date": {"type": "string", "description": "YYYY-MM-DD"},
+           "mileage": {"type": "integer"}, "cost": {"type": "number"}, "notes": {"type": "string"},
+           "done_by": {"type": "string", "description": "DIY or shop name"}},
+          ["service_id"]),
+    _tool("delete_service", "Delete a logged service, e.g. one logged on the wrong vehicle (id from list_services). The schedules "
+                            "it reset go back to when they were last done before it; parts it used stay Installed.",
+          {"service_id": {"type": "integer"}}, ["service_id"]),
     _tool("update_mileage", "Record an odometer reading. The odometer only moves forward unless correct=true.",
           {"vehicle": VEHICLE, "mileage": {"type": "integer"}, "date": {"type": "string", "description": "YYYY-MM-DD, default today"},
            "correct": {"type": "boolean", "description": "Allow a lower reading (fixing a typo)"}}, ["vehicle", "mileage"]),
@@ -55,6 +64,12 @@ TOOLS = [
           {"vehicle": VEHICLE, "title": {"type": "string"}, "interval_miles": {"type": "integer"}, "interval_months": {"type": "integer"},
            "last_date": {"type": "string"}, "last_mileage": {"type": "integer"}, "notes": {"type": "string"}},
           ["vehicle", "title"]),
+    _tool("update_schedule", "Change a service schedule: its title, intervals, when it was last done, or notes. Fields left out "
+                             "stay as they are.",
+          {"vehicle": VEHICLE, "schedule": {"type": "string", "description": "Schedule id, or its title or part of it, e.g. 'oil'"},
+           "title": {"type": "string"}, "interval_miles": {"type": "integer"}, "interval_months": {"type": "integer"},
+           "last_date": {"type": "string", "description": "YYYY-MM-DD"}, "last_mileage": {"type": "integer"}, "notes": {"type": "string"}},
+          ["vehicle", "schedule"]),
     _tool("set_vehicle_notes", "Overall notes for a vehicle (history, quirks, mods). Replaces them, or adds a line with append=true.",
           {"vehicle": VEHICLE, "notes": {"type": "string"}, "append": {"type": "boolean"}}, ["vehicle", "notes"]),
     _tool("list_parts", "Parts, filtered by vehicle, status and/or a search over name, part number and brand.",
@@ -63,8 +78,9 @@ TOOLS = [
           {"vehicle": {**VEHICLE, "description": VEHICLE["description"] + "; omit for unassigned"},
            "items": {"type": "array", "items": {"type": "object", "properties": PART_FIELDS, "required": ["name"]}}},
           ["items"]),
-    _tool("update_part", "Change a part, e.g. its status (Ordered → On hand → Installed) or installed mileage.",
-          {"part_id": {"type": "integer"}, **{k: v for k, v in PART_FIELDS.items()}}, ["part_id"]),
+    _tool("update_part", "Change a part, e.g. its status (Ordered → On hand → Installed), installed mileage, or the vehicle it's for.",
+          {"part_id": {"type": "integer"}, "vehicle": {**VEHICLE, "description": VEHICLE["description"] + "; moves the part to it"},
+           **{k: v for k, v in PART_FIELDS.items()}}, ["part_id"]),
 ]
 
 
@@ -104,6 +120,24 @@ def vehicle(ref):
     return hit[0]
 
 
+def match_schedule(up, t):
+    """The schedule in `up` titled `t`, else the only one whose title contains it, else None."""
+    exact = [u for u in up if u["title"].lower() == t.lower()]
+    m = exact or [u for u in up if t.lower() in u["title"].lower()]
+    if len(m) > 1 and not exact:
+        raise ToolError(f"{t!r} matches several schedules: " + ", ".join(u["title"] for u in m))
+    return m[0] if m else None
+
+
+def find_service(sid):
+    """(vehicle, service) for a logged service's id, looked up across every vehicle."""
+    for c in call("GET", "/cars"):
+        for s in call("GET", f"/cars/{c['id']}/services"):
+            if str(s["id"]) == str(sid).strip():
+                return c, s
+    raise ToolError(f"No service with id {sid!r}. Service ids come from list_services.")
+
+
 def due_row(u):
     return {k: u.get(k) for k in ("id", "title", "state", "due_mileage", "due_date", "miles_left", "days_left", "est_date",
                                   "interval_miles", "interval_months", "last_date", "last_mileage", "snoozed_until")}
@@ -133,6 +167,16 @@ def run_tool(name, a):
     if name == "list_services":
         rows = call("GET", f"/cars/{vehicle(a['vehicle'])['id']}/services")
         return rows[: int(a.get("limit") or 20)]
+    if name == "update_service":
+        c, s = find_service(a["service_id"])
+        vals = {k: a[k] if k in a else s[k] for k in ("title", "date", "mileage", "cost", "notes", "done_by")}
+        # the route saves the whole service, so its schedules and parts are sent back with it
+        call("PUT", f"/services/{s['id']}", {**vals, "schedule_ids": s["schedule_ids"], "part_ids": [p["id"] for p in s["parts"]]})
+        return next(x for x in call("GET", f"/cars/{c['id']}/services") if x["id"] == s["id"])
+    if name == "delete_service":
+        c, s = find_service(a["service_id"])
+        call("DELETE", f"/services/{s['id']}")
+        return {"deleted": s["id"], "vehicle": c["name"], "title": s["title"], "date": s["date"]}
     if name == "update_mileage":
         c = vehicle(a["vehicle"])
         call("POST", f"/cars/{c['id']}/mileage", {"mileage": a["mileage"], "date": a.get("date"), "correct": bool(a.get("correct"))})
@@ -154,11 +198,8 @@ def run_tool(name, a):
         if a.get("schedules"):
             up = call("GET", f"/cars/{c['id']}")["upcoming"]
             for t in a["schedules"]:
-                exact = [u for u in up if u["title"].lower() == t.lower()]
-                m = exact or [u for u in up if t.lower() in u["title"].lower()]
-                if len(m) > 1 and not exact:
-                    raise ToolError(f"{t!r} matches several schedules: " + ", ".join(u["title"] for u in m))
-                (hits.append(m[0]) if m else unmatched.append(t))
+                u = match_schedule(up, t)
+                (hits.append(u) if u else unmatched.append(t))
         sched_ids = [u["id"] for u in hits]
         payload = {k: a.get(k) for k in ("title", "date", "mileage", "cost", "notes", "done_by") if a.get(k) is not None}
         from .server import today
@@ -172,6 +213,17 @@ def run_tool(name, a):
         c = vehicle(a["vehicle"])
         item = {k: a.get(k) for k in ("title", "interval_miles", "interval_months", "last_date", "last_mileage", "notes") if a.get(k) is not None}
         return call("POST", f"/cars/{c['id']}/schedules", {"items": [item]})
+    if name == "update_schedule":
+        c = vehicle(a["vehicle"])
+        up = call("GET", f"/cars/{c['id']}")["upcoming"]
+        ref = str(a["schedule"]).strip()
+        u = next((u for u in up if u["id"] == int(ref)), None) if ref.isdigit() else match_schedule(up, ref)
+        if not u:
+            raise ToolError(f"No schedule on {c['name']} matches {ref!r}. Schedules: " + ", ".join(f"{u['id']}={u['title']}" for u in up))
+        call("PUT", f"/schedules/{u['id']}", {k: a[k] for k in ("title", "interval_miles", "interval_months", "last_date",
+                                                                 "last_mileage", "notes") if a.get(k) is not None})
+        u = next(x for x in call("GET", f"/cars/{c['id']}")["upcoming"] if x["id"] == u["id"])
+        return {**due_row(u), "notes": u["notes"]}
     if name == "set_vehicle_notes":
         c = call("GET", f"/cars/{vehicle(a['vehicle'])['id']}")
         notes = str(a["notes"]).strip()
@@ -199,7 +251,10 @@ def run_tool(name, a):
         return {"added": len(ids), "part_ids": ids}
     if name == "update_part":
         pid = a["part_id"]
-        call("PUT", f"/parts/{pid}", {k: v for k, v in a.items() if k in PART_FIELDS})
+        vals = {k: v for k, v in a.items() if k in PART_FIELDS}
+        if a.get("vehicle"):
+            vals["car_id"] = vehicle(a["vehicle"])["id"]
+        call("PUT", f"/parts/{pid}", vals)
         return call("GET", f"/parts/{pid}")
     raise ToolError(f"Unknown tool {name}")
 
@@ -211,7 +266,8 @@ def handle(msg):
         return None
     ok = lambda result: {"jsonrpc": "2.0", "id": mid, "result": result}  # noqa: E731
     if method == "initialize":
-        return ok({"protocolVersion": params.get("protocolVersion") or PROTOCOL,
+        # the one version this server speaks, whatever the client asks for; the client decides whether to go on
+        return ok({"protocolVersion": PROTOCOL,
                    "capabilities": {"tools": {"listChanged": False}},
                    "serverInfo": {"name": "garage", "title": "Garage (Parts Catalog)", "version": "1"},
                    "instructions": "Vehicles, service schedules and history, odometer readings and parts for the user's garage. "

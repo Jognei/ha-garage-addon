@@ -97,8 +97,8 @@ as attributes.
 
 ## AI agents (MCP)
 Let an AI assistant such as Claude, or any app that supports MCP, work with your garage. It can list vehicles,
-check what's due, read service history, record odometer readings, log services, write a vehicle's notes
-(`set_vehicle_notes`), and add or update parts.
+check what's due, read service history, record odometer readings, log services and correct or delete them, add or
+change service schedules, write a vehicle's notes (`set_vehicle_notes`), and add, update or move parts.
 1. In the add-on, go to **Settings › AI agents** and click **Turn on: create an agent key**.
 2. Turn on **Direct network access** and set a host port under **Network**, so the agent can reach the add-on.
 3. In the agent app, add an MCP server of type **HTTP**: `http://<home-assistant-ip>:<port>/mcp`, with the header
