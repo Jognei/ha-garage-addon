@@ -5,6 +5,7 @@ import os
 import signal
 import subprocess
 import sys
+import threading
 import time
 
 RESTART_CODE = 3
@@ -29,18 +30,22 @@ if not options.get("direct_access"):
 print("Parts Catalog add-on starting; direct network access:", bool(options.get("direct_access")), flush=True)
 
 child = None
+stopping = False
 
 
 def stop(signum, _frame):
     """As process 1 we get no default SIGTERM handling: pass the stop on to the app and exit,
     instead of Home Assistant waiting out its timeout and killing us."""
-    if child and child.poll() is None:
-        child.terminate()
-        try:
-            child.wait(timeout=8)
-        except subprocess.TimeoutExpired:
-            child.kill()
-    sys.exit(0)
+    global stopping
+    stopping = True
+    if child is None or child.poll() is not None:  # between runs: nothing to wait for
+        sys.exit(0)
+    # The loop below exits once its child.wait() sees the app stop. Waiting here would never see it:
+    # that wait() holds the lock this one needs.
+    child.terminate()
+    killer = threading.Timer(8, child.kill)  # for an app that ignores the stop
+    killer.daemon = True
+    killer.start()
 
 
 signal.signal(signal.SIGTERM, stop)
@@ -51,6 +56,8 @@ while True:
     started = time.time()
     child = subprocess.Popen([sys.executable, "-m", "app"], env=env)
     code = child.wait()
+    if stopping:
+        sys.exit(0)
     if code == RESTART_CODE:
         print("Restarting (requested by the app)", flush=True)
         continue
