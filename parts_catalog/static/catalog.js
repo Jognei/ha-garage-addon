@@ -253,7 +253,7 @@ async function catalogSearch(params) {
 }
 
 async function catalogData() {
-  const [ov, val, tree] = await Promise.all([api('/epc/overview'), api('/epc/validation'), api('/epc/categories')]);
+  const [ov, val, tree, set] = await Promise.all([api('/epc/overview'), api('/epc/validation'), api('/epc/categories'), api('/settings')]);
   const sev = { error: 0, warning: 1, info: 2 };
   const summ = Object.entries(val.summary).sort((a, b) => sev[a[1].severity] - sev[b[1].severity]);
   // The import form starts on the header's vehicle (or the only real one); its last choices come back while the header is unchanged.
@@ -276,7 +276,31 @@ async function catalogData() {
       <div><button class="primary">Import</button></div>
     </form>
     <div id="impResult"></div>
-    <p class="small muted">Everything stays on this PC. Originals are kept in <code>data/epc/files/</code> so they can be re-imported. Formats: <code>docs/catalog.md</code>. Command line: <code>tools\\epc_import.py</code>.</p>
+    <p class="small muted">Everything stays on ${set.addon ? 'your Home Assistant' : 'this PC'}. Originals are kept in the data folder (<code>${esc(set.data_dir)}</code>) so they can be re-imported.${set.addon ? '' : ' Command line: <code>tools/epc_import.py</code>.'}</p>
+    <details class="epc-formats small">
+      <summary>File formats</summary>
+      <p><b>JSON bundle</b> (.json): <code>{"format": "garage-epc", "source": {"name": …}, "vehicles": […], "categories": […], "parts": […], "diagrams": […], "supersessions": […], "expected_diagrams": […]}</code>, any list left out.
+        Vehicles, categories (main groups), parts and supersessions take the CSV column names below as keys.
+        A diagram has <code>code</code>, <code>title</code>, <code>category</code>, <code>vehicles</code> (a list of codes), <code>image</code> (path from the JSON file),
+        <code>items</code> (parts-list rows with the CSV keys below, <code>vehicles</code> as a list) and <code>hotspots</code> (<code>callout</code>, <code>x</code>, <code>y</code>, <code>w</code>, <code>h</code>).
+        Expected diagrams (<code>vehicle</code>, <code>code</code>, <code>title</code>) are reported as missing until they are imported.</p>
+      <p><b>CSV</b> (.csv, .tsv, .txt; UTF-8, headers in the first row, columns split by comma, semicolon, tab or |): one kind per file, told apart by its headers.</p>
+      <ul>
+        <li>Parts-list rows: <code>diagram</code> with <code>part_number</code> or <code>callout</code>, and <code>description</code>, <code>supplement</code>, <code>qty</code>, <code>from</code>, <code>to</code>, <code>fitment_note</code>, <code>vehicles</code> (codes split by ;, limits the row to them), <code>category</code>, <code>title</code></li>
+        <li>Hotspots: <code>diagram</code>, <code>callout</code>, <code>x</code>, <code>y</code>, <code>w</code>, <code>h</code>, as fractions of the image (0 to 1) or pixels</li>
+        <li>Supersessions: <code>old</code>, <code>new</code>, <code>date</code>, <code>note</code></li>
+        <li>Vehicles: <code>code</code>, <code>series</code>, and <code>make</code>, <code>model</code>, <code>body</code>, <code>market</code>, <code>engine</code>, <code>transmission</code>, <code>steering</code>, <code>prod_from</code>, <code>prod_to</code>, <code>notes</code></li>
+        <li>Diagrams: <code>diagram</code>, <code>title</code>, <code>category</code></li>
+        <li>Parts: <code>part_number</code>, <code>description</code>, <code>notes</code></li>
+        <li>Main groups: <code>code</code>, <code>name</code>, <code>parent</code></li>
+      </ul>
+      <p>Headers ignore case, and common variants work (Part No., Ref, Pos, Quantity, Remarks). Production dates read as 1991-02, 02/1991 or 199102.</p>
+      <p><b>Saved web page</b> (.html, .htm): the parts list is the table that holds 11-digit BMW part numbers, its columns read by their headers (No., Part number, Description, Qty, From, Up to).
+        The diagram image is the one image sent with a single page, else the largest image saved with the page; its <code>&lt;map&gt;</code> areas become clickable numbers.
+        The file name without .html is the diagram code (unless Diagram code is filled in for a single page), and the page title is the diagram title.</p>
+      <p><b>Diagram images</b>: an image named after a diagram's code is attached to it, ignoring case and anything but letters and digits (<code>11-0050.PNG</code> fits <code>11_0050</code>).
+        Images with no such diagram are reported, or become new diagrams when the box above is ticked.</p>
+    </details>
     <h2>Validation report</h2>
     <div class="panel">${summ.length ? `<div class="row" style="margin-bottom:10px">${summ.map(([k, v]) => `<span class="chip ${v.severity === 'error' ? 'overdue' : v.severity === 'warning' ? 'soon' : 'unknown'}">${esc(k.replace(/_/g, ' '))}: ${v.count}</span>`).join(' ')}</div>
       <div class="table-wrap" style="max-height:420px;overflow:auto"><table><thead><tr><th>Severity</th><th>Check</th><th>Issue</th></tr></thead><tbody>

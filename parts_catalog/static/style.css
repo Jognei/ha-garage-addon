@@ -215,6 +215,9 @@ tr.nofit td { opacity: .5; }
 .epc-pane-foot { padding: 7px 12px; border-top: 1px solid var(--line); color: var(--muted); }
 .epc-note { padding: 6px 12px; border-bottom: 1px solid var(--line); }
 .epc-viewer .pic-inner { border: none; }
+.epc-formats { margin: 0 0 12px; }
+.epc-formats summary { cursor: pointer; color: var(--muted); }
+.epc-formats ul { margin: 4px 0; padding-left: 20px; }
 @media (max-width: 900px) {
   .epc-viewer, .epc-viewer.big { grid-template-columns: 1fr; height: auto; }
   .epc-pane + .epc-pane { border-left: none; border-top: 1px solid var(--line); }
