@@ -682,7 +682,7 @@ function scheduleDialog(car, docs, s) {
 function presetsDialog(car, existing) {
   const have = new Set(existing.map((u) => u.title.toLowerCase()));
   const list = REF.presets.filter((p) => !have.has(p.title.toLowerCase()));
-  openDialog('Add common services', `
+  const form = openDialog('Add common services', `
     <p class="muted small">These are repeating services. For a one-off job (brake job, battery…) use <b>Log a service</b>; for anything not listed, <b>＋ Custom schedule</b>.</p>
     <p class="muted small">Tick what applies to this vehicle. Change intervals to match your manual. If you know when each was last done, fill it in so “upcoming” is accurate (you can also do that later).</p>
     <div class="table-wrap"><table class="items-table"><thead><tr><th></th><th>Service</th><th>Miles</th><th>Months</th><th>Last done date</th><th>Last done mi</th></tr></thead><tbody>
@@ -700,6 +700,11 @@ function presetsDialog(car, existing) {
     toast(`Added ${items.length} schedules`);
     rerender();
   }, { ok: 'Add selected', wide: true });
+  // filling in a row picks it, so what was typed isn't dropped
+  $('.items-table', form).oninput = (e) => {
+    const tr = e.target.closest('tr[data-i]');
+    if (tr && !e.target.classList.contains('pick')) $('.pick', tr).checked = true;
+  };
 }
 
 // ----- parts (per car or all) -----
