@@ -384,7 +384,7 @@ async function home() {
   const saveOrder = async () => {
     const ids = $$('#carGrid [data-car]').map((el) => +el.dataset.car);
     await api('/cars/order', { json: { ids } });
-    home();
+    rerender();
   };
   $$('[data-car]').forEach((card) => {
     const car = cars.find((c) => c.id === +card.dataset.car);
@@ -423,7 +423,7 @@ async function home() {
   $('#cardOpts').onclick = cardOptionsDialog;
   $$('button.unhide').forEach((b) => (b.onclick = async () => {
     await api('/cars/' + b.dataset.id, { method: 'PUT', json: { archived: false } });
-    toast('Back in the garage'); home();
+    toast('Back in the garage'); rerender();
   }));
 }
 
@@ -1349,11 +1349,11 @@ actions:
   if (location.hash.includes('?')) { const id = new URLSearchParams(location.hash.split('?')[1]).get('go'); if (id && $('#' + id)) $('#' + id).scrollIntoView(); }
   $('#newKey').onclick = async () => {
     if (s.settings.agent_key && !confirm('Make a new key? Agents using the old key will stop working until you give them the new one.')) return;
-    await api('/settings', { method: 'PUT', json: { agent_key: 'new' } }); settingsPage();
+    await api('/settings', { method: 'PUT', json: { agent_key: 'new' } }); rerender();
   };
   if ($('#offKey')) $('#offKey').onclick = async () => {
     if (!confirm('Turn off agent access? The key stops working.')) return;
-    await api('/settings', { method: 'PUT', json: { agent_key: null } }); settingsPage();
+    await api('/settings', { method: 'PUT', json: { agent_key: null } }); rerender();
   };
   if ($('#showKey')) $('#showKey').onclick = () => { const k = $('#agentKey'); k.textContent = k.dataset.key; };
   if ($('#copyKey')) $('#copyKey').onclick = async () => {
@@ -1363,7 +1363,7 @@ actions:
     const r = await api('/settings', { method: 'PUT', json: { lan: e.target.checked } });
     if (r.restarting) {
       $('#lanMsg').textContent = 'Restarting the server…';
-      if (await waitForRestart($('#lanMsg'))) settingsPage();
+      if (await waitForRestart($('#lanMsg'))) rerender();
     }
   };
   $('#restoreForm').onsubmit = async (e) => {

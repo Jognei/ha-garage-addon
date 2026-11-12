@@ -348,8 +348,8 @@ async function catalogData() {
       const data = await api('/epc/import', { method: 'POST', body });
       sessionStorage.setItem('epcLastImport', JSON.stringify(data.reports));
       toast('Import finished');
-      await catalogData();
-      showImportResult();
+      await rerender();
+      if ($('#impResult')) showImportResult();  // still on the import page, not one opened meanwhile
     } catch (err) { toast(err.message, true); btn.disabled = false; btn.textContent = 'Import'; }
   };
   $$('button.del').forEach((b) => (b.onclick = async () => {
