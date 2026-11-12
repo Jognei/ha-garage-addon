@@ -224,7 +224,7 @@ async function catalogPart(pn) {
     <div class="panel stack" style="margin-top:12px">
       <div><b>${p.record ? (esc(p.record.description) || missing('no description')) : missing('no part record')}</b></div>
       ${p.record && p.record.notes ? `<div class="note">${esc(p.record.notes)}</div>` : ''}
-      ${p.superseded_by.length ? `<div>Replaced by: ${p.superseded_by.map((s) => `<a class="mono" href="#/catalog/part/${esc(s.new_pn)}">${esc(s.new_pn_fmt)}</a>${s.date ? ` <span class="small muted">(${esc(s.date)})</span>` : ''}`).join(' → ')}</div>` : ''}
+      ${p.superseded_by.length ? `<div>Replaced by: ${p.superseded_by.map((s) => `<a class="mono" href="#/catalog/part/${esc(s.new_pn)}">${esc(s.new_pn_fmt)}</a>${s.date ? ` <span class="small muted">(${esc(/^\d{6}$/.test(s.date) ? ym(s.date) : s.date)})</span>` : ''}`).join(' → ')}</div>` : ''}
       ${p.replaces.length ? `<div>Replaces: ${p.replaces.map((s) => `<a class="mono" href="#/catalog/part/${esc(s.old_pn)}">${esc(s.old_pn_fmt)}</a>`).join(', ')}</div>` : ''}
       <div>In my parts list: <span class="mine" data-pn="${esc(p.part_number)}">${garageChip(p.garage) || '<span class="muted">no</span>'}</span>
         ${p.part_number ? '<button class="link add" title="Add to my parts list">＋ Add</button>' : ''}</div>
