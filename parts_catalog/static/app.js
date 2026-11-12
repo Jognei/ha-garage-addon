@@ -40,6 +40,11 @@ function toast(msg, bad) {
   clearTimeout(toast.t);
   toast.t = setTimeout(() => (t.hidden = true), bad ? 6000 : 2200);
 }
+// a closed dialog hides what is inside it, so a toast raised in the dialog ("Part saved") moves back out when it closes
+$('#dlg').addEventListener('close', (e) => {
+  const t = $('#toast');
+  if (!e.target.open && t.parentNode !== document.body) document.body.appendChild(t);
+});
 
 // Big files (service manuals) go up in pieces: Home Assistant Ingress rejects large request bodies.
 const CHUNK = 4 * 1024 * 1024;
