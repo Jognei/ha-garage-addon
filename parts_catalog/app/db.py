@@ -12,6 +12,7 @@ DOC_DIR = os.path.join(DATA_DIR, "documents")
 STATUSES = ["Needed", "Check", "Ordered", "On hand", "Installed"]
 KINDS = ["Car", "Truck", "Motorcycle", "Other"]
 DOC_KINDS = ["Manual", "Receipt", "Photo", "Other"]
+PROJECT_STATUSES = ["Planned", "In progress", "Done"]
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS cars (
@@ -97,6 +98,24 @@ CREATE TABLE IF NOT EXISTS parts (
   created_at TEXT DEFAULT CURRENT_TIMESTAMP,
   updated_at TEXT DEFAULT CURRENT_TIMESTAMP
 );
+CREATE TABLE IF NOT EXISTS projects (
+  id INTEGER PRIMARY KEY,
+  car_id INTEGER NOT NULL REFERENCES cars(id) ON DELETE CASCADE,
+  title TEXT NOT NULL,
+  notes TEXT DEFAULT '',
+  status TEXT DEFAULT 'Planned',
+  target_date TEXT,
+  done_date TEXT,
+  sort_order INTEGER,
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TABLE IF NOT EXISTS project_tasks (
+  id INTEGER PRIMARY KEY,
+  project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  title TEXT NOT NULL,
+  done INTEGER DEFAULT 0,
+  sort_order INTEGER
+);
 CREATE INDEX IF NOT EXISTS ix_parts_car ON parts(car_id);
 CREATE INDEX IF NOT EXISTS ix_services_car ON services(car_id);
 """
@@ -123,12 +142,13 @@ def apply_pending_restore():
         return False
     epc = os.path.join(DATA_DIR, "epc")
     for p in (DB_PATH, DB_PATH + "-wal", DB_PATH + "-shm", DOC_DIR, os.path.join(epc, "epc.db"),
-              os.path.join(epc, "epc.db-wal"), os.path.join(epc, "epc.db-shm"), os.path.join(epc, "files")):
+              os.path.join(epc, "epc.db-wal"), os.path.join(epc, "epc.db-shm"), os.path.join(epc, "files"),
+              os.path.join(DATA_DIR, "workshop")):
         if os.path.isdir(p):
             shutil.rmtree(p)
         elif os.path.exists(p):
             os.remove(p)
-    for name in ("garage.db", "documents", os.path.join("epc", "epc.db"), os.path.join("epc", "files")):
+    for name in ("garage.db", "documents", os.path.join("epc", "epc.db"), os.path.join("epc", "files"), "workshop"):
         src = os.path.join(pending, name)
         if os.path.exists(src):
             os.makedirs(os.path.dirname(os.path.join(DATA_DIR, name)), exist_ok=True)
@@ -150,6 +170,12 @@ def add_missing_columns(conn):
     have = {r[1] for r in conn.execute("PRAGMA table_info(parts)")}
     if "category" not in have:
         conn.execute("ALTER TABLE parts ADD COLUMN category TEXT DEFAULT ''")
+    if "project_id" not in have:
+        conn.execute("ALTER TABLE parts ADD COLUMN project_id INTEGER REFERENCES projects(id) ON DELETE SET NULL")
+    have = {r[1] for r in conn.execute("PRAGMA table_info(schedules)")}
+    for col, ddl in (("sort_order", "INTEGER"), ("snoozed_until", "TEXT")):  # manual order; "dismissed until" date
+        if col not in have:
+            conn.execute(f"ALTER TABLE schedules ADD COLUMN {col} {ddl}")
     have = {r[1] for r in conn.execute("PRAGMA table_info(cars)")}
     for col, ddl in (("sort_order", "INTEGER"), ("archived", "INTEGER DEFAULT 0"),
                      ("photo_id", "INTEGER REFERENCES documents(id) ON DELETE SET NULL")):

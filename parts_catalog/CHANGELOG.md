@@ -1,5 +1,5 @@
 # Changelog
 
-## 1.0.33
+## 1.0.36
 
 First release.

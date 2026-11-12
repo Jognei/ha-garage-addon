@@ -19,6 +19,7 @@ from flask import Flask, jsonify, request, send_from_directory, send_file
 from . import db
 from .epc_api import bp as epc_bp
 from .mcp_server import bp as mcp_bp, INTERNAL
+from . import workshop
 
 STATIC = os.path.join(db.ROOT, "static")
 SETTINGS_PATH = os.path.join(db.DATA_DIR, "settings.json")
@@ -33,26 +34,62 @@ app = Flask(__name__, static_folder=None)
 app.config["MAX_CONTENT_LENGTH"] = 500 * 1024 * 1024  # service manuals are big
 app.register_blueprint(epc_bp)
 app.register_blueprint(mcp_bp)
+app.register_blueprint(workshop.bp)
 
-# Common service intervals offered as one-click presets (miles, months).
+# Common service intervals offered as one-click presets: (title, miles, months, group).
 PRESETS = [
-    ("Engine oil & filter", 5000, 12),
-    ("Engine air filter", 15000, 24),
-    ("Cabin / microfilter", 15000, 24),
-    ("Fuel filter", 30000, 48),
-    ("Spark plugs", 30000, 48),
-    ("Coolant flush", 30000, 24),
-    ("Brake fluid flush", None, 24),
-    ("Valve adjustment", 15000, None),
-    ("Manual transmission fluid", 60000, None),
-    ("Automatic transmission fluid & filter", 60000, None),
-    ("Differential fluid", 60000, None),
-    ("Power steering fluid", 60000, 48),
-    ("Brake pads (inspect)", 15000, 12),
-    ("Tire rotation", 6000, 6),
-    ("Wiper blades", None, 12),
-    ("Inspection / registration", None, 12),
+    ("Engine oil & filter", 5000, 12, "Engine"),
+    ("Engine air filter", 15000, 24, "Engine"),
+    ("Spark plugs", 30000, 48, "Engine"),
+    ("Valve adjustment", 15000, None, "Engine"),
+    ("Drive belts (inspect)", 30000, 24, "Engine"),
+    ("Timing belt", 60000, 72, "Engine"),
+    ("Fuel filter", 30000, 48, "Fuel"),
+    ("Diesel fuel filter", 15000, 12, "Fuel"),
+    ("Coolant flush", 30000, 24, "Cooling"),
+    ("Coolant hoses (inspect)", 30000, 24, "Cooling"),
+    ("Manual transmission fluid", 60000, None, "Drivetrain"),
+    ("Automatic transmission fluid & filter", 60000, None, "Drivetrain"),
+    ("Differential fluid", 60000, None, "Drivetrain"),
+    ("Transfer case fluid", 60000, None, "Drivetrain"),
+    ("Clutch fluid", None, 24, "Drivetrain"),
+    ("Brake fluid flush", None, 24, "Brakes"),
+    ("Brake pads (inspect)", 15000, 12, "Brakes"),
+    ("Parking brake (adjust)", 30000, 24, "Brakes"),
+    ("Power steering fluid", 60000, 48, "Steering & suspension"),
+    ("Suspension & steering (inspect)", 15000, 12, "Steering & suspension"),
+    ("Wheel alignment", 15000, 24, "Steering & suspension"),
+    ("Tire rotation", 6000, 6, "Tires"),
+    ("Tire pressure & tread check", None, 3, "Tires"),
+    ("Cabin / microfilter", 15000, 24, "Body & interior"),
+    ("Wiper blades", None, 12, "Body & interior"),
+    ("A/C service", None, 36, "Body & interior"),
+    ("Battery (test)", None, 12, "Electrical"),
+    ("Inspection / registration", None, 12, "Paperwork"),
 ]
+
+# One-tap titles when logging a service that isn't on a schedule. Settings can add more.
+QUICK_SERVICES = [
+    "Brake job (pads & rotors, front)", "Brake job (pads & rotors, rear)", "Brake pads (front)", "Brake pads (rear)",
+    "Battery replaced", "New tires", "Tire repair", "Wheel alignment", "Wheel bearing", "Shocks / struts",
+    "Control arms / bushings", "Tie rods", "Drive belt & tensioner", "Water pump & thermostat", "Radiator & hoses",
+    "Valve cover gasket", "Oil pan gasket", "Oil leak repair", "Clutch", "Starter", "Alternator", "Fuel pump",
+    "Exhaust repair", "A/C recharge", "Bulb replaced", "Wash & detail", "Diagnosis / inspection",
+]
+CARD_DEFAULTS = {"photo": True, "mileage": True, "upcoming_rows": 3, "hide_ok": False, "project": True, "buttons": True}
+
+
+def card_settings(s=None):
+    """How garage cards look (Garage > Customize cards)."""
+    c = {**CARD_DEFAULTS, **((load_settings() if s is None else s).get("card") or {})}
+    rows = to_int(c["upcoming_rows"])
+    c["upcoming_rows"] = max(0, min(12, 3 if rows is None else rows))
+    return {k: (c[k] if k == "upcoming_rows" else bool(c[k])) for k in CARD_DEFAULTS}
+
+
+def quick_services(s=None):
+    custom = [str(x).strip() for x in ((load_settings() if s is None else s).get("quick_services") or []) if str(x).strip()]
+    return custom + [q for q in QUICK_SERVICES if q.lower() not in {c.lower() for c in custom}]
 
 
 def load_settings():
@@ -139,8 +176,9 @@ def ping():
 @app.route("/api/refdata")
 def api_refdata():
     return jsonify(statuses=db.STATUSES, kinds=db.KINDS, doc_kinds=db.DOC_KINDS,
-                   features={"catalog": bool(load_settings().get("catalog"))},
-                   presets=[{"title": t, "interval_miles": m, "interval_months": mo} for t, m, mo in PRESETS])
+                   features={"catalog": bool(load_settings().get("catalog")), "workshop": workshop.has_packs()},
+                   project_statuses=db.PROJECT_STATUSES, card=card_settings(), quick_services=quick_services(),
+                   presets=[{"title": t, "interval_miles": m, "interval_months": mo, "group": g} for t, m, mo, g in PRESETS])
 
 
 # ---------- cars & mileage ----------
@@ -205,11 +243,16 @@ def api_cars():
         ph.filename AS photo_file, ph.original_name AS photo_name
         FROM cars c LEFT JOIN documents ph ON ph.id=c.photo_id
         ORDER BY c.archived, """ + CAR_ORDER)
+    card = card_settings()
     for c in cars:
-        up = upcoming(c)
-        c["upcoming"] = up[:3]
+        up = upcoming(c, manual=True)
+        shown = [u for u in up if u["state"] != "snoozed" and not (card["hide_ok"] and u["state"] == "ok")]
+        c["upcoming"] = shown[:card["upcoming_rows"]]
         c["overdue"] = sum(1 for u in up if u["state"] == "overdue")
         c["due_soon"] = sum(1 for u in up if u["state"] == "soon")
+        c["snoozed"] = sum(1 for u in up if u["state"] == "snoozed")
+        c["schedules"] = len(up)
+        c["projects"] = [p for p in projects_for(c["id"]) if p["status"] != "Done"]
     return jsonify(cars)
 
 
@@ -335,7 +378,7 @@ def api_car(car_id):
         if car.get("photo_id"):
             delete_document(car["photo_id"])
         return jsonify(ok=True)
-    car["upcoming"] = upcoming(car)
+    car["upcoming"] = upcoming(car, manual=True)
     car["mileage_log"] = db.rows("SELECT * FROM mileage_log WHERE car_id=? ORDER BY date DESC, id DESC LIMIT 20",
                                  (car_id,))
     return jsonify(car)
@@ -362,8 +405,10 @@ def api_mileage(car_id):
 
 # ---------- service schedules & upcoming ----------
 
-def upcoming(car):
-    """Every active schedule for a car with its due point and state, most urgent first."""
+def upcoming(car, manual=False):
+    """Every active schedule for a car with its due point and state, most urgent first.
+    A schedule dismissed until a later date is "snoozed" instead of soon/overdue. manual=True puts
+    schedules the owner dragged into an order first, in that order."""
     out = []
     today_d = dt.date.today()
     rate = miles_per_day(car["id"])
@@ -382,6 +427,8 @@ def upcoming(car):
             state = "soon"
         else:
             state = "ok"
+        if state in ("overdue", "soon") and s.get("snoozed_until") and s["snoozed_until"] > today_d.isoformat():
+            state = "snoozed"
         # rank: fraction of interval remaining (smallest first)
         fracs = []
         if miles_left is not None and s["interval_miles"]:
@@ -396,13 +443,15 @@ def upcoming(car):
                 est = est_d.isoformat()
         out.append({**s, "due_mileage": due_m, "due_date": due_d, "miles_left": miles_left,
                     "days_left": days_left, "est_date": est, "state": state, "rank": min(fracs) if fracs else 9e9})
-    order = {"overdue": 0, "soon": 1, "ok": 2, "unknown": 3}
+    order = {"overdue": 0, "soon": 1, "ok": 2, "snoozed": 3, "unknown": 4}
     out.sort(key=lambda u: (order[u["state"]], u["rank"], u["title"]))
+    if manual:
+        out.sort(key=lambda u: (u.get("sort_order") is None, u.get("sort_order") or 0))  # stable: the rest stay by urgency
     return out
 
 
 SCHEDULE_FIELDS = ["title", "interval_miles", "interval_months", "last_date", "last_mileage", "doc_id", "doc_page",
-                   "notes", "active"]
+                   "notes", "active", "snoozed_until"]
 
 
 def schedule_values(b):
@@ -410,8 +459,9 @@ def schedule_values(b):
     for k in ("interval_miles", "interval_months", "last_mileage", "doc_id", "doc_page", "active"):
         if k in vals:
             vals[k] = to_int(vals[k])
-    if "last_date" in vals:
-        vals["last_date"] = (vals["last_date"] or None) and vals["last_date"][:10]
+    for k in ("last_date", "snoozed_until"):
+        if k in vals:
+            vals[k] = (vals[k] or None) and str(vals[k])[:10]
     # what the user types as "last done" is the baseline that logged services build on
     if "last_date" in vals:
         vals["base_date"] = vals["last_date"]
@@ -435,6 +485,20 @@ def api_schedules_add(car_id):
     return jsonify(ids=ids)
 
 
+@app.route("/api/cars/<int:car_id>/schedules/order", methods=["POST"])
+def api_schedules_order(car_id):
+    """{"ids": [5, 2, 9]}: show these schedules first, in this order. {"ids": []} goes back to most-urgent-first."""
+    ids = [i for i in (to_int(x) for x in body().get("ids") or []) if i]
+    if not ids:
+        db.execute("UPDATE schedules SET sort_order=NULL WHERE car_id=?", (car_id,))
+        return jsonify(ok=True)
+    rest = [r["id"] for r in db.rows("SELECT id FROM schedules WHERE car_id=? AND sort_order IS NOT NULL ORDER BY sort_order",
+                                     (car_id,)) if r["id"] not in ids]
+    for n, sid in enumerate(ids + rest):
+        db.execute("UPDATE schedules SET sort_order=? WHERE id=? AND car_id=?", (n + 1, sid, car_id))
+    return jsonify(ok=True)
+
+
 @app.route("/api/schedules/<int:sid>", methods=["PUT", "DELETE"])
 def api_schedule(sid):
     if request.method == "DELETE":
@@ -454,7 +518,7 @@ def api_services(car_id):
         return save_service(car_id, None, body())
     services = db.rows("SELECT * FROM services WHERE car_id=? ORDER BY date DESC, mileage DESC, id DESC", (car_id,))
     for s in services:
-        s["parts"] = db.rows("SELECT id, name, part_number, qty, brand FROM parts WHERE service_id=?", (s["id"],))
+        s["parts"] = db.rows("SELECT id, name, part_number, qty, brand, installed_mileage FROM parts WHERE service_id=?", (s["id"],))
         s["schedule_ids"] = [r["schedule_id"] for r in
                              db.rows("SELECT schedule_id FROM service_schedules WHERE service_id=?", (s["id"],))]
     return jsonify(services)
@@ -485,20 +549,38 @@ def save_service(car_id, service_id, b):
     if service_id:
         db.execute(f"UPDATE services SET {','.join(k + '=?' for k in vals)} WHERE id=?", list(vals.values()) + [service_id])
         old_scheds = [r["schedule_id"] for r in db.rows("SELECT schedule_id FROM service_schedules WHERE service_id=?", (service_id,))]
+        old_parts = {r["id"] for r in db.rows("SELECT id FROM parts WHERE service_id=?", (service_id,))}
         db.execute("DELETE FROM service_schedules WHERE service_id=?", (service_id,))
         db.execute("UPDATE parts SET service_id=NULL WHERE service_id=?", (service_id,))
     else:
         vals["car_id"] = car_id
         service_id = db.execute(f"INSERT INTO services ({','.join(vals)}) VALUES ({','.join('?' * len(vals))})",
                                 list(vals.values())).lastrowid
-        old_scheds = []
+        old_scheds, old_parts = [], set()
     for sid in b.get("schedule_ids") or []:
         db.execute("INSERT OR IGNORE INTO service_schedules (service_id, schedule_id) VALUES (?,?)", (service_id, int(sid)))
     for sid in set(old_scheds) | {int(x) for x in b.get("schedule_ids") or []}:
         refresh_schedule(sid)
-    for pid in b.get("part_ids") or []:
-        db.execute("""UPDATE parts SET service_id=?, status='Installed', installed_date=?, installed_mileage=COALESCE(?, installed_mileage),
-                      updated_at=CURRENT_TIMESTAMP WHERE id=?""", (service_id, date, mileage, int(pid)))
+    for sid in b.get("schedule_ids") or []:  # done now, so a "dismissed until" date no longer applies
+        db.execute("UPDATE schedules SET snoozed_until=NULL WHERE id=?", (int(sid),))
+    # parts used: [{"id": 7, "qty": 1}] (or the older part_ids). Using fewer than the part's quantity
+    # splits it: the rest stays as it was, the used ones become their own Installed entry.
+    uses = [{"id": to_int(u.get("id")), "qty": to_int(u.get("qty"))} for u in b.get("parts") or [] if isinstance(u, dict)]
+    uses += [{"id": int(pid), "qty": None} for pid in b.get("part_ids") or []]
+    for u in uses:
+        p = db.row("SELECT * FROM parts WHERE id=?", (u["id"],))
+        if not p:
+            continue
+        pid, have = p["id"], p["qty"] or 1
+        if pid not in old_parts and u["qty"] and 0 < u["qty"] < have:
+            db.execute("UPDATE parts SET qty=?, updated_at=CURRENT_TIMESTAMP WHERE id=?", (have - u["qty"], pid))
+            copy = {k: p[k] for k in PART_FIELDS if k in p}
+            copy["qty"] = u["qty"]
+            pid = db.execute(f"INSERT INTO parts ({','.join(copy)}) VALUES ({','.join('?' * len(copy))})",
+                             list(copy.values())).lastrowid
+        db.execute("""UPDATE parts SET service_id=?, car_id=COALESCE(car_id, ?), status='Installed', installed_date=?,
+                      installed_mileage=COALESCE(?, installed_mileage), updated_at=CURRENT_TIMESTAMP WHERE id=?""",
+                   (service_id, car_id, date, mileage, pid))
     if mileage is not None:
         record_mileage(car_id, mileage, date, "service")
     return jsonify(id=service_id)
@@ -518,15 +600,101 @@ def api_service(service_id):
     return save_service(s["car_id"], service_id, body())
 
 
+# ---------- projects (bigger jobs: steps to tick off, parts set aside) ----------
+
+def projects_for(car_id):
+    out = db.rows("""SELECT * FROM projects WHERE car_id=?
+                     ORDER BY status='Done', COALESCE(sort_order, id), id""", (car_id,))
+    for p in out:
+        p["tasks"] = db.rows("SELECT id, title, done FROM project_tasks WHERE project_id=? ORDER BY COALESCE(sort_order, id), id",
+                             (p["id"],))
+        p["parts"] = db.rows("""SELECT id, name, part_number, brand, qty, status, location FROM parts WHERE project_id=?
+                                ORDER BY name COLLATE NOCASE""", (p["id"],))
+    return out
+
+
+def save_project(car_id, pid, b):
+    vals = {k: (b[k] or "").strip() for k in ("title", "notes") if k in b}
+    if "status" in b:
+        vals["status"] = b["status"] if b["status"] in db.PROJECT_STATUSES else "Planned"
+        vals["done_date"] = (b.get("done_date") or today())[:10] if vals["status"] == "Done" else None
+    if "target_date" in b:
+        vals["target_date"] = (b["target_date"] or None) and str(b["target_date"])[:10]
+    if "title" in vals and not vals["title"]:
+        return err("Give the project a name.")
+    if pid is None:
+        if not vals.get("title"):
+            return err("Give the project a name.")
+        vals["car_id"] = car_id
+        pid = db.execute(f"INSERT INTO projects ({','.join(vals)}) VALUES ({','.join('?' * len(vals))})",
+                         list(vals.values())).lastrowid
+    elif vals:
+        db.execute(f"UPDATE projects SET {','.join(k + '=?' for k in vals)} WHERE id=?", list(vals.values()) + [pid])
+    if "tasks" in b:  # the whole list, in order; a step keeps its tick when it has its id or the same text
+        old = db.rows("SELECT * FROM project_tasks WHERE project_id=?", (pid,))
+        by_id, by_title = {t["id"]: t for t in old}, {t["title"].lower(): t for t in old}
+        db.execute("DELETE FROM project_tasks WHERE project_id=?", (pid,))
+        n = 0
+        for t in b["tasks"] or []:
+            t = {"title": t} if isinstance(t, str) else t
+            title = (t.get("title") or "").strip()
+            if not title:
+                continue
+            prev = by_id.get(to_int(t.get("id"))) or by_title.get(title.lower()) or {}
+            done = t["done"] if "done" in t else prev.get("done", 0)
+            n += 1
+            db.execute("INSERT INTO project_tasks (project_id, title, done, sort_order) VALUES (?,?,?,?)",
+                       (pid, title, 1 if done else 0, n))
+    if "part_ids" in b:
+        db.execute("UPDATE parts SET project_id=NULL WHERE project_id=?", (pid,))
+        for part_id in b["part_ids"] or []:
+            db.execute("UPDATE parts SET project_id=?, car_id=COALESCE(car_id, ?) WHERE id=?", (pid, car_id, int(part_id)))
+    return jsonify(id=pid)
+
+
+@app.route("/api/cars/<int:car_id>/projects", methods=["GET", "POST"])
+def api_projects(car_id):
+    if not db.row("SELECT id FROM cars WHERE id=?", (car_id,)):
+        return err("No such car", 404)
+    if request.method == "POST":
+        return save_project(car_id, None, body())
+    return jsonify(projects_for(car_id))
+
+
+@app.route("/api/cars/<int:car_id>/projects/order", methods=["POST"])
+def api_projects_order(car_id):
+    for n, pid in enumerate(i for i in (to_int(x) for x in body().get("ids") or []) if i):
+        db.execute("UPDATE projects SET sort_order=? WHERE id=? AND car_id=?", (n + 1, pid, car_id))
+    return jsonify(ok=True)
+
+
+@app.route("/api/projects/<int:pid>", methods=["PUT", "DELETE"])
+def api_project(pid):
+    p = db.row("SELECT * FROM projects WHERE id=?", (pid,))
+    if not p:
+        return err("No such project", 404)
+    if request.method == "DELETE":
+        db.execute("DELETE FROM projects WHERE id=?", (pid,))
+        return jsonify(ok=True)
+    return save_project(p["car_id"], pid, body())
+
+
+@app.route("/api/project-tasks/<int:tid>", methods=["PUT"])
+def api_project_task(tid):
+    db.execute("UPDATE project_tasks SET done=? WHERE id=?", (1 if body().get("done") else 0, tid))
+    return jsonify(ok=True)
+
+
 # ---------- parts ----------
 
 PART_FIELDS = ["car_id", "name", "category", "part_number", "brand", "qty", "status", "supplier", "price", "url", "order_ref",
-               "purchased_date", "location", "installed_mileage", "installed_date", "service_id", "document_id", "notes"]
+               "purchased_date", "location", "installed_mileage", "installed_date", "service_id", "document_id", "notes",
+               "project_id"]
 
 
 def part_values(b):
     vals = {k: b[k] for k in PART_FIELDS if k in b}
-    for k in ("car_id", "qty", "installed_mileage", "service_id", "document_id"):
+    for k in ("car_id", "qty", "installed_mileage", "service_id", "document_id", "project_id"):
         if k in vals:
             vals[k] = to_int(vals[k])
     if "price" in vals:
@@ -795,7 +963,7 @@ def ha_summary():
     out = []
     for c in db.rows("SELECT * FROM cars c WHERE IFNULL(c.archived, 0)=0 ORDER BY " + CAR_ORDER):
         up = upcoming(c)
-        nxt = next((u for u in up if u["state"] != "unknown"), None)
+        nxt = next((u for u in up if u["state"] not in ("unknown", "snoozed")), None)
         out.append({
             "id": c["id"], "name": c["name"], "mileage": c["mileage"], "mileage_date": c["mileage_date"],
             "overdue": sum(1 for u in up if u["state"] == "overdue"),
@@ -853,6 +1021,10 @@ def api_settings():
             return err("Network access for the add-on is set in Home Assistant (add-on Configuration).")
         if "catalog" in b:
             s["catalog"] = bool(b["catalog"])
+        if isinstance(b.get("card"), dict):
+            s["card"] = card_settings({"card": {**(s.get("card") or {}), **{k: v for k, v in b["card"].items() if k in CARD_DEFAULTS}}})
+        if "quick_services" in b:
+            s["quick_services"] = [str(x).strip()[:80] for x in b["quick_services"] or [] if str(x).strip()][:60]
         if "agent_key" in b:  # "new" creates (or replaces) the key, null turns agent access off
             import secrets
             s["agent_key"] = secrets.token_urlsafe(32) if b["agent_key"] == "new" else None
@@ -887,7 +1059,7 @@ def write_backup(out):
                 epc.connect().backup(edst)
                 edst.close()
                 z.write(esnap, "epc/epc.db")
-            for folder in (db.DOC_DIR, epc.FILES_DIR):
+            for folder in (db.DOC_DIR, epc.FILES_DIR, workshop.DIR):
                 for dirpath, _, files in os.walk(folder):
                     for fn in files:
                         full = os.path.join(dirpath, fn)
@@ -910,7 +1082,7 @@ def api_backup():
         shutil.rmtree(tmp, ignore_errors=True)
 
 
-RESTORE_PATHS = ("garage.db", "epc/epc.db", "documents/", "epc/files/")
+RESTORE_PATHS = ("garage.db", "epc/epc.db", "documents/", "epc/files/", "workshop/")
 
 
 @app.route("/api/restore", methods=["POST"])

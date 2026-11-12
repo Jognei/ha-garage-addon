@@ -7,8 +7,11 @@ A Home Assistant add-on for keeping track of your vehicles:
 - **Manuals & receipts:** PDFs and photos per vehicle, opened right in Home Assistant
 - **Handy extras:** drag to reorder vehicles, hide sold ones, vehicle photos, estimated due dates from your
   driving, one-tap "done" from the garage page, CSV export of service history and parts
+- **Projects:** bigger jobs with steps to tick off and parts set aside; the next one shows on the vehicle's card
 - **Offline parts catalog** (optional, off by default): main groups, diagrams with clickable callouts, OEM part numbers, quantities,
   fitment and supersessions, imported from your own files (JSON, CSV, saved HTML pages, images)
+- **3D workshop** (optional): import a 3D model of a vehicle built from simple shapes, pull it apart section by
+  section, click a part for its number, fastener thread, torque and tightening order, and its repair steps
 - **Home Assistant sensors** for odometer, next service and overdue counts, plus a ready-made dashboard tab
 - **AI agent access (MCP):** let Claude or another MCP-capable assistant check what's due, log services and add parts
 

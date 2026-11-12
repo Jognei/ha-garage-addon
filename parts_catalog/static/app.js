@@ -109,6 +109,7 @@ async function router() {
 function applyFeatures() {
   const on = !!(REF && REF.features && REF.features.catalog);
   $$('[data-nav="catalog"]').forEach((a) => { a.hidden = !on; });
+  $$('[data-nav="workshop"]').forEach((a) => { a.hidden = !(REF && REF.features && REF.features.workshop); });
 }
 window.addEventListener('hashchange', () => { router(); window.scrollTo(0, 0); });
 $('#searchForm').addEventListener('submit', (e) => {
@@ -120,7 +121,7 @@ const rerender = () => router();
 // ---------- shared bits ----------
 
 function stateChip(u) {
-  const label = { overdue: 'Overdue', soon: 'Due soon', ok: 'OK', unknown: 'Set last done' }[u.state];
+  const label = { overdue: 'Overdue', soon: 'Due soon', ok: 'OK', unknown: 'Set last done', snoozed: 'Dismissed' }[u.state];
   return `<span class="chip ${u.state}">${label}</span>`;
 }
 
@@ -132,9 +133,107 @@ function dueText(u) {
   return bits.join(' · ');
 }
 
+// Small line icons (drawn here so the app needs no icon font or network).
+const ICONS = {
+  drop: '<path d="M12 3c3 4 6 7.2 6 11a6 6 0 0 1-12 0c0-3.8 3-7 6-11z"/>',
+  air: '<path d="M3 8h10a3 3 0 1 0-3-3"/><path d="M3 12h15a3 3 0 1 1-3 3"/><path d="M3 16h7"/>',
+  bolt: '<path d="M13 2 5 14h6l-1 8 8-12h-6z"/>',
+  temp: '<path d="M10 5a2 2 0 0 1 4 0v8.5a4 4 0 1 1-4 0z"/><path d="M12 10v7"/>',
+  disc: '<circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="3"/><path d="M12 5.5v1M12 17.5v1M5.5 12h1M17.5 12h1"/>',
+  tire: '<circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="4"/><path d="M12 3v5M12 16v5M3 12h5M16 12h5"/>',
+  gear: '<circle cx="12" cy="12" r="3"/><circle cx="12" cy="12" r="7"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9 7 7M17 17l2.1 2.1M4.9 19.1 7 17M17 7l2.1-2.1"/>',
+  battery: '<rect x="3" y="7" width="16" height="10" rx="2"/><path d="M21.5 10.5v3M7 12h3M8.5 10.5v3M13 12h3"/>',
+  wiper: '<path d="M3 16a12.5 12.5 0 0 1 18 0"/><path d="M12 20 7.5 8.5"/><circle cx="12" cy="20" r="1"/>',
+  wheel: '<circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="2"/><path d="M12 14v7M10.2 11.2 3.4 9.6M13.8 11.2l6.8-1.6"/>',
+  belt: '<circle cx="7" cy="12" r="4"/><circle cx="18" cy="12" r="2.5"/><path d="M7 8l11 1.5M7 16l11-1.5"/>',
+  fuel: '<path d="M5 20V5.5A1.5 1.5 0 0 1 6.5 4h6A1.5 1.5 0 0 1 14 5.5V20"/><path d="M3.5 20h12M7.5 8h4"/><path d="M14 11h1.5a1.5 1.5 0 0 1 1.5 1.5V16a1.5 1.5 0 0 0 3 0V9l-2.5-2.5"/>',
+  snow: '<path d="M12 3v18M4.2 7.5l15.6 9M19.8 7.5l-15.6 9"/>',
+  calendar: '<rect x="4" y="5" width="16" height="15" rx="2"/><path d="M4 10h16M8 3v4M16 3v4"/>',
+  shock: '<path d="M12 3v3M12 18v3"/><path d="M8 6h8l-8 3 8 3-8 3 8 3H8"/>',
+  wrench: '<path d="M14.5 6.5a4 4 0 0 0 5 5L11 20a2.1 2.1 0 0 1-3-3z"/><path d="M14.5 6.5 17 4a5 5 0 0 0-5.6 6.6"/>',
+  list: '<path d="M9 6h11M9 12h11M9 18h11"/><path d="M4.5 6h.01M4.5 12h.01M4.5 18h.01"/>',
+};
+const ico = (name) => `<svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[name] || ICONS.wrench}</svg>`;
+const ICON_RULES = [
+  [/wiper/, 'wiper'], [/brake|rotor|pads?\b/, 'disc'], [/tire|tyre/, 'tire'], [/alignment|steering|tie rod/, 'wheel'],
+  [/coolant|radiator|thermostat|water pump/, 'temp'], [/a\/c|air con|cabin|microfilter/, 'snow'], [/air filter|intake/, 'air'],
+  [/spark|plug|battery.*test|alternator|starter|bulb|electrical/, 'bolt'], [/battery/, 'battery'], [/fuel|diesel/, 'fuel'],
+  [/belt|tensioner|pulley/, 'belt'], [/transmission|differential|transfer case|clutch|gear|drivetrain/, 'gear'],
+  [/shock|strut|suspension|control arm|bushing/, 'shock'], [/inspection|registration|insurance|emission/, 'calendar'],
+  [/oil|fluid|flush|lube/, 'drop'],
+];
+function svcIcon(title) {
+  const t = String(title || '').toLowerCase();
+  const hit = ICON_RULES.find(([re]) => re.test(t));
+  return ico(hit ? hit[1] : 'wrench');
+}
+
+// How much of the interval is used up, as a thin bar (nothing for schedules that were never done).
+function meter(u) {
+  if (u.state === 'unknown' || u.rank == null || u.rank > 1e6) return '';
+  const used = Math.round(100 * Math.min(1, Math.max(0.03, 1 - u.rank)));
+  return `<div class="meter ${u.state}"><i style="width:${used}%"></i></div>`;
+}
+
 function intervalText(s) {
   return [s.interval_miles ? `every ${num(s.interval_miles)} mi` : '', s.interval_months ? `${s.interval_months} mo` : ''].filter(Boolean).join(' / ');
 }
+
+// Drag items by their handle to reorder them (mouse and touch). onDone() runs after a move.
+function sortable(root, itemSel, handleSel, onDone) {
+  $$(handleSel, root).forEach((h) => {
+    h.onpointerdown = (e) => {
+      const item = h.closest(itemSel);
+      if (!item) return;
+      e.preventDefault();
+      item.classList.add('dragging');
+      let moved = false;
+      // listen on the window: moving the item in the page would drop a pointer capture on the handle
+      const move = (ev) => {
+        const over = document.elementFromPoint(ev.clientX, ev.clientY);
+        const target = over && over.closest(itemSel);
+        if (!target || target === item || target.parentNode !== item.parentNode) return;
+        const r = target.getBoundingClientRect();
+        const after = ev.clientY > r.top + r.height / 2;
+        if ((after ? target.nextElementSibling : target) === item) return;
+        target.parentNode.insertBefore(item, after ? target.nextElementSibling : target);
+        moved = true;
+      };
+      const up = () => {
+        ['pointermove', 'pointerup', 'pointercancel'].forEach((t, n) => window.removeEventListener(t, n ? up : move));
+        item.classList.remove('dragging');
+        if (moved) onDone();
+      };
+      window.addEventListener('pointermove', move);
+      window.addEventListener('pointerup', up);
+      window.addEventListener('pointercancel', up);
+    };
+  });
+}
+
+const datePlus = (days) => { const d = new Date(); d.setDate(d.getDate() + days); return d.toISOString().slice(0, 10); };
+
+// "Dismiss for now": the schedule stops counting as due soon / overdue until a date.
+function snoozeDialog(u) {
+  const form = openDialog('Dismiss for now', `
+    <p><b>${esc(u.title)}</b> stops showing as ${u.state === 'overdue' ? 'overdue' : 'due soon'} until the date you pick. Logging it as done clears this.</p>
+    <div class="row">${[[7, '1 week'], [14, '2 weeks'], [30, '1 month'], [90, '3 months']].map(([d, l]) => `<button type="button" data-days="${d}">${l}</button>`).join('')}</div>
+    <div class="form" style="margin-top:12px"><label>Until<input type="date" name="snoozed_until" value="${datePlus(14)}" required></label></div>`,
+  async (data) => {
+    await api('/schedules/' + u.id, { method: 'PUT', json: data });
+    toast('Dismissed until ' + data.snoozed_until);
+    rerender();
+  }, { ok: 'Dismiss' });
+  $$('[data-days]', form).forEach((b) => (b.onclick = () => { form.elements.snoozed_until.value = datePlus(+b.dataset.days); }));
+}
+
+// Parts that can still be used on this vehicle: its own that aren't installed, plus unassigned ones.
+async function usableParts(car, keep = () => false) {
+  const [own, loose] = await Promise.all([api(`/parts?car_id=${car.id}`), api('/parts?car_id=none')]);
+  return own.concat(loose).filter((p) => p.status !== 'Installed' || keep(p));
+}
+
+const partSub = (p) => [p.brand, p.part_number, p.location, p.car_id ? '' : 'not assigned'].filter(Boolean).join(' · ');
 
 async function updateMileage(car, value) {
   const m = parseInt(String(value).replace(/\D/g, ''), 10);
@@ -151,31 +250,51 @@ async function home() {
   const all = await api('/cars');
   const cars = all.filter((c) => !c.archived);
   const hidden = all.filter((c) => c.archived);
+  const K = REF.card;
+  const projLine = (c) => {
+    const p = c.projects[0];
+    if (!K.project || !p) return '';
+    const bits = [];
+    if (p.tasks.length) bits.push(`${p.tasks.filter((t) => t.done).length}/${p.tasks.length} steps`);
+    const toGet = p.parts.filter((x) => ['Needed', 'Check', 'Ordered'].includes(x.status)).length;
+    if (p.parts.length) bits.push(toGet ? `${toGet} part${toGet > 1 ? 's' : ''} to get` : 'parts on hand');
+    if (p.target_date) bits.push('by ' + p.target_date);
+    if (c.projects.length > 1) bits.push(`+${c.projects.length - 1} more`);
+    return `<a class="proj-line" href="#/car/${c.id}/projects"><span class="svc-ico">${ico('list')}</span><span class="pl-main"><span class="muted small">${p.status === 'In progress' ? 'Project in progress' : 'Next project'}</span>
+      <b>${esc(p.title)}</b>${bits.length ? `<span class="muted small">${esc(bits.join(' · '))}</span>` : ''}</span></a>`;
+  };
   view.innerHTML = `
-    <div class="spread"><h1>Garage</h1><a class="btn" href="#/add-car">＋ Add a vehicle</a></div>
+    <div class="spread"><h1>Garage</h1><div class="row"><button id="cardOpts">Customize cards</button><a class="btn" href="#/add-car">＋ Add a vehicle</a></div></div>
     ${cars.length > 1 ? '<p class="muted small" style="margin:4px 0 0">Drag a card by its ⠿ handle (or use ↑ ↓) to change the order.</p>' : ''}
     <div class="grid" id="carGrid" style="margin-top:12px">
       ${cars.map((c, n) => `
-        <div class="panel car-card" data-car="${c.id}">
-          ${c.photo_id ? `<a href="#/car/${c.id}"><img class="car-photo" src="${fileUrl({ id: c.photo_id, original_name: c.photo_name })}" alt="" loading="lazy"></a>` : ''}
+        <div class="panel car-card ${c.overdue ? 'st-overdue' : c.due_soon ? 'st-soon' : c.schedules ? 'st-ok' : ''}" data-car="${c.id}">
+          ${K.photo && c.photo_id ? `<a href="#/car/${c.id}"><img class="car-photo" src="${fileUrl({ id: c.photo_id, original_name: c.photo_name })}" alt="" loading="lazy"></a>` : ''}
           <div class="spread"><div class="row" style="gap:8px;align-items:flex-start">
               ${cars.length > 1 ? `<span class="drag-handle" draggable="true" title="Drag to reorder">⠿</span>` : ''}
               <div><h3><a href="#/car/${c.id}">${esc(c.name)}</a></h3>
               <div class="muted small">${esc([c.year, c.make, c.model, c.kind !== 'Car' ? c.kind : ''].filter(Boolean).join(' · '))}</div></div></div>
             <div class="row" style="gap:6px">${c.overdue ? `<span class="chip overdue">${c.overdue} overdue</span>` : ''}${c.due_soon ? `<span class="chip soon">${c.due_soon} due soon</span>` : ''}
               ${cars.length > 1 ? `<span class="order-btns"><button class="link up" title="Move up" ${n === 0 ? 'disabled' : ''}>↑</button><button class="link down" title="Move down" ${n === cars.length - 1 ? 'disabled' : ''}>↓</button></span>` : ''}</div></div>
-          <div class="row" style="margin:12px 0">
-            <div><div class="mileage-big">${c.mileage != null ? num(c.mileage) : '—'}</div><div class="muted small">miles${c.mileage_date ? ' · ' + esc(c.mileage_date) : ''}</div></div>
+          ${K.mileage ? `<div class="row" style="margin:12px 0">
+            <div><div class="mileage-big">${c.mileage != null ? num(c.mileage) : '—'}<span class="unit">mi</span></div><div class="muted small">${c.mileage_date ? 'as of ' + esc(c.mileage_date) : 'no reading yet'}</div></div>
             <form class="row mileage-form" style="margin-left:auto"><input name="m" inputmode="numeric" placeholder="New reading" style="width:120px"><button>Update</button></form>
-          </div>
-          ${c.upcoming.length ? `<table class="small"><tbody>${c.upcoming.map((u) => `<tr data-sid="${u.id}"><td>${esc(u.title)}</td><td class="num">${stateChip(u)}</td><td class="num muted">${esc(dueText(u))}</td>
-            <td class="num"><button class="link log" title="Log this service as done">✓</button></td></tr>`).join('')}</tbody></table>`
-            : `<p class="muted small">No service schedule yet. <a href="#/car/${c.id}">Set one up</a>.</p>`}
-          <div class="row" style="margin-top:12px">
+          </div>` : `<div class="muted small" style="margin:8px 0">${c.mileage != null ? miles(c.mileage) : 'No mileage yet'}${c.mileage_date ? ' · ' + esc(c.mileage_date) : ''}</div>`}
+          ${c.upcoming.length ? `<div class="up-list">${c.upcoming.map((u) => `<div class="up-item ${u.state}" data-sid="${u.id}">
+              <span class="svc-ico${c.upcoming.length > 1 ? ' grip" title="Drag to reorder' : ''}">${svcIcon(u.title)}</span>
+              <div class="up-main"><div class="up-line"><span class="up-name">${esc(u.title)}</span><span class="up-due">${esc(u.state === 'unknown' ? 'Set last done' : dueText(u))}</span></div>${meter(u)}</div>
+              <div class="up-actions">${['overdue', 'soon'].includes(u.state) ? '<button class="link snooze" title="Dismiss for now">✕</button>' : ''}<button class="link log" title="Log this service as done">✓</button></div>
+            </div>`).join('')}</div>`
+            : !c.schedules ? `<p class="muted small">No service schedule yet. <a href="#/car/${c.id}">Set one up</a>.</p>`
+            : K.upcoming_rows && !c.snoozed ? '<p class="muted small">Nothing due.</p>' : ''}
+          ${c.snoozed ? `<div class="muted small" style="margin-top:6px">${c.snoozed} dismissed for now · <a href="#/car/${c.id}">show</a></div>` : ''}
+          ${projLine(c)}
+          ${K.buttons ? `<div class="row" style="margin-top:12px">
+            <button class="logsvc">＋ Log service</button>
             <a class="btn" href="#/car/${c.id}">Services</a>
             <a class="btn" href="#/car/${c.id}/parts">Parts <span class="muted">${c.parts_open} to get · ${c.parts_on_hand} on hand</span></a>
             ${c.documents ? `<a class="btn" href="#/car/${c.id}/documents">Manuals (${c.documents})</a>` : ''}
-          </div>
+          </div>` : ''}
         </div>`).join('')}
     </div>
     ${hidden.length ? `<details class="hidden-cars"><summary>Hidden vehicles (${hidden.length})</summary>
@@ -189,11 +308,18 @@ async function home() {
   };
   $$('[data-car]').forEach((card) => {
     const car = cars.find((c) => c.id === +card.dataset.car);
-    $('.mileage-form', card).onsubmit = (e) => { e.preventDefault(); updateMileage(car, e.target.m.value); };
-    $$('button.log', card).forEach((b) => (b.onclick = async () => {
+    if ($('.mileage-form', card)) $('.mileage-form', card).onsubmit = (e) => { e.preventDefault(); updateMileage(car, e.target.m.value); };
+    const logFor = async (ids) => {
       const full = await api('/cars/' + car.id);
-      serviceDialog(full, full.upcoming, null, [+b.closest('tr').dataset.sid]);
-    }));
+      serviceDialog(full, full.upcoming, null, ids);
+    };
+    $$('button.log', card).forEach((b) => (b.onclick = () => logFor([+b.closest('[data-sid]').dataset.sid])));
+    $$('button.snooze', card).forEach((b) => (b.onclick = () => snoozeDialog(car.upcoming.find((u) => u.id === +b.closest('[data-sid]').dataset.sid))));
+    if ($('.logsvc', card)) $('.logsvc', card).onclick = () => logFor([]);
+    sortable(card, '.up-item', '.grip', async () => {
+      await api(`/cars/${car.id}/schedules/order`, { json: { ids: $$('.up-item', card).map((el) => +el.dataset.sid) } });
+      toast('Order saved');
+    });
     const up = $('.up', card), down = $('.down', card);
     if (up) up.onclick = () => { card.previousElementSibling && card.parentNode.insertBefore(card, card.previousElementSibling); saveOrder(); };
     if (down) down.onclick = () => { card.nextElementSibling && card.parentNode.insertBefore(card.nextElementSibling, card); saveOrder(); };
@@ -214,17 +340,40 @@ async function home() {
       saveOrder();
     };
   });
+  $('#cardOpts').onclick = cardOptionsDialog;
   $$('button.unhide').forEach((b) => (b.onclick = async () => {
     await api('/cars/' + b.dataset.id, { method: 'PUT', json: { archived: false } });
     toast('Back in the garage'); home();
   }));
 }
 
+function cardOptionsDialog() {
+  const K = REF.card;
+  const sw = (k, label) => `<label><input type="checkbox" name="${k}" ${K[k] ? 'checked' : ''}> ${label}</label>`;
+  openDialog('Customize cards', `
+    <div class="checks" style="grid-template-columns:1fr">
+      ${sw('photo', 'Vehicle photo')}
+      ${sw('mileage', 'Large odometer with the “New reading” box')}
+      ${sw('project', 'Next project')}
+      ${sw('buttons', 'Buttons (Log service, Services, Parts, Manuals)')}
+      ${sw('hide_ok', 'Hide services that are OK (keep due soon, overdue and “set last done”)')}
+    </div>
+    <div class="form" style="margin-top:12px"><label>Upcoming services shown (0 to 12)<input name="upcoming_rows" type="number" min="0" max="12" value="${K.upcoming_rows}"></label></div>
+    <p class="muted small">Applies to every card, on every device.</p>`,
+  async (data) => {
+    const card = { upcoming_rows: data.upcoming_rows };
+    ['photo', 'mileage', 'project', 'buttons', 'hide_ok'].forEach((k) => { card[k] = k in data; });
+    await api('/settings', { method: 'PUT', json: { card } });
+    REF = await api('/refdata');
+    rerender();
+  });
+}
+
 // ---------- car ----------
 
 async function carPage(id, tab = 'services') {
   const car = await api('/cars/' + id);
-  const tabs = [['services', 'Services'], ['parts', 'Parts'], ['documents', 'Manuals & files'], ['details', 'Details']];
+  const tabs = [['services', 'Services'], ['projects', 'Projects'], ['parts', 'Parts'], ['documents', 'Manuals & files'], ['details', 'Details']];
   view.innerHTML = `
     <div class="spread">
       <div><div class="small"><a href="#/">Garage</a> ›</div><h1>${esc(car.name)}</h1>
@@ -238,6 +387,7 @@ async function carPage(id, tab = 'services') {
     <div id="tab"></div>`;
   $('#mileForm').onsubmit = (e) => { e.preventDefault(); updateMileage(car, e.target.m.value); };
   const el = $('#tab');
+  if (tab === 'projects') return projectsTab(el, car);
   if (tab === 'parts') return partsSection(el, { car });
   if (tab === 'documents') return documentsTab(el, car);
   if (tab === 'details') return carDetails(el, car);
@@ -253,22 +403,25 @@ async function servicesTab(el, car) {
     <div class="spread"><h2 style="margin-top:0">Upcoming services</h2>
       <div class="row"><button id="addPresets">＋ Common services</button><button id="addSched">＋ Custom schedule</button><button class="primary" id="logSvc">Log a service</button></div></div>
     ${car.archived ? '<div class="callout-box" style="margin-bottom:12px">This vehicle is hidden from the garage and Home Assistant. <a href="#/car/' + car.id + '/details">Show it again</a> under Details.</div>' : ''}
-    <div class="panel table-wrap" style="padding:0">${up.length ? `<table><thead><tr><th>Service</th><th>Interval</th><th>Last done</th><th>Due</th><th></th><th>Manual</th><th></th></tr></thead><tbody>
+    <div class="panel table-wrap" style="padding:0">${up.length ? `<table><thead><tr><th></th><th>Service</th><th>Interval</th><th>Last done</th><th>Due</th><th></th><th>Manual</th><th></th></tr></thead><tbody>
       ${up.map((u) => `<tr class="upcoming-row" data-sid="${u.id}">
+        <td style="width:1%"><span class="svc-ico ${u.state}${up.length > 1 ? ' grip" title="Drag to reorder' : ''}">${svcIcon(u.title)}</span></td>
         <td><b>${esc(u.title)}</b>${u.notes ? `<div class="small muted">${esc(u.notes)}</div>` : ''}</td>
         <td class="small">${esc(intervalText(u))}</td>
         <td class="small">${u.last_date || u.last_mileage != null ? `${esc(u.last_date || '')}${u.last_mileage != null ? ' @ ' + miles(u.last_mileage) : ''}` : '<span class="muted">never logged</span>'}</td>
         <td class="small">${[u.due_mileage != null ? miles(u.due_mileage) : '', esc(u.due_date || '')].filter(Boolean).join(' / ')}<div class="muted">${esc(dueText(u))}</div></td>
-        <td>${stateChip(u)}</td>
+        <td>${stateChip(u)}${u.state === 'snoozed' ? `<div class="small muted">until ${esc(u.snoozed_until)}</div>` : ''}</td>
         <td class="small">${u.doc_id ? `<a href="${fileUrl({ id: u.doc_id, original_name: u.doc_title + '.pdf' }, u.doc_page)}" target="_blank">${esc(u.doc_title)}${u.doc_page ? ' p.' + u.doc_page : ''}</a>` : ''}</td>
-        <td class="num" style="white-space:nowrap"><button class="done">✓ Done</button> <button class="link edit">Edit</button></td></tr>`).join('')}
-    </tbody></table>` : `<div class="empty">No schedules yet. Click <b>＋ Common services</b> to pick oil changes, filters, fluids and so on.</div>`}</div>
+        <td class="num" style="white-space:nowrap"><button class="done">✓ Done</button>
+          ${['overdue', 'soon'].includes(u.state) ? '<button class="link snooze">Dismiss</button>' : ''}${u.state === 'snoozed' ? '<button class="link unsnooze">Bring back</button>' : ''}
+          <button class="link edit">Edit</button></td></tr>`).join('')}
+    </tbody></table>${up.some((u) => u.sort_order != null) ? '<div class="small muted" style="padding:8px 10px">In your own order. <button class="link" id="autoOrder">Back to most urgent first</button></div>' : ''}` : `<div class="empty">No schedules yet. Click <b>＋ Common services</b> to pick oil changes, filters, fluids and so on.</div>`}</div>
 
     <div class="spread" style="align-items:center"><h2>Service history</h2>${services.length ? `<a class="btn" href="api/cars/${car.id}/export/services.csv">⬇ Export CSV</a>` : ''}</div>
     <div class="panel table-wrap" style="padding:0">${services.length ? `<table><thead><tr><th>Date</th><th class="num">Mileage</th><th>Work</th><th>Parts used</th><th class="num">Cost</th><th>By</th><th></th></tr></thead><tbody>
       ${services.map((s) => `<tr data-svc="${s.id}"><td style="white-space:nowrap">${esc(s.date)}</td><td class="num">${num(s.mileage)}</td>
         <td><b>${esc(s.title)}</b>${s.notes ? `<div class="small muted" style="white-space:pre-wrap">${esc(s.notes)}</div>` : ''}</td>
-        <td class="small">${s.parts.map((p) => esc(p.name) + (p.part_number ? ` <span class="muted mono">${esc(p.part_number)}</span>` : '')).join('<br>')}</td>
+        <td class="small">${s.parts.map((p) => (p.qty > 1 ? p.qty + '× ' : '') + esc(p.name) + (p.part_number ? ` <span class="muted mono">${esc(p.part_number)}</span>` : '')).join('<br>')}</td>
         <td class="num">${money(s.cost)}</td><td class="small">${esc(s.done_by)}</td>
         <td class="num"><button class="link edit">Edit</button></td></tr>`).join('')}
     </tbody></table>` : '<div class="empty">Nothing logged yet.</div>'}</div>`;
@@ -280,16 +433,24 @@ async function servicesTab(el, car) {
     const s = up.find((u) => u.id === +tr.dataset.sid);
     $('.done', tr).onclick = () => serviceDialog(car, up, null, [s.id]);
     $('.edit', tr).onclick = () => scheduleDialog(car, docs, s);
+    if ($('.snooze', tr)) $('.snooze', tr).onclick = () => snoozeDialog(s);
+    if ($('.unsnooze', tr)) $('.unsnooze', tr).onclick = async () => { await api('/schedules/' + s.id, { method: 'PUT', json: { snoozed_until: null } }); rerender(); };
   });
+  sortable(el, 'tr[data-sid]', '.grip', async () => {
+    await api(`/cars/${car.id}/schedules/order`, { json: { ids: $$('tr[data-sid]', el).map((tr) => +tr.dataset.sid) } });
+    rerender();
+  });
+  if ($('#autoOrder')) $('#autoOrder').onclick = async () => { await api(`/cars/${car.id}/schedules/order`, { json: { ids: [] } }); rerender(); };
   $$('tr[data-svc]', el).forEach((tr) => {
     const s = services.find((x) => x.id === +tr.dataset.svc);
     $('.edit', tr).onclick = () => serviceDialog(car, up, s, s.schedule_ids);
   });
 }
 
-async function serviceDialog(car, schedules, svc, checked) {
-  const parts = (await api(`/parts?car_id=${car.id}`)).filter((p) => p.status !== 'Installed' || (svc && p.service_id === svc.id));
-  const used = new Set(svc ? svc.parts.map((p) => p.id) : []);
+async function serviceDialog(car, schedules, svc, checked, pre = {}) {
+  const used = new Set(svc ? svc.parts.map((p) => p.id) : pre.partIds || []);
+  const linked = new Set(svc ? svc.parts.map((p) => p.id) : []);
+  const parts = await usableParts(car, (p) => svc && p.service_id === svc.id);
   const titleFrom = () => schedules.filter((s) => checked.includes(s.id)).map((s) => s.title).join(', ');
   const form = openDialog(svc ? 'Edit service' : 'Log a service', `
     <div class="form">
@@ -297,14 +458,28 @@ async function serviceDialog(car, schedules, svc, checked) {
       <label>Mileage<input name="mileage" inputmode="numeric" value="${esc(svc ? svc.mileage ?? '' : car.mileage ?? '')}"></label>
       <label>Done by<input name="done_by" value="${esc(svc ? svc.done_by : 'DIY')}"></label>
       <label>Cost<input name="cost" inputmode="decimal" value="${esc(svc ? svc.cost ?? '' : '')}" placeholder="0.00"></label>
-      <label class="wide">What was done<input name="title" required value="${esc(svc ? svc.title : titleFrom())}" placeholder="Oil change, new thermostat…"></label>
-      <label class="wide">Notes<textarea name="notes" placeholder="Oil used, torque specs, what you found…">${esc(svc ? svc.notes : '')}</textarea></label>
+      <label class="wide">What was done<input name="title" required value="${esc(svc ? svc.title : pre.title || titleFrom())}" placeholder="Oil change, new thermostat…"></label>
+    </div>
+    <details class="quick" ${!svc && !checked.length && !pre.title ? 'open' : ''}><summary>Common jobs (tap to add)</summary>
+      <div class="quick-list">${REF.quick_services.map((q) => `<button type="button" data-q="${esc(q)}">${esc(q)}</button>`).join('')}</div>
+      <div class="small muted" style="margin-top:6px">Add your own under Settings › Quick services.</div></details>
+    <div class="form" style="margin-top:10px">
+      <label class="wide">Notes<textarea name="notes" placeholder="Oil used, torque specs, what you found…">${esc(svc ? svc.notes : pre.notes || '')}</textarea></label>
     </div>
     ${schedules.length ? `<h3>This counts as (resets the schedule)</h3><div class="checks">${schedules.map((s) => `<label><input type="checkbox" name="sched" value="${s.id}" ${checked.includes(s.id) ? 'checked' : ''}> ${esc(s.title)}</label>`).join('')}</div>` : ''}
-    ${parts.length ? `<h3>Parts used (marked installed at this mileage)</h3><div class="checks">${parts.map((p) => `<label><input type="checkbox" name="part" value="${p.id}" ${used.has(p.id) ? 'checked' : ''}> ${esc(p.name)} <span class="small ${sCls(p.status)}">${esc(p.status)}</span></label>`).join('')}</div>` : ''}
+    ${parts.length ? `<h3>Parts used <span class="muted small" id="partsAt" style="font-weight:400"></span></h3>
+      ${parts.length > 8 ? '<input id="partFilter" type="search" placeholder="Filter parts…" style="width:100%;margin-bottom:6px">' : ''}
+      <div class="use-list">${parts.map((p) => `<label class="use-row" data-text="${esc([p.name, p.brand, p.part_number, p.location, p.category].join(' ').toLowerCase())}">
+        <input type="checkbox" name="part" value="${p.id}" ${used.has(p.id) ? 'checked' : ''}>
+        <span class="use-main"><b>${esc(p.name)}</b><span class="muted small">${esc(partSub(p))}</span></span>
+        ${p.qty > 1 ? (linked.has(p.id) ? `<span class="small muted">×${p.qty}</span>` : `<span class="use-qty small">use <input class="useq" inputmode="numeric" value="${p.qty}"> of ${p.qty}</span>`) : ''}
+        <span class="small ${sCls(p.status)}">${esc(p.status)}</span></label>`).join('')}</div>` : ''}
     ${svc ? '<div style="margin-top:14px"><button type="button" class="danger" id="delSvc">Delete this service</button></div>' : ''}`,
   async (data, f) => {
-    const payload = { ...data, schedule_ids: $$('input[name=sched]:checked', f).map((i) => +i.value), part_ids: $$('input[name=part]:checked', f).map((i) => +i.value) };
+    const usedParts = $$('.use-row', f).filter((r) => $('input[name=part]', r).checked)
+      .map((r) => ({ id: +$('input[name=part]', r).value, qty: $('.useq', r) ? parseInt($('.useq', r).value, 10) || null : null }));
+    const payload = { ...data, schedule_ids: $$('input[name=sched]:checked', f).map((i) => +i.value), parts: usedParts };
+    delete payload.part;
     if (svc) await api('/services/' + svc.id, { method: 'PUT', json: payload });
     else await api(`/cars/${car.id}/services`, { json: payload });
     toast('Service saved');
@@ -312,11 +487,117 @@ async function serviceDialog(car, schedules, svc, checked) {
   });
   $$('input[name=sched]', form).forEach((cb) => (cb.onchange = () => {
     checked = $$('input[name=sched]:checked', form).map((i) => +i.value);
-    if (!svc) form.elements.title.value = titleFrom();
+    if (!svc && !pre.title) form.elements.title.value = [titleFrom(), ...$$('.quick-list .on', form).map((b) => b.dataset.q)].filter(Boolean).join(', ');
   }));
+  // quick picks add to (or take out of) "What was done"
+  const titleParts = () => form.elements.title.value.split(',').map((x) => x.trim()).filter(Boolean);
+  $$('.quick-list button', form).forEach((b) => {
+    b.classList.toggle('on', titleParts().includes(b.dataset.q));
+    b.onclick = () => {
+      const now = titleParts();
+      form.elements.title.value = (now.includes(b.dataset.q) ? now.filter((x) => x !== b.dataset.q) : now.concat(b.dataset.q)).join(', ');
+      b.classList.toggle('on');
+    };
+  });
+  const at = () => {
+    if (!$('#partsAt', form)) return;
+    const m = parseInt(String(form.elements.mileage.value).replace(/\D/g, ''), 10);
+    $('#partsAt', form).textContent = `ticked parts are marked installed${m ? ' at ' + num(m) + ' mi' : ''} on ${form.elements.date.value}`;
+  };
+  form.elements.mileage.oninput = form.elements.date.oninput = at;
+  at();
+  $$('.useq', form).forEach((i) => (i.onclick = (e) => e.preventDefault()));  // typing a quantity shouldn't toggle the tick
+  if ($('#partFilter', form)) $('#partFilter', form).oninput = (e) => {
+    const q = e.target.value.trim().toLowerCase();
+    $$('.use-row', form).forEach((r) => { r.hidden = !!q && !r.dataset.text.includes(q) && !$('input[name=part]', r).checked; });
+  };
   if (svc) $('#delSvc').onclick = async () => {
     if (!confirm('Delete this service record?')) return;
     await api('/services/' + svc.id, { method: 'DELETE' });
+    $('#dlg').close(); rerender();
+  };
+}
+
+// ----- projects: bigger jobs with steps to tick off and parts set aside -----
+
+async function projectsTab(el, car) {
+  const projects = await api(`/cars/${car.id}/projects`);
+  const active = projects.filter((p) => p.status !== 'Done');
+  const done = projects.filter((p) => p.status === 'Done');
+  const chip = { Planned: 'unknown', 'In progress': 'soon', Done: 'ok' };
+  const card = (p) => `<div class="panel proj" data-pid="${p.id}">
+    <div class="spread"><div class="row" style="gap:8px">${p.status !== 'Done' && active.length > 1 ? '<span class="grip" title="Drag to reorder">⠿</span>' : ''}
+        <h3 style="margin:0">${esc(p.title)}</h3><span class="chip ${chip[p.status]}">${esc(p.status)}</span></div>
+      <div class="row">${p.status === 'Planned' ? '<button class="start">Start</button>' : ''}
+        ${p.status !== 'Done' ? '<button class="finish">✓ Finish &amp; log</button>' : '<button class="link reopen">Reopen</button>'}<button class="link edit">Edit</button></div></div>
+    ${p.target_date && p.status !== 'Done' ? `<div class="small muted">Target: ${esc(p.target_date)}</div>` : ''}${p.done_date ? `<div class="small muted">Finished ${esc(p.done_date)}</div>` : ''}
+    ${p.notes ? `<div class="note small">${esc(p.notes)}</div>` : ''}
+    ${p.tasks.length ? `<div class="checks">${p.tasks.map((t) => `<label class="${t.done ? 'done-task' : ''}"><input type="checkbox" data-tid="${t.id}" ${t.done ? 'checked' : ''}> ${esc(t.title)}</label>`).join('')}</div>` : ''}
+    ${p.parts.length ? `<h3>Parts</h3><table class="small"><tbody>${p.parts.map((x) => `<tr><td>${x.qty > 1 ? x.qty + '× ' : ''}${esc(x.name)} <span class="muted mono">${esc(x.part_number)}</span></td>
+      <td class="${sCls(x.status)}">${esc(x.status)}</td><td class="muted">${esc(x.location)}</td></tr>`).join('')}</tbody></table>` : ''}
+  </div>`;
+  el.innerHTML = `
+    <div class="spread"><h2 style="margin-top:0">Projects</h2><button class="primary" id="addProj">＋ New project</button></div>
+    ${active.length ? `<div class="proj-list">${active.map(card).join('')}</div>`
+      : '<div class="panel empty">Nothing planned. A project is a bigger job (engine reseal, suspension refresh) with steps to tick off and the parts you have set aside for it. The first one shows on the garage card as “Next project”.</div>'}
+    ${done.length ? `<details class="hidden-cars"><summary>Finished (${done.length})</summary><div class="proj-list" style="margin-top:8px">${done.map(card).join('')}</div></details>` : ''}`;
+  $('#addProj').onclick = () => projectDialog(car, null);
+  const put = (p, json) => api('/projects/' + p.id, { method: 'PUT', json });
+  $$('[data-pid]', el).forEach((box) => {
+    const p = projects.find((x) => x.id === +box.dataset.pid);
+    $('.edit', box).onclick = () => projectDialog(car, p);
+    if ($('.start', box)) $('.start', box).onclick = async () => { await put(p, { status: 'In progress' }); rerender(); };
+    if ($('.reopen', box)) $('.reopen', box).onclick = async () => { await put(p, { status: 'In progress' }); rerender(); };
+    if ($('.finish', box)) $('.finish', box).onclick = async () => {
+      await put(p, { status: 'Done' });
+      await rerender();
+      serviceDialog(car, car.upcoming, null, [], { title: p.title, notes: p.tasks.map((t) => '- ' + t.title).join('\n'),
+        partIds: p.parts.filter((x) => x.status !== 'Installed').map((x) => x.id) });
+    };
+    $$('[data-tid]', box).forEach((cb) => (cb.onchange = async () => {
+      await api('/project-tasks/' + cb.dataset.tid, { method: 'PUT', json: { done: cb.checked } });
+      cb.parentNode.classList.toggle('done-task', cb.checked);
+    }));
+  });
+  sortable(el, '.proj', '.grip', async () => {
+    await api(`/cars/${car.id}/projects/order`, { json: { ids: $$('.proj', el).map((b) => +b.dataset.pid) } });
+    toast('Order saved');
+  });
+}
+
+async function projectDialog(car, p) {
+  const mine = new Set(p ? p.parts.map((x) => x.id) : []);
+  const parts = await usableParts(car, (x) => mine.has(x.id));
+  const form = openDialog(p ? 'Edit project' : 'New project', `
+    <div class="form">
+      <label class="wide">Project<input name="title" required value="${esc(p ? p.title : '')}" placeholder="e.g. Pull the drivetrain, reseal the engine, fit headers"></label>
+      <label>Status<select name="status">${options(REF.project_statuses, p ? p.status : 'Planned')}</select></label>
+      <label>Target date<input type="date" name="target_date" value="${esc(p ? p.target_date || '' : '')}"></label>
+      <label class="wide">Steps (one per line)<textarea name="steps" rows="6" placeholder="Pull engine and transmission&#10;Reseal engine&#10;Install headers">${esc(p ? p.tasks.map((t) => t.title).join('\n') : '')}</textarea></label>
+      <label class="wide">Notes<textarea name="notes" placeholder="Plan, torque specs, things to order…">${esc(p ? p.notes : '')}</textarea></label>
+    </div>
+    ${parts.length ? `<h3>Parts for this project</h3>
+      ${parts.length > 8 ? '<input id="partFilter" type="search" placeholder="Filter parts…" style="width:100%;margin-bottom:6px">' : ''}
+      <div class="use-list">${parts.map((x) => `<label class="use-row" data-text="${esc([x.name, x.brand, x.part_number, x.location, x.category].join(' ').toLowerCase())}">
+        <input type="checkbox" name="part" value="${x.id}" ${mine.has(x.id) ? 'checked' : ''}>
+        <span class="use-main"><b>${esc(x.name)}</b><span class="muted small">${esc(partSub(x))}</span></span>
+        <span class="small ${sCls(x.status)}">${esc(x.status)}</span></label>`).join('')}</div>` : ''}
+    ${p ? '<div style="margin-top:14px"><button type="button" class="danger" id="delProj">Delete project</button></div>' : ''}`,
+  async (data, f) => {
+    const payload = { title: data.title, status: data.status, target_date: data.target_date, notes: data.notes,
+      tasks: data.steps.split('\n').map((x) => x.trim()).filter(Boolean), part_ids: $$('input[name=part]:checked', f).map((i) => +i.value) };
+    if (p) await api('/projects/' + p.id, { method: 'PUT', json: payload });
+    else await api(`/cars/${car.id}/projects`, { json: payload });
+    toast('Project saved');
+    rerender();
+  });
+  if ($('#partFilter', form)) $('#partFilter', form).oninput = (e) => {
+    const q = e.target.value.trim().toLowerCase();
+    $$('.use-row', form).forEach((r) => { r.hidden = !!q && !r.dataset.text.includes(q) && !$('input[name=part]', r).checked; });
+  };
+  if (p) $('#delProj', form).onclick = async () => {
+    if (!confirm(`Delete the project “${p.title}”? Its parts stay in your parts list.`)) return;
+    await api('/projects/' + p.id, { method: 'DELETE' });
     $('#dlg').close(); rerender();
   };
 }
@@ -352,9 +633,10 @@ function presetsDialog(car, existing) {
   const have = new Set(existing.map((u) => u.title.toLowerCase()));
   const list = REF.presets.filter((p) => !have.has(p.title.toLowerCase()));
   openDialog('Add common services', `
+    <p class="muted small">These are repeating services. For a one-off job (brake job, battery…) use <b>Log a service</b>; for anything not listed, <b>＋ Custom schedule</b>.</p>
     <p class="muted small">Tick what applies to this vehicle. Change intervals to match your manual. If you know when each was last done, fill it in so “upcoming” is accurate (you can also do that later).</p>
     <div class="table-wrap"><table class="items-table"><thead><tr><th></th><th>Service</th><th>Miles</th><th>Months</th><th>Last done date</th><th>Last done mi</th></tr></thead><tbody>
-      ${list.map((p, i) => `<tr data-i="${i}"><td><input type="checkbox" class="pick"></td><td>${esc(p.title)}</td>
+      ${list.map((p, i) => `${i === 0 || list[i - 1].group !== p.group ? `<tr class="group-row"><td colspan="6">${esc(p.group)}</td></tr>` : ''}<tr data-i="${i}"><td><input type="checkbox" class="pick"></td><td>${esc(p.title)}</td>
         <td><input class="im" value="${p.interval_miles ?? ''}" style="width:80px"></td><td><input class="imo" value="${p.interval_months ?? ''}" style="width:60px"></td>
         <td><input type="date" class="ld"></td><td><input class="lm" inputmode="numeric" style="width:90px"></td></tr>`).join('')}
     </tbody></table></div>`,
@@ -668,6 +950,12 @@ async function settingsPage() {
       <label class="switch"><input type="checkbox" id="catalogOn" ${s.settings.catalog ? 'checked' : ''}> Parts catalog</label>
       <p class="muted small">An offline parts catalog with diagrams, filled from files you import (JSON, CSV, saved HTML pages, images). Off by default: it starts empty.</p>
     </div>
+    <h2>Quick services</h2>
+    <form class="panel stack" id="quickForm">
+      <p class="muted small">Your own one-tap jobs for <b>Log a service</b>, one per line. They show ahead of the built-in ones (brake job, battery, tires…).</p>
+      <textarea name="q" rows="4" placeholder="Headers install&#10;Track day prep">${esc((s.settings.quick_services || []).join('\n'))}</textarea>
+      <div><button>Save</button></div>
+    </form>
     <h2>AI agents</h2>
     <div class="panel stack small">
       <p>Let an AI assistant (Claude, or any app that supports MCP) read and update your garage: vehicles, what's due, service history, odometer and parts.</p>
@@ -728,6 +1016,12 @@ async function settingsPage() {
     await api('/settings', { method: 'PUT', json: { catalog: e.target.checked } });
     REF = await api('/refdata'); applyFeatures();
     toast(e.target.checked ? 'Catalog turned on' : 'Catalog hidden');
+  };
+  $('#quickForm').onsubmit = async (e) => {
+    e.preventDefault();
+    await api('/settings', { method: 'PUT', json: { quick_services: e.target.q.value.split('\n').map((x) => x.trim()).filter(Boolean) } });
+    REF = await api('/refdata');
+    toast('Quick services saved');
   };
   $('#newKey').onclick = async () => {
     if (s.settings.agent_key && !confirm('Make a new key? Agents using the old key will stop working until you give them the new one.')) return;
