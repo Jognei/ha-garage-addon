@@ -523,6 +523,9 @@ def api_mileage_reading(car_id, log_id):
 
 # ---------- service schedules & upcoming ----------
 
+DUE_SOON_DAYS = 30
+
+
 def upcoming(car, manual=False):
     """Every active schedule for a car with its due point and state, most urgent first.
     A schedule dismissed until a later date is "snoozed" instead of soon/overdue. manual=True puts
@@ -539,6 +542,15 @@ def upcoming(car, manual=False):
             due_m = due_d = None
         miles_left = (due_m - car["mileage"]) if (due_m is not None and car.get("mileage") is not None) else None
         days_left = (parse_date(due_d) - today_d).days if due_d else None
+        # when the mileage limit comes first (or is the only one), estimate when from average driving
+        est = None
+        if rate and miles_left is not None and miles_left > 0:
+            try:
+                est_d = today_d + dt.timedelta(days=round(miles_left / rate))
+            except OverflowError:  # driven so little it lands past the year 9999: no estimate
+                est_d = None
+            if est_d and (not due_d or est_d.isoformat() < due_d):
+                est = est_d.isoformat()
         # never done, or done with nothing its intervals can count from (only a date for a mileage interval)
         if ((s["last_date"] is None and s["last_mileage"] is None)
                 or (due_m is None and due_d is None and (s["interval_miles"] or s["interval_months"]))):
@@ -546,7 +558,8 @@ def upcoming(car, manual=False):
         elif (miles_left is not None and miles_left < 0) or (days_left is not None and days_left < 0):
             state = "overdue"
         elif ((miles_left is not None and miles_left <= max(500, (s["interval_miles"] or 0) // 10))
-              or (days_left is not None and days_left <= 30)):
+              or (days_left is not None and days_left <= DUE_SOON_DAYS)
+              or (est and (parse_date(est) - today_d).days <= DUE_SOON_DAYS)):
             state = "soon"
         else:
             state = "ok"
@@ -558,15 +571,6 @@ def upcoming(car, manual=False):
             fracs.append(miles_left / s["interval_miles"])
         if days_left is not None and s["interval_months"]:
             fracs.append(days_left / (s["interval_months"] * 30.4))
-        # when the mileage limit comes first (or is the only one), estimate when from average driving
-        est = None
-        if rate and miles_left is not None and miles_left > 0:
-            try:
-                est_d = today_d + dt.timedelta(days=round(miles_left / rate))
-            except OverflowError:  # driven so little it lands past the year 9999: no estimate
-                est_d = None
-            if est_d and (not due_d or est_d.isoformat() < due_d):
-                est = est_d.isoformat()
         out.append({**s, "due_mileage": due_m, "due_date": due_d, "miles_left": miles_left,
                     "days_left": days_left, "est_date": est, "state": state, "rank": min(fracs) if fracs else 9e9})
     order = {"overdue": 0, "soon": 1, "ok": 2, "snoozed": 3, "unknown": 4}

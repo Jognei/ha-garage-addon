@@ -17,7 +17,7 @@ works, and Home Assistant handles sign-in.
   the garage page and out of the Home Assistant sensors. Bring it back from **Hidden vehicles** at the bottom of the garage.
 - **Photo** per vehicle (vehicle › Details › Photo). It shows on the garage card, and big phone photos are shrunk.
 - **Estimated due dates:** when a service is due by mileage, the app estimates when you'll get there from your
-  last year of odometer readings ("≈ Mar 2027").
+  last year of odometer readings ("≈ Mar 2027"). A service whose estimate is within 30 days shows as due soon.
 - **✓ on a garage card** logs that service as done, with the schedule already ticked.
 - **Dismiss for now:** ✕ on a garage card (or **Dismiss** in vehicle › Services) stops an overdue or due-soon service
   showing as one until a date you pick. Logging it as done clears that, and **Bring back** undoes it. Until that

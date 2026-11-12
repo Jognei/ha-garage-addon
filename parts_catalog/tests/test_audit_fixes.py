@@ -426,6 +426,23 @@ class AuditFixesTest(unittest.TestCase):
                         headers={"Authorization": f"Bearer {key}"}).get_json()["result"]
         self.assertEqual(json.loads(r["content"][0]["text"])["upcoming"][0]["est_date"], est)
 
+    def test_a_service_estimated_within_30_days_is_due_soon(self):
+        states = {}
+        for name, per_day in (("DEMO-EST-FAST", 100), ("DEMO-EST-SLOW", 5)):
+            cid = self.car(name)
+            self.c.post(f"/api/cars/{cid}/mileage", json={"mileage": 50000 - 100 * per_day, "date": ago(100)})
+            self.c.post(f"/api/cars/{cid}/mileage", json={"mileage": 50000})
+            self.c.post(f"/api/cars/{cid}/schedules", json={"items": [
+                {"title": "Oil", "interval_miles": 5000, "last_mileage": 45900},  # 900 miles left
+                {"title": "Oil, 3,000 left", "interval_miles": 5000, "last_mileage": 48000},
+                {"title": "Oil, 3,100 left", "interval_miles": 5000, "last_mileage": 48100},
+                {"title": "Oil, dismissed", "interval_miles": 5000, "last_mileage": 45900, "snoozed_until": ago(-14)}]})
+            states[name] = {u["title"]: u["state"] for u in self.c.get(f"/api/cars/{cid}").get_json()["upcoming"]}
+        # at 100 miles a day: 9, 30 and 31 days away
+        self.assertEqual(states["DEMO-EST-FAST"], {"Oil": "soon", "Oil, 3,000 left": "soon", "Oil, 3,100 left": "ok",
+                                                   "Oil, dismissed": "snoozed"})
+        self.assertEqual(set(states["DEMO-EST-SLOW"].values()), {"ok"})
+
     def odometers(self, *cids):
         states = ha_sensors.build_states(self.c.get("/api/ha/summary").get_json())
         return {s["attributes"]["car_id"]: (e, s["attributes"]["friendly_name"]) for e, s in states.items()
