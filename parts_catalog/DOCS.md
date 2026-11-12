@@ -113,7 +113,9 @@ images) under **Catalog › Data & import**. The catalog ships with BMW main gro
 (marked SAMPLE). It doesn't download anything from the internet.
 
 ## Backups
-Home Assistant backups include the add-on's data. You can also download everything as one zip under
+Home Assistant backups include the add-on's data. The add-on stops briefly while Home Assistant backs it up, so the
+copy is always consistent; until it starts again the Garage panel won't open and the sensors don't update.
+You can also download everything as one zip under
 **Settings › Download backup**, and restore it under **Settings › Restore from a backup**. That's also how you move
 data between installs.
 
