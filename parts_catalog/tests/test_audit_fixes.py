@@ -15,6 +15,10 @@ from app import db, epc, epc_api, server  # noqa: E402
 from app.server import app  # noqa: E402
 
 
+def ago(days):
+    return (dt.date.today() - dt.timedelta(days=days)).isoformat()
+
+
 class AuditFixesTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -147,6 +151,46 @@ class AuditFixesTest(unittest.TestCase):
         self.assertEqual(r["logged"]["id"] and self.c.get(f"/api/cars/{cid}/services").get_json()[0]["mileage"], 10000)
         text, bad = tool("log_service", vehicle="DEMO-AGENT", title="Plugs", part_ids="12")
         self.assertTrue(bad)
+
+    def log(self, cid):
+        return [(m["date"], m["mileage"]) for m in self.c.get(f"/api/cars/{cid}").get_json()["mileage_log"]]
+
+    def test_a_reading_that_does_not_fit_the_log_is_not_logged(self):
+        cid = self.car("DEMO-ODO-FIT")
+        self.c.post(f"/api/cars/{cid}/mileage", json={"mileage": 10000, "date": ago(60)})
+        self.c.post(f"/api/cars/{cid}/mileage", json={"mileage": 12000, "date": ago(30)})
+        self.assertEqual(self.c.post(f"/api/cars/{cid}/mileage", json={"mileage": 11000}).get_json()["mileage"], 12000)
+        self.c.post(f"/api/cars/{cid}/mileage", json={"mileage": 13000, "date": ago(45)})  # higher than a later reading
+        self.c.post(f"/api/cars/{cid}/mileage", json={"mileage": 11000, "date": ago(45)})  # fits between two
+        self.assertEqual(self.log(cid), [(ago(30), 12000), (ago(45), 11000), (ago(60), 10000)])
+        self.assertEqual(self.c.get(f"/api/cars/{cid}").get_json()["mileage"], 12000)
+        # a correction is logged, and the readings after it count from it
+        self.c.post(f"/api/cars/{cid}/mileage", json={"mileage": 11500, "correct": True})
+        self.c.post(f"/api/cars/{cid}/mileage", json={"mileage": 11600})
+        self.assertEqual(self.log(cid)[:2], [(ago(0), 11600), (ago(0), 11500)])
+
+    def test_saving_a_service_again_logs_its_reading_once(self):
+        cid = self.car("DEMO-ODO-DUP", 20000)
+        sid = self.c.post(f"/api/cars/{cid}/services", json={"title": "Wash", "mileage": 20100}).get_json()["id"]
+        self.c.put(f"/api/services/{sid}", json={"title": "Wash", "mileage": 20100, "notes": "and wax"})
+        self.assertEqual([m for _, m in self.log(cid)], [20100, 20000])
+
+    def test_an_odometer_typo_can_be_corrected_and_deleted(self):
+        cid = self.car("DEMO-ODO-TYPO")
+        self.c.post(f"/api/cars/{cid}/mileage", json={"mileage": 148000, "date": ago(171)})
+        self.c.post(f"/api/cars/{cid}/mileage", json={"mileage": 1502500})
+        self.c.post(f"/api/cars/{cid}/mileage", json={"mileage": 150300, "correct": True})
+        self.assertAlmostEqual(server.miles_per_day(cid), 13.45, places=2)
+        log = self.c.get(f"/api/cars/{cid}").get_json()["mileage_log"]
+        typo = next(m["id"] for m in log if m["mileage"] == 1502500)
+        self.assertEqual(self.c.delete(f"/api/cars/{self.car('DEMO-ODO-OTHER')}/mileage/{typo}").status_code, 404)
+        self.assertEqual(self.c.delete(f"/api/cars/{cid}/mileage/{typo}").get_json()["mileage"], 150300)
+        self.assertEqual([m for _, m in self.log(cid)], [150300, 148000])
+        self.assertAlmostEqual(server.miles_per_day(cid), 13.45, places=2)
+        # deleting the newest reading takes the odometer back to the one before it
+        self.c.delete(f"/api/cars/{cid}/mileage/{log[0]['id']}")
+        car = self.c.get(f"/api/cars/{cid}").get_json()
+        self.assertEqual((car["mileage"], car["mileage_date"]), (148000, ago(171)))
 
 
 if __name__ == "__main__":

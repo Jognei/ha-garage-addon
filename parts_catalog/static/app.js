@@ -969,7 +969,8 @@ function carDetails(el, car) {
         ${car.photo_id ? '<button type="button" class="link danger" id="delPhoto">Remove</button>' : ''}</form>
     </div>
     <h2>Mileage history</h2>
-    <div class="panel">${car.mileage_log.length ? `<table class="small"><tbody>${car.mileage_log.map((m) => `<tr><td>${esc(m.date)}</td><td class="num">${num(m.mileage)}</td><td class="muted">${esc(m.source)}</td></tr>`).join('')}</tbody></table>` : '<p class="muted">No readings yet.</p>'}</div>`;
+    <div class="panel">${car.mileage_log.length ? `<table class="small"><tbody>${car.mileage_log.map((m) => `<tr data-mid="${m.id}"><td>${esc(m.date)}</td><td class="num">${num(m.mileage)}</td><td class="muted">${esc(m.source)}</td>
+      <td class="num"><button class="link" title="Delete this reading" aria-label="Delete this reading">✕</button></td></tr>`).join('')}</tbody></table>` : '<p class="muted">No readings yet.</p>'}</div>`;
   $('#carForm').onsubmit = async (e) => {
     e.preventDefault();
     await api('/cars/' + car.id, { method: 'PUT', json: Object.fromEntries(new FormData(e.target)) });
@@ -991,6 +992,14 @@ function carDetails(el, car) {
     if (!confirm(`Remove the photo of ${car.name}? The file is deleted.`)) return;
     await api(`/cars/${car.id}/photo`, { method: 'DELETE' }); toast('Photo removed'); rerender();
   };
+  $$('tr[data-mid]', el).forEach((tr) => {
+    const m = car.mileage_log.find((x) => x.id === +tr.dataset.mid);
+    $('button', tr).onclick = async () => {
+      if (!confirm(`Delete the ${num(m.mileage)} mi reading of ${m.date}?`)) return;
+      await api(`/cars/${car.id}/mileage/${m.id}`, { method: 'DELETE' });
+      toast('Reading deleted'); rerender();
+    };
+  });
   $('#delCar').onclick = async () => {
     if (!confirm(`Delete ${car.name} with its services and schedules? Its parts and files are kept, unassigned.`)) return;
     await api('/cars/' + car.id, { method: 'DELETE' });

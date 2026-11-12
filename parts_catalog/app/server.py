@@ -254,10 +254,12 @@ def car_values(b):
 
 
 def miles_per_day(car_id):
-    """Average daily driving from the last year of odometer readings, or None without enough data."""
+    """Average daily driving between the first and the last odometer reading of the past year, or None without enough data."""
     since = (dt.date.today() - dt.timedelta(days=365)).isoformat()
-    r = db.row("""SELECT MIN(date) AS d0, MAX(date) AS d1, MIN(mileage) AS m0, MAX(mileage) AS m1
-                  FROM mileage_log WHERE car_id=? AND date >= ?""", (car_id, since))
+    r = db.row("""SELECT f.date AS d0, l.date AS d1, f.mileage AS m0, l.mileage AS m1 FROM
+                  (SELECT date, mileage FROM mileage_log WHERE car_id=? AND date >= ? ORDER BY date, id LIMIT 1) f,
+                  (SELECT date, mileage FROM mileage_log WHERE car_id=? AND date >= ? ORDER BY date DESC, id DESC LIMIT 1) l""",
+               (car_id, since, car_id, since))
     if not r or not r["d0"] or r["d0"] == r["d1"]:
         return None
     d0, d1 = parse_date(r["d0"]), parse_date(r["d1"])
@@ -269,12 +271,24 @@ def miles_per_day(car_id):
     return (r["m1"] - r["m0"]) / days
 
 
+def newest_reading(car_id, until=None):
+    """The car's newest odometer reading, or its newest dated on or before `until`."""
+    return db.row("SELECT * FROM mileage_log WHERE car_id=?" + (" AND date<=?" if until else "")
+                  + " ORDER BY date DESC, id DESC LIMIT 1", (car_id, until) if until else (car_id,))
+
+
 def record_mileage(car_id, mileage, date=None, source="manual"):
-    """Log an odometer reading; the car's current mileage only moves forward."""
+    """Log an odometer reading if the log stays in mileage order by date and it isn't a repeat; the car's mileage only moves forward."""
     mileage = to_int(mileage)
     if mileage is None:
         return
     date = to_date(date) or today()
+    before = newest_reading(car_id, date)
+    after = db.row("SELECT mileage FROM mileage_log WHERE car_id=? AND date>? ORDER BY date, id LIMIT 1", (car_id, date))
+    if before and (mileage < before["mileage"] or (mileage, date) == (before["mileage"], before["date"])):
+        return
+    if after and mileage > after["mileage"]:
+        return
     db.execute("INSERT INTO mileage_log (car_id, date, mileage, source) VALUES (?,?,?,?)",
                (car_id, date, mileage, source))
     db.execute("""UPDATE cars SET mileage=?, mileage_date=? WHERE id=? AND (mileage IS NULL OR mileage <= ?)""",
@@ -458,6 +472,17 @@ def api_mileage(car_id):
                    (car_id, today(), m, "correction"))
     else:
         record_mileage(car_id, m, b.get("date"), b.get("source") or "manual")
+    return jsonify(ok=True, mileage=db.row("SELECT mileage FROM cars WHERE id=?", (car_id,))["mileage"])
+
+
+@app.route("/api/cars/<int:car_id>/mileage/<int:log_id>", methods=["DELETE"])
+def api_mileage_reading(car_id, log_id):
+    newest = newest_reading(car_id)
+    if not db.execute("DELETE FROM mileage_log WHERE id=? AND car_id=?", (log_id, car_id)).rowcount:
+        return err("No such reading", 404)
+    if newest["id"] == log_id:  # the odometer showed this reading: back to the newest one left
+        r = newest_reading(car_id) or {}
+        db.execute("UPDATE cars SET mileage=?, mileage_date=? WHERE id=?", (r.get("mileage"), r.get("date"), car_id))
     return jsonify(ok=True, mileage=db.row("SELECT mileage FROM cars WHERE id=?", (car_id,))["mileage"])
 
 
