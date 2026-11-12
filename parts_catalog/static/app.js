@@ -62,9 +62,11 @@ async function uploadChunked(file, fields, onProgress) {
   return api(`/documents/chunked/${start.upload_id}/finish`, { method: 'POST', json: {} });
 }
 
-// Generic modal form. onSubmit(formData, form) may throw to keep the dialog open.
+// Generic modal form. onSubmit(formData, form, okText) may throw to keep the dialog open; okText(t) relabels its OK button.
+let dlgSeq = 0;  // counts openDialog calls: Cancel stays live while saving, so a save must leave a dialog opened after it alone
 function openDialog(title, html, onSubmit, { ok = 'Save', wide = false } = {}) {
   const dlg = $('#dlg');
+  const seq = ++dlgSeq, mine = () => seq === dlgSeq;
   $('#dlgTitle').textContent = title;
   $('#dlgBody').innerHTML = html;
   const okBtn = $('#dlgOk'), errLine = $('#dlgErr');
@@ -78,12 +80,14 @@ function openDialog(title, html, onSubmit, { ok = 'Save', wide = false } = {}) {
     if (busy) return;  // a second tap while saving would save twice
     busy = true; okBtn.disabled = true; okBtn.textContent = 'Saving…'; errLine.textContent = '';
     try {
-      await onSubmit(Object.fromEntries(new FormData(form)), form);
-      dlg.close();
+      await onSubmit(Object.fromEntries(new FormData(form)), form, (t) => { if (mine()) okBtn.textContent = t; });
+      if (mine()) dlg.close();
     } catch (err) {
-      errLine.textContent = err.message;  // shown next to the buttons, inside the dialog
+      if (mine() && dlg.open) errLine.textContent = err.message;  // shown next to the buttons, inside the dialog
+      else toast(err.message, true);
     } finally {
-      busy = false; okBtn.disabled = false; okBtn.textContent = ok;
+      busy = false;
+      if (mine()) { okBtn.disabled = false; okBtn.textContent = ok; }
     }
   };
   $('#dlgCancel').onclick = $('#dlgX').onclick = () => dlg.close();
@@ -91,6 +95,14 @@ function openDialog(title, html, onSubmit, { ok = 'Save', wide = false } = {}) {
   const first = $('input:not([type=hidden]),select,textarea', $('#dlgBody'));
   if (first) first.focus();
   return form;
+}
+
+// A form outside a dialog: its button is off while the request runs, so a double tap can't send it twice.
+async function submitting(form, work) {
+  const btn = $('button:not([type=button])', form);
+  if (btn.disabled) return;
+  btn.disabled = true;
+  try { await work(); } finally { btn.disabled = false; }
 }
 
 const options = (list, sel, blank) => (blank !== undefined ? `<option value="">${esc(blank)}</option>` : '') +
@@ -332,7 +344,7 @@ async function home() {
   };
   $$('[data-car]').forEach((card) => {
     const car = cars.find((c) => c.id === +card.dataset.car);
-    if ($('.mileage-form', card)) $('.mileage-form', card).onsubmit = (e) => { e.preventDefault(); updateMileage(car, e.target.m.value); };
+    if ($('.mileage-form', card)) $('.mileage-form', card).onsubmit = (e) => { e.preventDefault(); submitting(e.target, () => updateMileage(car, e.target.m.value)); };
     const logFor = async (ids) => {
       const full = await api('/cars/' + car.id);
       serviceDialog(full, full.upcoming, null, ids);
@@ -410,7 +422,7 @@ async function carPage(id, tab = 'services', params) {
     <div class="panel car-notes" id="carNotes"></div>
     <div class="tabs">${tabs.map(([k, l]) => `<a href="#/car/${id}${k === 'services' ? '' : '/' + k}" class="${k === tab ? 'active' : ''}">${l}</a>`).join('')}</div>
     <div id="tab"></div>`;
-  $('#mileForm').onsubmit = (e) => { e.preventDefault(); updateMileage(car, e.target.m.value); };
+  $('#mileForm').onsubmit = (e) => { e.preventDefault(); submitting(e.target, () => updateMileage(car, e.target.m.value)); };
   carNotes($('#carNotes'), car);
   const el = $('#tab');
   if (tab === 'projects') return projectsTab(el, car);
@@ -434,11 +446,13 @@ function carNotes(el, car) {
     const f = $('#notesForm', el);
     f.elements.notes.focus();
     $('#cancelNotes', el).onclick = show;
-    f.onsubmit = async (e) => {
+    f.onsubmit = (e) => {
       e.preventDefault();
-      const notes = f.elements.notes.value.trim();
-      await api('/cars/' + car.id, { method: 'PUT', json: { notes } });
-      car.notes = notes; toast('Notes saved'); show();
+      submitting(f, async () => {
+        const notes = f.elements.notes.value.trim();
+        await api('/cars/' + car.id, { method: 'PUT', json: { notes } });
+        car.notes = notes; toast('Notes saved'); show();
+      });
     };
   };
   show();
@@ -937,24 +951,22 @@ async function documentsTab(el, car) {
         <label class="wide">Files<input type="file" name="file" multiple required></label>
         <label>Type<select name="kind">${options(REF.doc_kinds, docFilter || 'Manual')}</select></label>
         <label>Title <span class="muted small">(one file only)</span><input name="title" placeholder="Service manual"></label></div>`,
-    async (data, f) => {
+    async (data, f, okText) => {
       const files = Array.from(f.elements.file.files);
-      const btn = $('#dlgOk'); btn.disabled = true; btn.textContent = 'Uploading…';
-      try {
-        const small = files.filter((x) => x.size <= CHUNK);
-        if (small.length) {
-          const fd = new FormData();
-          small.forEach((x) => fd.append('file', x));
-          fd.append('car_id', car.id); fd.append('kind', data.kind);
-          if (files.length === 1) fd.append('title', data.title);
-          const r = await fetch('api/documents', { method: 'POST', body: fd });
-          if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || 'Upload failed');
-        }
-        for (const x of files.filter((y) => y.size > CHUNK)) {
-          await uploadChunked(x, { car_id: car.id, kind: data.kind, title: files.length === 1 ? data.title : '' },
-            (pct) => (btn.textContent = `Uploading ${x.name}… ${pct}%`));
-        }
-      } finally { btn.disabled = false; }
+      okText('Uploading…');
+      const small = files.filter((x) => x.size <= CHUNK);
+      if (small.length) {
+        const fd = new FormData();
+        small.forEach((x) => fd.append('file', x));
+        fd.append('car_id', car.id); fd.append('kind', data.kind);
+        if (files.length === 1) fd.append('title', data.title);
+        const r = await fetch('api/documents', { method: 'POST', body: fd });
+        if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || 'Upload failed');
+      }
+      for (const x of files.filter((y) => y.size > CHUNK)) {
+        await uploadChunked(x, { car_id: car.id, kind: data.kind, title: files.length === 1 ? data.title : '' },
+          (pct) => okText(`Uploading ${x.name}… ${pct}%`));
+      }
       toast(files.length === 1 ? 'Uploaded' : `Uploaded ${files.length} files`);
       docFilter = data.kind;  // show what was just added
       documentsTab(el, car);
@@ -1012,10 +1024,12 @@ function carDetails(el, car) {
     <h2>Mileage history</h2>
     <div class="panel">${car.mileage_log.length ? `<table class="small"><tbody>${car.mileage_log.map((m) => `<tr data-mid="${m.id}"><td>${esc(m.date)}</td><td class="num">${num(m.mileage)}</td><td class="muted">${esc(m.source)}</td>
       <td class="num"><button class="link" title="Delete this reading" aria-label="Delete this reading">✕</button></td></tr>`).join('')}</tbody></table>` : '<p class="muted">No readings yet.</p>'}</div>`;
-  $('#carForm').onsubmit = async (e) => {
+  $('#carForm').onsubmit = (e) => {
     e.preventDefault();
-    await api('/cars/' + car.id, { method: 'PUT', json: Object.fromEntries(new FormData(e.target)) });
-    toast('Saved'); rerender();
+    submitting(e.target, async () => {
+      await api('/cars/' + car.id, { method: 'PUT', json: Object.fromEntries(new FormData(e.target)) });
+      toast('Saved'); rerender();
+    });
   };
   $('#hideCar').onclick = async () => {
     await api('/cars/' + car.id, { method: 'PUT', json: { archived: !car.archived } });
@@ -1053,12 +1067,14 @@ function addCarPage() {
     <form class="panel form" id="newCar">${carFormHtml({})}
       <label>Current mileage<input name="mileage" inputmode="numeric"></label>
       <div class="wide"><button class="primary">Add vehicle</button></div></form>`;
-  $('#newCar').onsubmit = async (e) => {
+  $('#newCar').onsubmit = (e) => {
     e.preventDefault();
-    try {
-      const r = await api('/cars', { json: Object.fromEntries(new FormData(e.target)) });
-      location.hash = '#/car/' + r.id;
-    } catch (err) { toast(err.message, true); }
+    submitting(e.target, async () => {
+      try {
+        const r = await api('/cars', { json: Object.fromEntries(new FormData(e.target)) });
+        location.hash = '#/car/' + r.id;
+      } catch (err) { toast(err.message, true); }
+    });
   };
 }
 
