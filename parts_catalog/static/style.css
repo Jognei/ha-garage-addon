@@ -325,6 +325,14 @@ dialog::backdrop { background: rgba(0,0,0,.6); backdrop-filter: blur(4px); }
 .mileage-big { font-size: 36px; font-weight: 600; letter-spacing: -.03em; line-height: 1.05; }
 .mileage-big .unit { font-size: 14px; font-weight: 500; color: var(--muted); margin-left: 6px; letter-spacing: 0; }
 .mileage-form input { background: var(--panel-2); border-color: transparent; }
+/* card header: handle | title (wraps) | fixed-width arrows, so nothing shifts between cards */
+.card-head { display: flex; align-items: flex-start; gap: 8px; }
+.card-title { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.card-chips { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 6px; }
+.card-head .order-btns { flex: none; display: flex; }
+.card-miles { margin: 14px 0; }
+.card-miles .mileage-form { display: flex; gap: 8px; margin-top: 10px; }
+.card-miles .mileage-form input { flex: 1; min-width: 0; }
 .up-list { border-top: none; display: grid; gap: 14px; margin-top: 6px; }
 .up-item { border: none; border-radius: 0; padding: 0; background: none; align-items: center; gap: 12px; }
 .up-main { overflow-wrap: anywhere; }

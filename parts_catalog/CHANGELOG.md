@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.0.50
+
+- Garage cards keep the same layout on every vehicle: the reorder arrows stay in the top corner, long names wrap
+  under them, due tags sit under the name, and the "New reading" box is a full-width row under the mileage.
+
 ## 1.0.48
 
 - Quick services: Log a service shows only the jobs you tick (by default wash, fuel fill-up, oil top-up, tire

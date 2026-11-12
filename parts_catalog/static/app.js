@@ -335,15 +335,15 @@ async function home() {
       ${cars.map((c, n) => `
         <div class="panel car-card ${c.overdue ? 'st-overdue' : c.due_soon ? 'st-soon' : c.schedules ? 'st-ok' : ''}" data-car="${c.id}">
           ${K.photo && c.photo_id ? `<a href="#/car/${c.id}"><img class="car-photo" src="${fileUrl({ id: c.photo_id, original_name: c.photo_name })}" alt="" loading="lazy"></a>` : ''}
-          <div class="spread"><div class="row" style="gap:8px;align-items:flex-start">
+          <div class="card-head">
               ${cars.length > 1 ? `<span class="drag-handle" draggable="true" title="Drag to reorder">⠿</span>` : ''}
-              <div><h3><a href="#/car/${c.id}">${esc(c.name)}</a></h3>
-              <div class="muted small">${esc([c.year, c.make, c.model, c.kind !== 'Car' ? c.kind : ''].filter(Boolean).join(' · '))}</div></div></div>
-            <div class="row" style="gap:6px">${c.overdue ? `<span class="chip overdue">${c.overdue} overdue</span>` : ''}${c.due_soon ? `<span class="chip soon">${c.due_soon} due soon</span>` : ''}
-              ${cars.length > 1 ? `<span class="order-btns"><button class="link up" title="Move up" ${n === 0 ? 'disabled' : ''}>↑</button><button class="link down" title="Move down" ${n === cars.length - 1 ? 'disabled' : ''}>↓</button></span>` : ''}</div></div>
-          ${K.mileage ? `<div class="row" style="margin:12px 0">
-            <div><div class="mileage-big">${c.mileage != null ? num(c.mileage) : '—'}<span class="unit">mi</span></div><div class="muted small">${c.mileage_date ? 'as of ' + esc(c.mileage_date) : 'no reading yet'}</div></div>
-            <form class="row mileage-form" style="margin-left:auto"><input name="m" inputmode="numeric" placeholder="New reading" style="width:120px"><button>Update</button></form>
+              <div class="card-title"><h3><a href="#/car/${c.id}">${esc(c.name)}</a></h3>
+              <div class="muted small">${esc([c.year, c.make, c.model, c.kind !== 'Car' ? c.kind : ''].filter(Boolean).join(' · '))}</div>
+              ${c.overdue || c.due_soon ? `<div class="card-chips">${c.overdue ? `<span class="chip overdue">${c.overdue} overdue</span>` : ''}${c.due_soon ? `<span class="chip soon">${c.due_soon} due soon</span>` : ''}</div>` : ''}</div>
+              ${cars.length > 1 ? `<span class="order-btns"><button class="link up" title="Move up" ${n === 0 ? 'disabled' : ''}>↑</button><button class="link down" title="Move down" ${n === cars.length - 1 ? 'disabled' : ''}>↓</button></span>` : ''}</div>
+          ${K.mileage ? `<div class="card-miles">
+            <div class="mileage-big">${c.mileage != null ? num(c.mileage) : '—'}<span class="unit">mi</span></div><div class="muted small">${c.mileage_date ? 'as of ' + esc(c.mileage_date) : 'no reading yet'}</div>
+            <form class="mileage-form"><input name="m" inputmode="numeric" placeholder="New reading"><button>Update</button></form>
           </div>` : `<div class="muted small" style="margin:8px 0">${c.mileage != null ? miles(c.mileage) : 'No mileage yet'}${c.mileage_date ? ' · ' + esc(c.mileage_date) : ''}</div>`}
           ${c.upcoming.length ? `<div class="up-list">${c.upcoming.map((u) => `<div class="up-item ${u.state}" data-sid="${u.id}">
               <span class="svc-ico${c.upcoming.length > 1 ? ' grip" title="Drag to reorder' : ''}">${svcIcon(u.title)}</span>
