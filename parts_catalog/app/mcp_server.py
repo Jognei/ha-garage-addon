@@ -31,10 +31,10 @@ def _tool(name, description, props=None, required=()):
 
 
 TOOLS = [
-    _tool("list_vehicles", "All vehicles with odometer, overdue / due-soon counts, next services and open parts."),
+    _tool("list_vehicles", "All vehicles with odometer, overdue / due-soon counts, next services and open parts; hidden = sold or stored."),
     _tool("get_vehicle", "One vehicle in detail: every service schedule with its due mileage/date and state, recent odometer readings.",
           {"vehicle": VEHICLE}, ["vehicle"]),
-    _tool("whats_due", "Services that are overdue or due soon (and schedules never done), for one vehicle or all.",
+    _tool("whats_due", "Services that are overdue or due soon (and schedules never done), for one vehicle or all that aren't hidden.",
           {"vehicle": VEHICLE}),
     _tool("list_services", "Service history of a vehicle, newest first.",
           {"vehicle": VEHICLE, "limit": {"type": "integer", "default": 20}}, ["vehicle"]),
@@ -92,6 +92,8 @@ def vehicle(ref):
         hit = [c for c in cars if s.lower() in c["name"].lower()]
         exact = [c for c in hit if c["name"].lower() == s.lower()]
         hit = exact or hit
+    if len(hit) > 1:
+        hit = [c for c in hit if not c.get("archived")] or hit  # a hidden (sold, stored) vehicle gives way
     if not hit:
         raise ToolError(f"No vehicle matches {ref!r}. Vehicles: " + ", ".join(f"{c['id']}={c['name']}" for c in cars))
     if len(hit) > 1:
@@ -106,8 +108,8 @@ def due_row(u):
 
 def run_tool(name, a):
     if name == "list_vehicles":
-        return [{"id": c["id"], "name": c["name"], "kind": c.get("kind"), "year": c.get("year"), "odometer": c.get("mileage"),
-                 "odometer_date": c.get("mileage_date"), "overdue": c["overdue"], "due_soon": c["due_soon"],
+        return [{"id": c["id"], "name": c["name"], "hidden": bool(c.get("archived")), "kind": c.get("kind"), "year": c.get("year"),
+                 "odometer": c.get("mileage"), "odometer_date": c.get("mileage_date"), "overdue": c["overdue"], "due_soon": c["due_soon"],
                  "next": [due_row(u) for u in c["upcoming"]], "parts_to_get": c["parts_open"],
                  "parts_on_hand": c["parts_on_hand"], "last_service": c["last_service"]} for c in call("GET", "/cars")]
     if name == "get_vehicle":
@@ -115,7 +117,7 @@ def run_tool(name, a):
         c["upcoming"] = [due_row(u) for u in c["upcoming"]]
         return c
     if name == "whats_due":
-        cars = [vehicle(a["vehicle"])] if a.get("vehicle") else call("GET", "/cars")
+        cars = [vehicle(a["vehicle"])] if a.get("vehicle") else [c for c in call("GET", "/cars") if not c.get("archived")]
         out = []
         for c in cars:
             up = call("GET", f"/cars/{c['id']}")["upcoming"]

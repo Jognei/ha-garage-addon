@@ -133,6 +133,17 @@ class McpTest(unittest.TestCase):
         r, _ = self.tool("log_service", vehicle="Red Coupe", title="Plugs", schedules=["spark"])
         self.assertEqual((r["schedules_reset"], r["schedules_reset_titles"]), (1, ["Spark plugs"]))
 
+    def test_hidden_vehicles(self):
+        sold = self.c.post("/api/cars", json={"name": "Sold Roadster"}).get_json()["id"]
+        kept = self.c.post("/api/cars", json={"name": "Green Roadster"}).get_json()["id"]
+        self.c.put(f"/api/cars/{sold}", json={"archived": True})
+        hidden = {v["name"]: v["hidden"] for v in self.tool("list_vehicles")[0]}
+        self.assertEqual((hidden["Sold Roadster"], hidden["Green Roadster"]), (True, False))
+        self.assertNotIn("Sold Roadster", [v["vehicle"] for v in self.tool("whats_due")[0]])
+        v, err = self.tool("get_vehicle", vehicle="roadster")
+        self.assertFalse(err, v)
+        self.assertEqual(v["id"], kept)
+
     def test_internal_calls_pass_allowlist(self):
         try:
             server.ALLOWED_CLIENTS = {"172.30.32.2"}
