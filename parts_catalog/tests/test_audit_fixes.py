@@ -632,6 +632,16 @@ class AuditFixesTest(unittest.TestCase):
         car = self.c.get(f"/api/cars/{cid}").get_json()
         self.assertEqual((car["mileage"], car["mileage_date"]), (148000, ago(171)))
 
+    def test_deleting_the_typo_on_the_odometer_lowers_it_when_the_log_is_out_of_order(self):
+        cid = self.car("DEMO-ODO-OLD-TYPO")
+        for date, mileage in (("2026-09-01", 50120), ("2026-10-01", 501200), ("2026-11-01", 50900)):  # as older versions logged them
+            db.execute("INSERT INTO mileage_log (car_id, date, mileage) VALUES (?,?,?)", (cid, date, mileage))
+        db.execute("UPDATE cars SET mileage=501200, mileage_date='2026-10-01' WHERE id=?", (cid,))
+        typo = db.row("SELECT id FROM mileage_log WHERE car_id=? AND mileage=501200", (cid,))["id"]
+        self.c.delete(f"/api/cars/{cid}/mileage/{typo}")
+        car = self.c.get(f"/api/cars/{cid}").get_json()
+        self.assertEqual((car["mileage"], car["mileage_date"]), (50900, "2026-11-01"))
+
     def last_done(self, cid, sid):
         u = next(u for u in self.c.get(f"/api/cars/{cid}").get_json()["upcoming"] if u["id"] == sid)
         return u["last_date"], u["last_mileage"]

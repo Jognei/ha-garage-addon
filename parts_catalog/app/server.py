@@ -517,10 +517,14 @@ def api_mileage(car_id):
 
 @app.route("/api/cars/<int:car_id>/mileage/<int:log_id>", methods=["DELETE"])
 def api_mileage_reading(car_id, log_id):
-    newest = newest_reading(car_id)
-    if not db.execute("DELETE FROM mileage_log WHERE id=? AND car_id=?", (log_id, car_id)).rowcount:
+    gone = db.row("SELECT * FROM mileage_log WHERE id=? AND car_id=?", (log_id, car_id))
+    if not gone:
         return err("No such reading", 404)
-    if newest["id"] == log_id:  # the odometer showed this reading: back to the newest one left
+    newest = newest_reading(car_id)
+    car = db.row("SELECT mileage, mileage_date FROM cars WHERE id=?", (car_id,))
+    db.execute("DELETE FROM mileage_log WHERE id=?", (log_id,))
+    # the newest reading, or the one the odometer shows (older versions logged out of order): back to the newest one left
+    if newest["id"] == log_id or (gone["mileage"], gone["date"]) == (car["mileage"], car["mileage_date"]):
         r = newest_reading(car_id) or {}
         db.execute("UPDATE cars SET mileage=?, mileage_date=? WHERE id=?", (r.get("mileage"), r.get("date"), car_id))
     return jsonify(ok=True, mileage=db.row("SELECT mileage FROM cars WHERE id=?", (car_id,))["mileage"])
