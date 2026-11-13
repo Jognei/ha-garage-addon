@@ -824,7 +824,7 @@ def projects_for(car_id):
     out = db.rows("""SELECT * FROM projects WHERE car_id=?
                      ORDER BY status='Done', COALESCE(sort_order, id), id""", (car_id,))
     for p in out:
-        p["tasks"] = db.rows("SELECT id, title, done FROM project_tasks WHERE project_id=? ORDER BY COALESCE(sort_order, id), id",
+        p["tasks"] = db.rows("SELECT id, title, done, COALESCE(notes, '') AS notes FROM project_tasks WHERE project_id=? ORDER BY COALESCE(sort_order, id), id",
                              (p["id"],))
         p["parts"] = db.rows("""SELECT id, name, part_number, brand, qty, status, location FROM parts WHERE project_id=?
                                 ORDER BY name COLLATE NOCASE""", (p["id"],))
@@ -856,8 +856,8 @@ def save_project(car_id, pid, b):
                          list(vals.values())).lastrowid
     elif vals:
         db.execute(f"UPDATE projects SET {','.join(k + '=?' for k in vals)} WHERE id=?", list(vals.values()) + [pid])
-    if "tasks" in b:  # the whole list, in order; {id, title} keeps the tick of that step (no id: a new step),
-        # plain text keeps the tick of a step with the same text
+    if "tasks" in b:  # the whole list, in order; {id, title} keeps the tick and notes of that step (no id: a new
+        # step), plain text keeps those of a step with the same text; "done"/"notes" given replace them
         old = db.rows("SELECT * FROM project_tasks WHERE project_id=?", (pid,))
         by_id, by_title = {t["id"]: t for t in old}, {t["title"].lower(): t for t in old}
         db.execute("DELETE FROM project_tasks WHERE project_id=?", (pid,))
@@ -870,9 +870,10 @@ def save_project(car_id, pid, b):
                 continue
             prev = (by_title.get(title.lower()) if text else by_id.get(t["id"])) or {}
             done = t["done"] if "done" in t else prev.get("done", 0)
+            notes = (t["notes"] or "").strip() if "notes" in t else prev.get("notes") or ""
             n += 1
-            db.execute("INSERT INTO project_tasks (project_id, title, done, sort_order) VALUES (?,?,?,?)",
-                       (pid, title, 1 if done else 0, n))
+            db.execute("INSERT INTO project_tasks (project_id, title, done, sort_order, notes) VALUES (?,?,?,?,?)",
+                       (pid, title, 1 if done else 0, n, notes))
     if "part_ids" in b:
         db.execute("UPDATE parts SET project_id=NULL WHERE project_id=?", (pid,))
         for part_id in b["part_ids"] or []:
@@ -909,7 +910,11 @@ def api_project(pid):
 
 @app.route("/api/project-tasks/<int:tid>", methods=["PUT"])
 def api_project_task(tid):
-    db.execute("UPDATE project_tasks SET done=? WHERE id=?", (1 if body().get("done") else 0, tid))
+    b = body()  # tick and/or notes; what's left out stays
+    if "done" in b:
+        db.execute("UPDATE project_tasks SET done=? WHERE id=?", (1 if b["done"] else 0, tid))
+    if "notes" in b:
+        db.execute("UPDATE project_tasks SET notes=? WHERE id=?", ((b["notes"] or "").strip(), tid))
     return jsonify(ok=True)
 
 

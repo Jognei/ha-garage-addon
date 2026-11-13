@@ -245,6 +245,18 @@ tr.nofit td { opacity: .5; }
 .proj-list { display: grid; gap: 12px; }
 .proj .checks { grid-template-columns: 1fr; margin-top: 8px; }
 .proj .done-task { text-decoration: line-through; color: var(--muted); }
+.proj .steps { display: grid; gap: 2px; margin-top: 8px; }
+.step-item { border-bottom: 1px solid var(--line); }
+.step-item:last-child { border-bottom: 0; }
+.step-head { display: flex; gap: 8px; align-items: center; min-height: 40px; }
+.step-head input[type=checkbox] { flex: none; width: 20px; height: 20px; }
+.step-open { flex: 1; display: flex; justify-content: space-between; align-items: center; gap: 8px; background: none;
+  border: 0; padding: 6px 0; color: inherit; font: inherit; font-size: 14px; text-align: left; cursor: pointer; }
+.step-item.done-task .step-title { text-decoration: line-through; }
+.step-item.done-task { text-decoration: none; }
+.step-more { flex: none; white-space: nowrap; }
+.step-body { padding: 0 0 10px 28px; }
+.step-body .note { margin-top: 0; overflow-wrap: anywhere; }
 .quick summary { cursor: pointer; color: var(--muted); font-size: 12.5px; margin: 8px 0 6px; }
 .quick-list { display: flex; flex-wrap: wrap; gap: 6px; }
 .quick-list button { padding: 3px 10px; border-radius: 999px; font-size: 12.5px; }

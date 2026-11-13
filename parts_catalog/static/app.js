@@ -653,6 +653,12 @@ async function projectsTab(el, car) {
   const active = projects.filter((p) => p.status !== 'Done');
   const done = projects.filter((p) => p.status === 'Done');
   const chip = { Planned: 'unknown', 'In progress': 'soon', Done: 'ok' };
+  // a step: tick box, then its title opens the step's own notes (torque specs, how-to) underneath
+  const stepItem = (t) => `<div class="step-item${t.done ? ' done-task' : ''}" data-step="${t.id}">
+    <div class="step-head"><input type="checkbox" data-tid="${t.id}" aria-label="Done: ${esc(t.title)}" ${t.done ? 'checked' : ''}>
+      <button type="button" class="step-open" aria-expanded="false"><span class="step-title">${esc(t.title)}</span>
+        <span class="step-more muted small">${t.notes ? 'notes' : ''} ▸</span></button></div>
+    <div class="step-body" hidden></div></div>`;
   const card = (p) => `<div class="panel proj" data-pid="${p.id}">
     <div class="spread"><div class="row" style="gap:8px">${p.status !== 'Done' && active.length > 1 ? '<span class="grip" title="Drag to reorder">⠿</span>' : ''}
         <h3 style="margin:0">${esc(p.title)}</h3><span class="chip ${chip[p.status]}">${esc(p.status)}</span></div>
@@ -660,7 +666,7 @@ async function projectsTab(el, car) {
         ${p.status !== 'Done' ? '<button class="finish">✓ Finish &amp; log</button>' : '<button class="link reopen">Reopen</button>'}<button class="link edit">Edit</button></div></div>
     ${p.target_date && p.status !== 'Done' ? `<div class="small muted">Target: ${esc(p.target_date)}</div>` : ''}${p.done_date ? `<div class="small muted">Finished ${esc(p.done_date)}</div>` : ''}
     ${p.notes ? `<div class="note small">${esc(p.notes)}</div>` : ''}
-    ${p.tasks.length ? `<div class="checks">${p.tasks.map((t) => `<label class="${t.done ? 'done-task' : ''}"><input type="checkbox" data-tid="${t.id}" ${t.done ? 'checked' : ''}> ${esc(t.title)}</label>`).join('')}</div>` : ''}
+    ${p.tasks.length ? `<div class="steps">${p.tasks.map(stepItem).join('')}</div>` : ''}
     ${p.parts.length ? `<h3>Parts</h3><table class="small"><tbody>${p.parts.map((x) => `<tr><td>${x.qty > 1 ? x.qty + '× ' : ''}${esc(x.name)} <span class="muted mono">${esc(x.part_number)}</span></td>
       <td class="${sCls(x.status)}">${esc(x.status)}</td><td class="muted">${esc(x.location)}</td></tr>`).join('')}</tbody></table>` : ''}
   </div>`;
@@ -686,8 +692,40 @@ async function projectsTab(el, car) {
     };
     $$('[data-tid]', box).forEach((cb) => (cb.onchange = async () => {
       await api('/project-tasks/' + cb.dataset.tid, { method: 'PUT', json: { done: cb.checked } });
-      cb.parentNode.classList.toggle('done-task', cb.checked);
+      const t = p.tasks.find((x) => x.id === +cb.dataset.tid);
+      if (t) t.done = cb.checked ? 1 : 0;
+      cb.closest('.step-item').classList.toggle('done-task', cb.checked);
     }));
+    $$('.step-item', box).forEach((item) => {
+      const t = p.tasks.find((x) => x.id === +item.dataset.step);
+      const body = $('.step-body', item), btn = $('.step-open', item);
+      const view = () => {
+        body.innerHTML = `${t.notes ? `<div class="note small">${esc(t.notes)}</div>` : '<div class="small muted">No notes for this step yet.</div>'}
+          <button type="button" class="link step-edit">${t.notes ? 'Edit notes' : '＋ Add notes'}</button>`;
+        $('.step-edit', body).onclick = edit;
+      };
+      const edit = () => {
+        body.innerHTML = `<textarea class="step-notes" rows="8" placeholder="Torque specs, order of work, things to check…" style="width:100%">${esc(t.notes)}</textarea>
+          <div class="row" style="gap:8px;margin-top:6px"><button type="button" class="primary step-save">Save</button><button type="button" class="link step-cancel">Cancel</button></div>`;
+        const ta = $('.step-notes', body);
+        ta.focus();
+        $('.step-cancel', body).onclick = view;
+        $('.step-save', body).onclick = async () => {
+          const notes = ta.value.trim();
+          await api('/project-tasks/' + t.id, { method: 'PUT', json: { notes } });
+          t.notes = notes;
+          $('.step-more', item).textContent = (notes ? 'notes ' : '') + (body.hidden ? '▸' : '▾');
+          toast('Step notes saved');
+          view();
+        };
+      };
+      btn.onclick = () => {
+        body.hidden = !body.hidden;
+        btn.setAttribute('aria-expanded', String(!body.hidden));
+        $('.step-more', item).textContent = (t.notes ? 'notes ' : '') + (body.hidden ? '▸' : '▾');
+        if (!body.hidden) view();
+      };
+    });
   });
   sortable(el, '.proj', '.grip', async () => {
     await api(`/cars/${car.id}/projects/order`, { json: { ids: $$('.proj', el).map((b) => +b.dataset.pid) } });

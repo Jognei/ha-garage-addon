@@ -115,7 +115,8 @@ CREATE TABLE IF NOT EXISTS project_tasks (
   project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
   title TEXT NOT NULL,
   done INTEGER DEFAULT 0,
-  sort_order INTEGER
+  sort_order INTEGER,
+  notes TEXT DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS ix_parts_car ON parts(car_id);
 CREATE INDEX IF NOT EXISTS ix_services_car ON services(car_id);
@@ -197,6 +198,8 @@ def add_missing_columns(conn):
                      ("photo_id", "INTEGER REFERENCES documents(id) ON DELETE SET NULL"), ("ha_slug", "TEXT")):
         if col not in have:
             conn.execute(f"ALTER TABLE cars ADD COLUMN {col} {ddl}")
+    if "notes" not in {r[1] for r in conn.execute("PRAGMA table_info(project_tasks)")}:  # each step's own notes
+        conn.execute("ALTER TABLE project_tasks ADD COLUMN notes TEXT DEFAULT ''")
 
 
 def insert(conn, table, values):

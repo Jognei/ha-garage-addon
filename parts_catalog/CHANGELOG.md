@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.0.54
+
+- Projects: each step has its own notes. Tap a step to open them (torque specs, order of work, things to check), and
+  add or edit them right there. Editing the project keeps every step's notes.
+
 ## 1.0.52
 
 - Restore: a backup that fails partway changes nothing, a damaged catalog database is refused, and a restore brings

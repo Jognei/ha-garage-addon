@@ -86,6 +86,23 @@ class ProjectsTest(unittest.TestCase):
                                                           {"id": ticked["id"], "title": "Torque bolts"}]})
         self.assertEqual([t["done"] for t in tasks()], [0, 1])
 
+    def test_each_step_has_its_own_notes(self):
+        car = self.c.post("/api/cars", json={"name": "Notes car"}).get_json()["id"]
+        pid = self.c.post(f"/api/cars/{car}/projects", json={"title": "Engine in", "tasks": [
+            {"title": "Mount starter", "notes": "Starter bolts 50 Nm"}, "Mount intake"]}).get_json()["id"]
+        tasks = lambda: self.c.get(f"/api/cars/{car}/projects").get_json()[0]["tasks"]  # noqa: E731
+        starter, intake = tasks()
+        self.assertEqual((starter["notes"], intake["notes"]), ("Starter bolts 50 Nm", ""))
+        # notes and tick are set apart; one left out stays
+        self.c.put(f"/api/project-tasks/{intake['id']}", json={"notes": "  M8 22 Nm  "})
+        self.c.put(f"/api/project-tasks/{intake['id']}", json={"done": True})
+        self.assertEqual((tasks()[1]["notes"], tasks()[1]["done"]), ("M8 22 Nm", 1))
+        # editing the project (the dialog sends steps without notes) keeps each step's notes
+        self.c.put(f"/api/projects/{pid}", json={"tasks": [{"id": intake["id"], "title": "Mount intake manifold"},
+                                                          {"id": starter["id"], "title": "Mount starter"}]})
+        self.assertEqual([(t["title"], t["notes"]) for t in tasks()],
+                         [("Mount intake manifold", "M8 22 Nm"), ("Mount starter", "Starter bolts 50 Nm")])
+
     def test_a_step_id_that_is_not_a_number_changes_nothing(self):
         car = self.c.post("/api/cars", json={"name": "Bad step car"}).get_json()["id"]
         pid = self.c.post(f"/api/cars/{car}/projects", json={"title": "Brakes", "tasks": ["Order pads", "Fit pads"]}).get_json()["id"]
