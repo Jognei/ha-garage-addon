@@ -204,11 +204,13 @@ const rerender = () => router();
 // ---------- shared bits ----------
 
 function stateChip(u) {
+  if (u.needed && u.state === 'overdue') return '<span class="chip overdue">Needed</span>';
   const label = { overdue: 'Overdue', soon: 'Due soon', ok: 'OK', unknown: 'Set last done', snoozed: 'Dismissed' }[u.state];
   return `<span class="chip ${u.state}">${label}</span>`;
 }
 
 function dueText(u) {
+  if (u.needed && u.state === 'overdue') return 'Needed' + (u.needed_since ? ' since ' + u.needed_since : '');
   const bits = [];
   if (u.miles_left != null) bits.push(u.miles_left < 0 ? `${num(-u.miles_left)} mi over` : `${num(u.miles_left)} mi left`);
   if (u.days_left != null) bits.push(u.days_left < 0 ? `${-u.days_left} days over` : `${u.days_left} days left`);
@@ -297,7 +299,7 @@ function sortable(root, itemSel, handleSel, onDone) {
 // "Dismiss for now": the schedule stops counting as due soon / overdue until a date.
 function snoozeDialog(u) {
   const form = openDialog('Dismiss for now', `
-    <p><b>${esc(u.title)}</b> stops showing as ${u.state === 'overdue' ? 'overdue' : 'due soon'} until the date you pick. Logging it as done clears this.</p>
+    <p><b>${esc(u.title)}</b> stops showing as ${u.needed ? 'needed' : u.state === 'overdue' ? 'overdue' : 'due soon'} until the date you pick. Logging it as done clears this.</p>
     <div class="row">${[[7, '1 week'], [14, '2 weeks'], [30, '1 month'], [90, '3 months']].map(([d, l]) => `<button type="button" data-days="${d}">${l}</button>`).join('')}</div>
     <div class="form" style="margin-top:12px"><label>Until<input type="date" name="snoozed_until" value="${datePlus(14)}" required></label></div>`,
   async (data) => {
@@ -357,7 +359,7 @@ async function home() {
               ${cars.length > 1 ? `<span class="drag-handle" draggable="true" title="Drag to reorder">⠿</span>` : ''}
               <div class="card-title"><h3><a href="#/car/${c.id}">${esc(c.name)}</a></h3>
               <div class="muted small">${esc([c.year, c.make, c.model, c.kind !== 'Car' ? c.kind : ''].filter(Boolean).join(' · '))}</div>
-              ${c.overdue || c.due_soon ? `<div class="card-chips">${c.overdue ? `<span class="chip overdue">${c.overdue} overdue</span>` : ''}${c.due_soon ? `<span class="chip soon">${c.due_soon} due soon</span>` : ''}</div>` : ''}</div>
+              ${c.overdue || c.due_soon ? `<div class="card-chips">${c.needed ? `<span class="chip overdue">${c.needed} needed</span>` : ''}${c.overdue - (c.needed || 0) ? `<span class="chip overdue">${c.overdue - (c.needed || 0)} overdue</span>` : ''}${c.due_soon ? `<span class="chip soon">${c.due_soon} due soon</span>` : ''}</div>` : ''}</div>
               ${cars.length > 1 ? `<span class="order-btns"><button class="link up" title="Move up" ${n === 0 ? 'disabled' : ''}>↑</button><button class="link down" title="Move down" ${n === cars.length - 1 ? 'disabled' : ''}>↓</button></span>` : ''}</div>
           ${K.mileage ? `<div class="card-miles">
             <div class="mileage-big">${c.mileage != null ? num(c.mileage) : '—'}<span class="unit">mi</span></div><div class="muted small">${c.mileage_date ? 'as of ' + esc(c.mileage_date) : 'no reading yet'}</div>
@@ -365,7 +367,7 @@ async function home() {
           </div>` : `<div class="muted small" style="margin:8px 0">${c.mileage != null ? miles(c.mileage) : 'No mileage yet'}${c.mileage_date ? ' · ' + esc(c.mileage_date) : ''}</div>`}
           ${c.upcoming.length ? `<div class="up-list">${c.upcoming.map((u) => `<div class="up-item ${u.state}" data-sid="${u.id}">
               <span class="svc-ico${c.upcoming.length > 1 ? ' grip" title="Drag to reorder' : ''}">${svcIcon(u.title)}</span>
-              <div class="up-main"><div class="up-line"><span class="up-name">${esc(u.title)}</span><span class="up-due">${esc(u.state === 'unknown' ? 'Set last done' : dueText(u))}</span></div>${meter(u)}</div>
+              <div class="up-main"><div class="up-line"><span class="up-name">${esc(u.title)}</span><span class="up-due">${esc(u.state === 'unknown' ? 'Set last done' : u.needed && u.state === 'overdue' ? 'Needed' : dueText(u))}</span></div>${meter(u)}</div>
               <div class="up-actions">${['overdue', 'soon'].includes(u.state) ? '<button class="link snooze" title="Dismiss for now">✕</button>' : ''}<button class="link log" title="Log this service as done">✓</button></div>
             </div>`).join('')}</div>`
             : !c.schedules ? `<p class="muted small">No service schedule yet. <a href="#/car/${c.id}">Set one up</a>.</p>`
@@ -512,7 +514,7 @@ async function servicesTab(el, car) {
   const up = car.upcoming;
   el.innerHTML = `
     <div class="spread"><h2 style="margin-top:0">Upcoming services</h2>
-      <div class="row"><button id="addPresets">＋ Common services</button><button id="addSched">＋ Custom schedule</button><button class="primary" id="logSvc">Log a service</button></div></div>
+      <div class="row"><button id="addJob">＋ Job to do</button><button id="addPresets">＋ Common services</button><button id="addSched">＋ Custom schedule</button><button class="primary" id="logSvc">Log a service</button></div></div>
     ${car.archived ? '<div class="callout-box" style="margin-bottom:12px">This vehicle is hidden from the garage and Home Assistant. <a href="#/car/' + car.id + '/details">Show it again</a> under Details.</div>' : ''}
     <div class="panel table-wrap" style="padding:0">${up.length ? `<table><thead><tr><th></th><th>Service</th><th class="hide-sm">Interval</th><th class="hide-sm">Last done</th><th>Due</th><th class="hide-sm"></th><th class="hide-sm">Manual</th><th></th></tr></thead><tbody>
       ${up.map((u) => `<tr class="upcoming-row" data-sid="${u.id}">
@@ -525,6 +527,7 @@ async function servicesTab(el, car) {
         <td class="small hide-sm">${u.doc_id ? `<a href="${fileUrl({ id: u.doc_id, original_name: u.doc_title + '.pdf' }, u.doc_page)}" target="_blank">${esc(u.doc_title)}${u.doc_page ? ' p.' + u.doc_page : ''}</a>` : ''}</td>
         <td class="num up-act"><button class="done">✓ Done</button>
           ${['overdue', 'soon'].includes(u.state) ? '<button class="link snooze">Dismiss</button>' : ''}${u.state === 'snoozed' ? '<button class="link unsnooze">Bring back</button>' : ''}
+          ${u.needed ? '<button class="link unneed" title="Not needed now">Not needed</button>' : '<button class="link need" title="Mark as needed now">Needed</button>'}
           <button class="link edit">Edit</button></td></tr>`).join('')}
     </tbody></table>${up.some((u) => u.sort_order != null) ? '<div class="small muted" style="padding:8px 10px">In your own order. <button class="link" id="autoOrder">Back to most urgent first</button></div>' : ''}` : `<div class="empty">No schedules yet. Click <b>＋ Common services</b> to pick oil changes, filters, fluids and so on.</div>`}</div>
 
@@ -539,12 +542,16 @@ async function servicesTab(el, car) {
 
   $('#logSvc').onclick = () => serviceDialog(car, up, null, []);
   $('#addSched').onclick = () => scheduleDialog(car, docs, null);
+  $('#addJob').onclick = () => scheduleDialog(car, docs, null, { job: true });
   $('#addPresets').onclick = () => presetsDialog(car, up);
   $$('tr[data-sid]', el).forEach((tr) => {
     const s = up.find((u) => u.id === +tr.dataset.sid);
     $('.done', tr).onclick = () => serviceDialog(car, up, null, [s.id]);
     $('.edit', tr).onclick = () => scheduleDialog(car, docs, s);
     if ($('.snooze', tr)) $('.snooze', tr).onclick = () => snoozeDialog(s);
+    const setNeeded = async (on) => { await api('/schedules/' + s.id, { method: 'PUT', json: { needed: on } }); toast(on ? 'Marked as needed' : 'No longer needed'); rerender(); };
+    if ($('.need', tr)) $('.need', tr).onclick = () => setNeeded(true);
+    if ($('.unneed', tr)) $('.unneed', tr).onclick = () => setNeeded(false);
     if ($('.unsnooze', tr)) $('.unsnooze', tr).onclick = async () => { await api('/schedules/' + s.id, { method: 'PUT', json: { snoozed_until: null } }); rerender(); };
   });
   sortable(el, 'tr[data-sid]', '.grip', async () => {
@@ -787,11 +794,14 @@ async function projectDialog(car, p) {
   };
 }
 
-function scheduleDialog(car, docs, s) {
+function scheduleDialog(car, docs, s, { job = false } = {}) {
   const manuals = docs.map((d) => [d.id, d.title]);
-  const form = openDialog(s ? 'Edit schedule' : 'New service schedule', `
+  const needed = s ? !!s.needed : job;
+  const form = openDialog(s ? 'Edit schedule' : job ? 'Job to do' : 'New service schedule', `
+    ${job ? '<p class="small muted" style="margin-top:0">Something this vehicle needs now. It shows as needed until you log it, then leaves the list. Give it an interval to make it repeat.</p>' : ''}
     <div class="form">
-      <label class="wide">Service<input name="title" required value="${esc(s ? s.title : '')}" placeholder="e.g. Valve adjustment"></label>
+      <label class="wide">${job ? 'Job' : 'Service'}<input name="title" required value="${esc(s ? s.title : '')}" placeholder="${job ? 'e.g. Fix oil leak' : 'e.g. Valve adjustment'}"></label>
+      <label class="wide check"><input type="checkbox" name="needed" ${needed ? 'checked' : ''}> Needed now <span class="muted small">(counts as overdue until logged)</span></label>
       <label>Every (miles)<input name="interval_miles" inputmode="numeric" value="${esc(s ? s.interval_miles ?? '' : '')}"></label>
       <label>Every (months)<input name="interval_months" inputmode="numeric" value="${esc(s ? s.interval_months ?? '' : '')}"></label>
       <label>Last done (date)<input type="date" name="last_date" value="${esc(s ? s.last_date ?? '' : '')}"></label>
@@ -803,6 +813,7 @@ function scheduleDialog(car, docs, s) {
     <p class="small muted">Logging a service that counts as this one updates “last done” automatically.</p>
     ${s ? '<button type="button" class="danger" id="delSched">Delete schedule</button>' : ''}`,
   async (data) => {
+    data.needed = form.elements.needed.checked;
     if (s) await api('/schedules/' + s.id, { method: 'PUT', json: data });
     else await api(`/cars/${car.id}/schedules`, { json: data });
     rerender();

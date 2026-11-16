@@ -139,6 +139,41 @@ class ProjectsTest(unittest.TestCase):
         for sid in ids:
             self.c.delete(f"/api/schedules/{sid}")
 
+    def test_needed_now(self):
+        cid = self.c.post("/api/cars", json={"name": "Needy car", "mileage": 50000}).get_json()["id"]
+        card = lambda: next(c for c in self.c.get("/api/cars").get_json() if c["id"] == cid)
+        sensors = lambda: ha_sensors.build_states({"cars": [c for c in server.ha_summary()["cars"] if c["id"] == cid]})
+        oil, leak = self.c.post(f"/api/cars/{cid}/schedules", json={"items": [
+            {"title": "Oil", "interval_miles": 5000, "last_mileage": 48000, "last_date": day(-30)},
+            {"title": "Fix oil leak", "needed": True}]}).get_json()["ids"]
+        c = card()
+        self.assertEqual((c["overdue"], c["needed"]), (1, 1))
+        self.assertEqual(c["upcoming"][0]["title"], "Fix oil leak")
+        self.assertEqual(c["upcoming"][0]["needed_since"], day(0))
+        st = sensors()
+        self.assertEqual(st["sensor.garage_needy_car_status"]["state"], "Needed")
+        self.assertEqual(st["sensor.garage_needy_car_next_service"]["state"], "Fix oil leak")
+        self.assertEqual(st["sensor.garage_needy_car_next_service_due"]["state"], "Needed now")
+        # a repeating one marked needed goes ahead of its interval; editing keeps the day it was first marked
+        self.c.put(f"/api/schedules/{oil}", json={"needed": True})
+        db.execute("UPDATE schedules SET needed_since=? WHERE id=?", (day(-3), oil))
+        self.c.put(f"/api/schedules/{oil}", json={"needed": True, "notes": "5W-30"})
+        self.assertEqual(db.row("SELECT needed_since FROM schedules WHERE id=?", (oil,))["needed_since"], day(-3))
+        self.assertEqual(card()["needed"], 2)
+        # logging: the repeating one loses the mark and counts from the service; the one-off leaves the list
+        sid = self.c.post(f"/api/cars/{cid}/services", json={"title": "Oil + leak", "mileage": 50100,
+                                                            "schedule_ids": [oil, leak]}).get_json()["id"]
+        up = self.c.get(f"/api/cars/{cid}").get_json()["upcoming"]
+        self.assertEqual([(u["title"], u["state"], u["needed"]) for u in up], [("Oil", "ok", False)])
+        self.assertEqual(sensors()["sensor.garage_needy_car_status"]["state"], "OK")
+        # deleting that service brings the one-off back, still needed
+        self.c.delete(f"/api/services/{sid}")
+        up = self.c.get(f"/api/cars/{cid}").get_json()["upcoming"]
+        self.assertEqual([u["title"] for u in up if u["needed"]], ["Fix oil leak"])
+        # unmarking
+        self.c.put(f"/api/schedules/{leak}", json={"needed": False})
+        self.assertEqual(card()["needed"], 0)
+
     def test_only_dismissed_schedules_read_ok_in_home_assistant(self):
         cid = self.c.post("/api/cars", json={"name": "Dismissed car"}).get_json()["id"]
         self.c.post(f"/api/cars/{cid}/schedules", json={"items": [

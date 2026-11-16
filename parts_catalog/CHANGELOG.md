@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.0.55
+
+- Needed now: mark any service as needed (the Needed link on a vehicle's Upcoming services, or the checkbox when
+  editing it). It counts as overdue on the card, in Home Assistant (status "Needed") and for AI agents, and goes to
+  the top of the list until you log it.
+- Job to do: a one-off job for a vehicle (＋ Job to do), such as fixing a leak. It shows as needed and leaves the
+  list once logged; deleting that service brings it back.
+- AI agents: add_schedule and update_schedule take needed.
+
 ## 1.0.54
 
 - Projects: each step has its own notes. Tap a step to open them (torque specs, order of work, things to check), and

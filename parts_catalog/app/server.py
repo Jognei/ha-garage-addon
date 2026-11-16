@@ -369,6 +369,7 @@ def api_cars():
         shown = [u for u in up if u["state"] != "snoozed" and not (card["hide_ok"] and u["state"] == "ok")]
         c["upcoming"] = shown[:card["upcoming_rows"]]
         c["overdue"] = sum(1 for u in up if u["state"] == "overdue")
+        c["needed"] = sum(1 for u in up if u["state"] == "overdue" and u["needed"])
         c["due_soon"] = sum(1 for u in up if u["state"] == "soon")
         c["snoozed"] = sum(1 for u in up if u["state"] == "snoozed")
         c["schedules"] = len(up)
@@ -545,7 +546,8 @@ DUE_SOON_DAYS = 30
 
 def upcoming(car, manual=False):
     """Every active schedule for a car with its due point and state, most urgent first.
-    A schedule dismissed until a later date is "snoozed" instead of soon/overdue. manual=True puts
+    A schedule dismissed until a later date is "snoozed" instead of soon/overdue. One marked "needed now"
+    (needed_since) counts as overdue, ahead of the rest, with needed=True. manual=True puts
     schedules the owner dragged into an order first, in that order."""
     out = []
     today_d = dt.date.today()
@@ -580,6 +582,9 @@ def upcoming(car, manual=False):
             state = "soon"
         else:
             state = "ok"
+        needed = bool(s.get("needed_since"))
+        if needed:
+            state = "overdue"
         if state in ("overdue", "soon") and s.get("snoozed_until") and s["snoozed_until"] > today_d.isoformat():
             state = "snoozed"
         # rank: fraction of interval remaining (smallest first)
@@ -589,7 +594,8 @@ def upcoming(car, manual=False):
         if days_left is not None and s["interval_months"]:
             fracs.append(days_left / (s["interval_months"] * 30.4))
         out.append({**s, "due_mileage": due_m, "due_date": due_d, "miles_left": miles_left,
-                    "days_left": days_left, "est_date": est, "state": state, "rank": min(fracs) if fracs else 9e9})
+                    "days_left": days_left, "est_date": est, "state": state, "needed": needed,
+                    "rank": -1 if needed else min(fracs) if fracs else 9e9})
     order = {"overdue": 0, "soon": 1, "ok": 2, "snoozed": 3, "unknown": 4}
     out.sort(key=lambda u: (order[u["state"]], u["rank"], u["title"]))
     if manual:
@@ -607,6 +613,9 @@ SCHEDULE_NUMBERS = {"interval_miles": "Every (miles)", "interval_months": "Every
 
 def schedule_values(b, cur=None):
     vals = {k: b[k] for k in SCHEDULE_FIELDS if k in b}
+    if "needed" in b:  # "needed now": true keeps the day it was first marked, false clears it
+        on = b["needed"] in (True, 1, "1", "true", "on")
+        vals["needed_since"] = ((cur or {}).get("needed_since") or today()) if on else None
     for k, label in SCHEDULE_NUMBERS.items():
         if k in vals:
             vals[k] = to_int(vals[k], label)
@@ -664,7 +673,7 @@ def api_schedule(sid):
     if request.method == "DELETE":
         db.execute("DELETE FROM schedules WHERE id=?", (sid,))
         return jsonify(ok=True)
-    vals = schedule_values(body(), db.row("SELECT last_date, last_mileage FROM schedules WHERE id=?", (sid,)))
+    vals = schedule_values(body(), db.row("SELECT last_date, last_mileage, needed_since FROM schedules WHERE id=?", (sid,)))
     if vals:
         db.execute(f"UPDATE schedules SET {','.join(k + '=?' for k in vals)} WHERE id=?", list(vals.values()) + [sid])
         refresh_schedule(sid)
@@ -691,6 +700,10 @@ def refresh_schedule(sid):
     sched = db.row("SELECT base_date, base_mileage FROM schedules WHERE id=?", (sid,))
     if not sched:
         return
+    # a needed one-off job that its service took off the list comes back when no service counts for it any more
+    db.execute("""UPDATE schedules SET active=1 WHERE id=? AND active=0 AND needed_since IS NOT NULL
+                  AND interval_miles IS NULL AND interval_months IS NULL
+                  AND NOT EXISTS (SELECT 1 FROM service_schedules WHERE schedule_id=?)""", (sid, sid))
     last = db.row("""SELECT s.date, s.mileage FROM services s JOIN service_schedules ss ON ss.service_id=s.id
                      WHERE ss.schedule_id=? ORDER BY s.date DESC, s.mileage DESC LIMIT 1""", (sid,))
     if last and (sched["base_date"] is None or last["date"] >= sched["base_date"]):
@@ -776,6 +789,11 @@ def save_service(car_id, service_id, b):
         refresh_schedule(sid)
     for sid in {int(x) for x in b.get("schedule_ids") or []} - set(old_scheds):  # newly done, so a "dismissed until" date no longer applies
         db.execute("UPDATE schedules SET snoozed_until=NULL WHERE id=?", (sid,))
+        # and it's no longer needed: a one-off job (no interval) leaves the list, keeping its mark in case this
+        # service is deleted or unticked (refresh_schedule brings it back); a repeating one just loses the mark
+        db.execute("""UPDATE schedules SET active=CASE WHEN interval_miles IS NULL AND interval_months IS NULL THEN 0 ELSE active END,
+                      needed_since=CASE WHEN interval_miles IS NULL AND interval_months IS NULL THEN needed_since END
+                      WHERE id=? AND needed_since IS NOT NULL""", (sid,))
     for u in uses:
         p = db.row("SELECT * FROM parts WHERE id=?", (u["id"],))
         if not p:
@@ -1252,10 +1270,11 @@ def ha_summary():
         out.append({
             "id": c["id"], "name": c["name"], "ha_slug": c["ha_slug"], "mileage": c["mileage"], "mileage_date": c["mileage_date"],
             "overdue": sum(1 for u in up if u["state"] == "overdue"),
+            "needed": sum(1 for u in up if u["state"] == "overdue" and u["needed"]),
             "due_soon": sum(1 for u in up if u["state"] == "soon"),
             "next_service": nxt and {"title": nxt["title"], "due_mileage": nxt["due_mileage"], "due_date": nxt["due_date"],
                                      "miles_left": nxt["miles_left"], "days_left": nxt["days_left"], "est_date": nxt["est_date"],
-                                     "state": nxt["state"]},
+                                     "state": nxt["state"], "needed": nxt["needed"]},
             "parts_needed": db.row("SELECT COUNT(*) AS n FROM parts WHERE car_id=? AND status IN ('Needed','Check','Ordered')",
                                    (c["id"],))["n"],
             "snoozed": sum(1 for u in up if u["state"] == "snoozed"),

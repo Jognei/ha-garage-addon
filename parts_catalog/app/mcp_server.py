@@ -15,6 +15,7 @@ INTERNAL = "parts_catalog.internal"   # WSGI environ flag for the tools' interna
 
 VEHICLE = {"type": "string", "description": "Vehicle id, or part of its name (case-insensitive), e.g. 'wagon'"}
 STATUSES = ["Needed", "Check", "Ordered", "On hand", "Installed"]
+NEEDED = {"type": "boolean", "description": "Needed now: counts as overdue until logged (false clears it)"}
 PART_FIELDS = {
     "name": {"type": "string"}, "part_number": {"type": "string"}, "brand": {"type": "string"},
     "category": {"type": "string"}, "qty": {"type": "integer"}, "price": {"type": "number", "description": "Price each"},
@@ -62,15 +63,17 @@ TOOLS = [
            "schedules": {"type": "array", "items": {"type": "string"}, "description": "Schedule titles this service satisfied, e.g. ['Engine oil & filter']"},
            "part_ids": {"type": "array", "items": {"type": "integer"}, "description": "Parts used (ids from list_parts)"}},
           ["vehicle", "title"]),
-    _tool("add_schedule", "Add a service schedule (interval by miles and/or months) with when it was last done.",
+    _tool("add_schedule", "Add a service schedule (interval by miles and/or months) with when it was last done. With no interval "
+                          "and needed=true it's a one-off job to do, which leaves the list once logged.",
           {"vehicle": VEHICLE, "title": {"type": "string"}, "interval_miles": {"type": "integer"}, "interval_months": {"type": "integer"},
-           "last_date": {"type": "string"}, "last_mileage": {"type": "integer"}, "notes": {"type": "string"}},
+           "last_date": {"type": "string"}, "last_mileage": {"type": "integer"}, "notes": {"type": "string"}, "needed": NEEDED},
           ["vehicle", "title"]),
-    _tool("update_schedule", "Change a service schedule: its title, intervals, when it was last done, or notes. Fields left out "
-                             "stay as they are.",
+    _tool("update_schedule", "Change a service schedule: its title, intervals, when it was last done, notes, or whether it's "
+                             "needed now. Fields left out stay as they are.",
           {"vehicle": VEHICLE, "schedule": {"type": "string", "description": "Schedule id, or its title or part of it, e.g. 'oil'"},
            "title": {"type": "string"}, "interval_miles": {"type": "integer"}, "interval_months": {"type": "integer"},
-           "last_date": {"type": "string", "description": "YYYY-MM-DD"}, "last_mileage": {"type": "integer"}, "notes": {"type": "string"}},
+           "last_date": {"type": "string", "description": "YYYY-MM-DD"}, "last_mileage": {"type": "integer"}, "notes": {"type": "string"},
+           "needed": NEEDED},
           ["vehicle", "schedule"]),
     _tool("set_vehicle_notes", "Overall notes for a vehicle (history, quirks, mods). Replaces them, or adds a line with append=true.",
           {"vehicle": VEHICLE, "notes": {"type": "string"}, "append": {"type": "boolean"}}, ["vehicle", "notes"]),
@@ -142,7 +145,7 @@ def find_service(sid):
 
 def due_row(u):
     return {k: u.get(k) for k in ("id", "title", "state", "due_mileage", "due_date", "miles_left", "days_left", "est_date",
-                                  "interval_miles", "interval_months", "last_date", "last_mileage", "snoozed_until")}
+                                  "interval_miles", "interval_months", "last_date", "last_mileage", "snoozed_until", "needed", "needed_since")}
 
 
 def run_tool(name, a):
@@ -217,7 +220,8 @@ def run_tool(name, a):
                 "schedules_reset_titles": [u["title"] for u in hits], "schedules_not_found": unmatched}
     if name == "add_schedule":
         c = vehicle(a["vehicle"])
-        item = {k: a.get(k) for k in ("title", "interval_miles", "interval_months", "last_date", "last_mileage", "notes") if a.get(k) is not None}
+        item = {k: a.get(k) for k in ("title", "interval_miles", "interval_months", "last_date", "last_mileage", "notes", "needed")
+                if a.get(k) is not None}
         return call("POST", f"/cars/{c['id']}/schedules", {"items": [item]})
     if name == "update_schedule":
         c = vehicle(a["vehicle"])
@@ -227,7 +231,7 @@ def run_tool(name, a):
         if not u:
             raise ToolError(f"No schedule on {c['name']} matches {ref!r}. Schedules: " + ", ".join(f"{u['id']}={u['title']}" for u in up))
         call("PUT", f"/schedules/{u['id']}", {k: a[k] for k in ("title", "interval_miles", "interval_months", "last_date",
-                                                                 "last_mileage", "notes") if a.get(k) is not None})
+                                                                 "last_mileage", "notes", "needed") if a.get(k) is not None})
         u = next(x for x in call("GET", f"/cars/{c['id']}")["upcoming"] if x["id"] == u["id"])
         return {**due_row(u), "notes": u["notes"]}
     if name == "set_vehicle_notes":

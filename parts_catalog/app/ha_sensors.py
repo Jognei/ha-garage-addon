@@ -51,14 +51,14 @@ def due_text(s):
 
 
 def status_text(c):
-    if c["overdue"]:
-        return "Overdue"
+    if c["overdue"]:  # all of them marked "needed now" rather than past their interval
+        return "Needed" if c.get("needed") == c["overdue"] else "Overdue"
     if c["due_soon"]:
         return "Due soon"
     return "OK" if c.get("schedules") else "No schedule"
 
 
-STATUS_ICON = {"Overdue": "mdi:alert-circle", "Due soon": "mdi:clock-alert-outline", "OK": "mdi:check-circle",
+STATUS_ICON = {"Overdue": "mdi:alert-circle", "Due soon": "mdi:clock-alert-outline", "OK": "mdi:check-circle", "Needed": "mdi:wrench",
                "No schedule": "mdi:calendar-blank"}
 
 
@@ -86,12 +86,12 @@ def build_states(summary):
             "device_class": "distance", "state_class": "total_increasing", "reading_date": c["mileage_date"]}}
         out[f"{base}_status"] = {"state": status, "attributes": {
             **common, "friendly_name": f"{nm} service status", "icon": STATUS_ICON[status],
-            "overdue": c["overdue"], "due_soon": c["due_soon"]}}
+            "overdue": c["overdue"], "needed": c.get("needed", 0), "due_soon": c["due_soon"]}}
         out[f"{base}_next_service"] = {"state": ns["title"] if ns else "None scheduled", "attributes": {
             **common, "friendly_name": f"{nm} next service", "icon": "mdi:wrench-clock",
             **({"due_mileage": ns["due_mileage"], "due_date": ns["due_date"], "miles_left": ns["miles_left"],
                 "days_left": ns["days_left"], "state": ns["state"]} if ns else {})}}
-        out[f"{base}_next_service_due"] = {"state": due_text(ns), "attributes": {
+        out[f"{base}_next_service_due"] = {"state": "Needed now" if ns and ns.get("needed") else due_text(ns), "attributes": {
             **common, "friendly_name": f"{nm} next service due", "icon": "mdi:calendar-arrow-right",
             **({"estimated_date": ns["est_date"]} if ns else {})}}
         out[f"{base}_parts_to_get"] = {"state": c["parts_needed"], "attributes": {

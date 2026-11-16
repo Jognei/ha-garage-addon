@@ -190,7 +190,8 @@ def add_missing_columns(conn):
     if "split_from" not in have:  # the row a partly used part was taken from
         conn.execute("ALTER TABLE parts ADD COLUMN split_from INTEGER REFERENCES parts(id) ON DELETE SET NULL")
     have = {r[1] for r in conn.execute("PRAGMA table_info(schedules)")}
-    for col, ddl in (("sort_order", "INTEGER"), ("snoozed_until", "TEXT")):  # manual order; "dismissed until" date
+    # manual order; "dismissed until" date; the day it was marked "needed now"
+    for col, ddl in (("sort_order", "INTEGER"), ("snoozed_until", "TEXT"), ("needed_since", "TEXT")):
         if col not in have:
             conn.execute(f"ALTER TABLE schedules ADD COLUMN {col} {ddl}")
     have = {r[1] for r in conn.execute("PRAGMA table_info(cars)")}
